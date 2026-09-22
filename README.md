@@ -117,6 +117,21 @@ python tools/ake.py 地区                    # 地区概览
 
 > ⚠️ **不要手改 `data/raw_baked.json`** —— 它由脚本生成；改了也会在下次 `build.py` 时被覆盖。
 
+### 云端环境的能力边界（重要）
+
+因为 `raw/` 不上云（版权），**没有 `raw/` 的机器（云端 Codespaces / 新克隆副本）只能做以下事**：
+
+| 能 ✅ | 不能 ❌ |
+|---|---|
+| 跑 `build_html.py` 生成成品 HTML（靠 `data/raw_baked.json` + `data/*.json`） | 跑 `build.py` 重建 `data/*.json` |
+| 改 HTML 模板 / CSS / JS / 排布算法 | 跑 `bake_raw.py` 刷新烘焙 |
+| 跑 `test_html.js` / `test_layout_events.js` 回归测试 | 拉取或更新 `raw/` |
+| 改 `data/*.json` 的单条内容（手工编辑） | — |
+
+**为什么**：`build.py` 需要读 **26 张** raw 表（`FactoryMinerTable`、`FactoryFluidPumpInTable`、`Spaceship*` 等），这些表的加工逻辑是过程式的，没法简单烘焙；且其中 `I18nTextTable_CN` 单表就有 11 MB —— 烘焙它等于把 raw 搬上云，**与版权策略冲突**。
+
+**所以数据更新的正确流程是**：**游戏版本更新时在本地跑 `build.py`**（有 raw，全功能）→ 把重算后的 `data/*.json` 提交上来。日常改代码在云端即可。
+
 ---
 
 ## 收录了什么
