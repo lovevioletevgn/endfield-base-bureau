@@ -1,0 +1,2069 @@
+{
+ "_note": "由 tools/bake_raw.py 从 raw/ 烘焙，勿手改；raw 在本地不复制的机器上靠它构建",
+ "_bakedAt": "2026-09-23 05:54:50",
+ "_rawFiles": {
+  "FactoryVaporizerTable.json": {
+   "size": 733,
+   "sha256_16": "68e6e4053a9f967b"
+  },
+  "FactoryEnvDisplayTable.json": {
+   "size": 653,
+   "sha256_16": "8245d10c2ea610b0"
+  },
+  "FactoryMachineCraftTable.json": {
+   "size": 272284,
+   "sha256_16": "546dcec241ef2a62"
+  },
+  "FactoryItemTable.json": {
+   "size": 230111,
+   "sha256_16": "f223dfb92091d18b"
+  },
+  "I18nTextTable_CN.json": {
+   "size": 11734228,
+   "sha256_16": "db919556bf9badad"
+  },
+  "ItemTable.json": {
+   "size": 2759170,
+   "sha256_16": "2bf74745b2e2757a"
+  }
+ },
+ "vaporizer": {
+  "rangeExtend": {
+   "x": 5,
+   "y": 5,
+   "z": 5
+  },
+  "gasGroups": [
+   {
+    "item": "item_gas_inert",
+    "name": "惰气",
+    "rate": 6,
+    "cap": 30,
+    "env": 1
+   },
+   {
+    "item": "item_gas_water",
+    "name": "水蒸气",
+    "rate": 6,
+    "cap": 30,
+    "env": 2
+   },
+   {
+    "item": "item_gas_acid",
+    "name": "酸气",
+    "rate": 6,
+    "cap": 30,
+    "env": 3
+   },
+   {
+    "item": "item_gas_xiranite",
+    "name": "息壤气",
+    "rate": 6,
+    "cap": 30,
+    "env": 4
+   }
+  ]
+ },
+ "envDisplay": [
+  {
+   "id": 1,
+   "color": "white",
+   "icon": "T_fx_icon_gas_stable_UI"
+  },
+  {
+   "id": 2,
+   "color": "blue",
+   "icon": "T_fx_icon_gas_wet_UI"
+  },
+  {
+   "id": 3,
+   "color": "orange",
+   "icon": "T_fx_icon_gas_acidic_UI"
+  },
+  {
+   "id": 4,
+   "color": "green",
+   "icon": "T_fx_icon_gas_xiranite_UI"
+  }
+ ],
+ "recipeEnv": {
+  "gas_reactor_activity_copper_poly_gas_1": 1,
+  "liquid_purifier_gas_copper_enr_2": 1,
+  "xiranite_oven_xiranite_powder_2": 1,
+  "liquid_purifier_gas_xiranite_enr_2": 1,
+  "gas_reactor_gas_copper_enr2_1": 3
+ },
+ "hubItems": {
+  "item_proc_battery_1": {
+   "name": "低容谷地电池",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_plant_grass_seed_1": {
+   "name": "锦草种子",
+   "rarity": 1,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_drop_agdisk_1": {
+   "name": "导能肖像石",
+   "rarity": 4,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_corp1_animal_1": {
+   "name": "谷地馅饼",
+   "rarity": 5,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_agmelee_1_moss_1_lbmob_1_1": {
+   "name": "仿荤烩荞花",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_firebat_1_agrange_1_1": {
+   "name": "可食用巢雕",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_bottled_flower1spc_3": {
+   "name": "精选荞复锭剂",
+   "rarity": 5,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_drop_jzogre_1": {
+   "name": "尾尖金甲",
+   "rarity": 4,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_agfly_1_agmelee_1_moss_2_1": {
+   "name": "星融果冻",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_agmelee_1_sp_2_slimeml_1_1": {
+   "name": "爆辣焗烤源石虫",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_agrange_1_erhound_1_sp_1_1": {
+   "name": "雅各布的遗产",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_agrange_1_lbshamman_bottled_1": {
+   "name": "简易镇痛药膏",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_agrange_1_moss_2_lbmob_1_1": {
+   "name": "手工怪味酸糖",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_plant_moss_3": {
+   "name": "砂叶",
+   "rarity": 1,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_fbottle_glassenr_sewage": {
+   "name": "高晶质瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_hsmob_1_grass_2_1": {
+   "name": "炝炒时蔬",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_bottled_food_3": {
+   "name": "精选柑实罐头",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_sp_1_moss_1_agmelee_1_1": {
+   "name": "枢纽区应急餐",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_bottled_flower1spc_1": {
+   "name": "小瓶荞复锭剂",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_carbon_enr": {
+   "name": "稳定碳块",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_bottled_flower1spc_2": {
+   "name": "大瓶荞复锭剂",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_bottled_flower2spc_1": {
+   "name": "小瓶柑实冲剂",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_bottled_flower2spc_2": {
+   "name": "大瓶柑实冲剂",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_bottled_flower2spc_3": {
+   "name": "精选柑实冲剂",
+   "rarity": 5,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_copper_enr_cmpt": {
+   "name": "赫铜零件",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_bottled_food_1": {
+   "name": "柑实罐头",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_iron_acid": {
+   "name": "蓝铁瓶",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_xiranite_lowpoly": {
+   "name": "轻壤晶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_bottled_food_2": {
+   "name": "优质柑实罐头",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_bottled_food_4": {
+   "name": "锦草软饮",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_bottled_food_5": {
+   "name": "优质锦草软饮",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_bottled_grass1spc_1": {
+   "name": "锦草凉茶",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_ironenr_copper_enr": {
+   "name": "钢质瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_bottled_grass1spc_2": {
+   "name": "大碗锦草凉茶",
+   "rarity": 5,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_corp4_animal_1": {
+   "name": "武陵炒饭",
+   "rarity": 5,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_drop_lbshamman_1": {
+   "name": "软骨碎屑",
+   "rarity": 2,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_plant_bbflower_seed_1": {
+   "name": "酮化树种",
+   "rarity": 1,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_bottled_grass2spc_1": {
+   "name": "芽针喷剂",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_glassenr_xiranite": {
+   "name": "高晶质瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_bottled_grass2spc_2": {
+   "name": "大瓶芽针喷剂",
+   "rarity": 5,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_bottled_insec1_1": {
+   "name": "刻术瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_bottled_insec1_2": {
+   "name": "刻术铁瓶",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_bottled_insec2_1": {
+   "name": "附术瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_iron_enr_cmpt": {
+   "name": "钢制零件",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_bottled_insec2_2": {
+   "name": "附术铁瓶",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_copper_enr_bottle": {
+   "name": "赫铜瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_glass_xiranite_enr": {
+   "name": "紫晶质瓶",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_iron_enr_powder": {
+   "name": "致密蓝铁粉末",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_bottled_moss_1_2_1": {
+   "name": "意乱药剂",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_bottled_moss_2_animal_1": {
+   "name": "怪味肉酱",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_carbon_mtl": {
+   "name": "碳块",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_bottled_rec_hp_1": {
+   "name": "荞愈胶囊",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_bottled_rec_hp_2": {
+   "name": "优质荞愈胶囊",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_bottled_rec_hp_3": {
+   "name": "精选荞愈胶囊",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_copper_xiranite_lowpoly": {
+   "name": "赤铜瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_bottled_rec_hp_4": {
+   "name": "芽针针剂",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_bottled_rec_hp_5": {
+   "name": "优质芽针针剂",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_carbon_enr_powder": {
+   "name": "致密碳粉末",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_carbon_powder": {
+   "name": "碳粉末",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_copper_bottle": {
+   "name": "赤铜瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_plant_moss_powder_3": {
+   "name": "砂叶粉末",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_copper_cmpt": {
+   "name": "赤铜零件",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_copper_enr": {
+   "name": "赫铜块",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_plant_moss_2": {
+   "name": "柑实",
+   "rarity": 1,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_plant_moss_powder_2": {
+   "name": "柑实粉末",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_copper_enr2": {
+   "name": "灼铜块",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_drop_klcreatures_1": {
+   "name": "影兽衔石",
+   "rarity": 4,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_copper_enr2_cmpt": {
+   "name": "灼铜零件",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_drop_wgthorns_1": {
+   "name": "天然气泡水",
+   "rarity": 1,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_copper_jar": {
+   "name": "赤铜耐压罐",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_iron_bottle": {
+   "name": "蓝铁瓶",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_copper_nugget": {
+   "name": "赤铜块",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_copper_ore": {
+   "name": "赤铜矿",
+   "rarity": 1,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_copper_powder": {
+   "name": "赤铜粉末",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_corp2_animal_1": {
+   "name": "辣炒肉丁",
+   "rarity": 5,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_corp3_animal_1": {
+   "name": "清炖兽排参须汤",
+   "rarity": 5,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_corp3_grass1_1": {
+   "name": "正本补元汤剂",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_corp4_grass2_1": {
+   "name": "锦素炒饭",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_corp4_spc": {
+   "name": "罗德岛特制口粮",
+   "rarity": 5,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_crystal_enr": {
+   "name": "密制晶体",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_crystal_enr_powder": {
+   "name": "致密晶体粉末",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_crystal_powder": {
+   "name": "晶体外壳粉末",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_crystal_shell": {
+   "name": "晶体外壳",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_copper_copper_enr": {
+   "name": "赤铜瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_slwood_1_hshog_1_1": {
+   "name": "香焗兽肝",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_drop_hsbear_1": {
+   "name": "咆兽的辫束",
+   "rarity": 5,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_fbottle_copper_acid": {
+   "name": "赤铜瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_iron_enr_bottle": {
+   "name": "钢质瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_dog_1_slimeml_1_1": {
+   "name": "炖肉会议",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_dog_hsmob_corp_1": {
+   "name": "田家特色烂肉面",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_ironenr_xiranite_enr": {
+   "name": "钢质瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_drop_agfly_1": {
+   "name": "中空异香石",
+   "rarity": 1,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_drop_agmelee_1": {
+   "name": "坚硬异香石",
+   "rarity": 1,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_plant_moss_spc_2": {
+   "name": "黯银柑实",
+   "rarity": 2,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_drop_agrange_1": {
+   "name": "高能异香石",
+   "rarity": 1,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_drop_agshield_1": {
+   "name": "天然晶城锭",
+   "rarity": 5,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_drop_babyents_1": {
+   "name": "柔嫩苔藓",
+   "rarity": 4,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_wgslime_1_hsmob_1_grass_2_1": {
+   "name": "龙泡泡蔬菜冻",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_drop_dog_1": {
+   "name": "兽肉",
+   "rarity": 1,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_drop_enemycommon_1": {
+   "name": "解析晶块",
+   "rarity": 2,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_drop_erhound_1": {
+   "name": "刺鼻干肉",
+   "rarity": 1,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_fbottle_copper_sewage": {
+   "name": "赤铜瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_muck_feces_1": {
+   "name": "驮兽粪便",
+   "rarity": 1,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_drop_ethillu_1": {
+   "name": "回响尘埃",
+   "rarity": 1,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_drop_firebat_1": {
+   "name": "异色油脂",
+   "rarity": 2,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_drop_hscrane_1": {
+   "name": "竹林虫蛹",
+   "rarity": 2,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_originium_ore": {
+   "name": "源矿",
+   "rarity": 1,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_drop_hsfly_1": {
+   "name": "水灯虫的灯坠",
+   "rarity": 1,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_drop_hshog_1": {
+   "name": "球刺兽的肝脏",
+   "rarity": 2,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_drop_hsmino_1": {
+   "name": "清波竹铃",
+   "rarity": 4,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_fbottle_glass_xiranite": {
+   "name": "紫晶质瓶",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_drop_hsmob_1": {
+   "name": "新笋",
+   "rarity": 1,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_drop_hstiger_1": {
+   "name": "彪兽的长绒",
+   "rarity": 4,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_drop_hvybow_1": {
+   "name": "浸雾大弩",
+   "rarity": 4,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_drop_jzmonk_1": {
+   "name": "百年陈皮",
+   "rarity": 1,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_plant_bbflower_1": {
+   "name": "酮化灌木",
+   "rarity": 1,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_drop_klbuds_1": {
+   "name": "残影露滴",
+   "rarity": 4,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_drop_klcaps_1": {
+   "name": "破阵刀碎片",
+   "rarity": 4,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_drop_mimicw_1": {
+   "name": "虬兽的须",
+   "rarity": 2,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_drop_lbmob_1": {
+   "name": "草籽干粉",
+   "rarity": 1,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_drop_lbroshan_1": {
+   "name": "破城者拳甲",
+   "rarity": 4,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_drop_lbshield_1": {
+   "name": "苦涩麦粉",
+   "rarity": 1,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_drop_lbtough_1": {
+   "name": "崩碎斧刃",
+   "rarity": 4,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_fbottle_iron_grass_2": {
+   "name": "蓝铁瓶",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_drop_sandb_1": {
+   "name": "大斧角",
+   "rarity": 4,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_fbottle_copperenr_xiranite_enr": {
+   "name": "赫铜瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_drop_slimeml_1": {
+   "name": "虫肉",
+   "rarity": 1,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_fbottle_glass_acid": {
+   "name": "紫晶质瓶",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_drop_slwood_1": {
+   "name": "虫角嫩枝",
+   "rarity": 1,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_drop_wgabyss_1": {
+   "name": "速成陈酿",
+   "rarity": 5,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_drop_wgshoal_1": {
+   "name": "甜腻黑水",
+   "rarity": 2,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_drop_wgslime_1": {
+   "name": "坚韧的水",
+   "rarity": 1,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_equip_script_1": {
+   "name": "紫晶装备原件",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_equip_script_2": {
+   "name": "蓝铁装备原件",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_equip_script_3": {
+   "name": "高晶装备原件",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_plant_moss_powder_1": {
+   "name": "荞花粉末",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_equip_script_4": {
+   "name": "息壤装备原件",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_equip_script_4_1": {
+   "name": "赤铜装备原件",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_equip_script_4_2": {
+   "name": "赫铜装备原件",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_gasjar_copper_gas_water": {
+   "name": "赤铜耐压罐",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_equip_script_4_3": {
+   "name": "灼铜装备原件",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_glassenr_grass_1": {
+   "name": "高晶质瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_erhound_1_agmelee_1_moss_1_1": {
+   "name": "雾火之花",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_ethillu_1_wgslime_1_wgthorns_1_1": {
+   "name": "回响秘剂",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_copper_copper": {
+   "name": "赤铜瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_copper_grass_1": {
+   "name": "赤铜瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_copper_grass_2": {
+   "name": "赤铜瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_copper_water": {
+   "name": "赤铜瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_copper_xiranite": {
+   "name": "赤铜瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_copper_xiranite_enr": {
+   "name": "赤铜瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_copper_xiranite_poly": {
+   "name": "赤铜瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_copperenr_acid": {
+   "name": "赫铜瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_copperenr_copper": {
+   "name": "赫铜瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_copperenr_copper_enr": {
+   "name": "赫铜瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_glass_bottle": {
+   "name": "紫晶质瓶",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_copperenr_grass_1": {
+   "name": "赫铜瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_copperenr_grass_2": {
+   "name": "赫铜瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_copperenr_sewage": {
+   "name": "赫铜瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_copperenr_water": {
+   "name": "赫铜瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_copperenr_xiranite": {
+   "name": "赫铜瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_iron_xiranite": {
+   "name": "蓝铁瓶",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_ironenr_xiranite_lowpoly": {
+   "name": "钢质瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_copperenr_xiranite_lowpoly": {
+   "name": "赫铜瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_copperenr_xiranite_poly": {
+   "name": "赫铜瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_glass_copper": {
+   "name": "紫晶质瓶",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_glass_copper_enr": {
+   "name": "紫晶质瓶",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_glassenr_xiranite_enr": {
+   "name": "高晶质瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_glass_grass_1": {
+   "name": "紫晶质瓶",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_glass_grass_2": {
+   "name": "紫晶质瓶",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_glass_sewage": {
+   "name": "紫晶质瓶",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_glass_water": {
+   "name": "紫晶质瓶",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_glass_xiranite_lowpoly": {
+   "name": "紫晶质瓶",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_glass_xiranite_poly": {
+   "name": "紫晶质瓶",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_glassenr_acid": {
+   "name": "高晶质瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_plant_moss_enr_powder_1": {
+   "name": "细磨荞花粉末",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_glassenr_copper": {
+   "name": "高晶质瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_glassenr_copper_enr": {
+   "name": "高晶质瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_glassenr_grass_2": {
+   "name": "高晶质瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_glassenr_water": {
+   "name": "高晶质瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_glassenr_xiranite_lowpoly": {
+   "name": "高晶质瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_glassenr_xiranite_poly": {
+   "name": "高晶质瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_iron_copper": {
+   "name": "蓝铁瓶",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_plant_grass_spc_powder_1": {
+   "name": "蓬茸锦草粉末",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_iron_copper_enr": {
+   "name": "蓝铁瓶",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_iron_grass_1": {
+   "name": "蓝铁瓶",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_iron_sewage": {
+   "name": "蓝铁瓶",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_plant_tundra_wood": {
+   "name": "原木",
+   "rarity": 1,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_fbottle_iron_water": {
+   "name": "蓝铁瓶",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_iron_cmpt": {
+   "name": "铁制零件",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_plant_sp_3": {
+   "name": "琼叶参",
+   "rarity": 2,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_fbottle_iron_xiranite_enr": {
+   "name": "蓝铁瓶",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_iron_xiranite_lowpoly": {
+   "name": "蓝铁瓶",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_iron_xiranite_poly": {
+   "name": "蓝铁瓶",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_ironenr_acid": {
+   "name": "钢质瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_lbshield_1_slimeml_1_dog_1_1": {
+   "name": "约翰老爹汉堡",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_ironenr_copper": {
+   "name": "钢质瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_ironenr_grass_1": {
+   "name": "钢质瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_ironenr_grass_2": {
+   "name": "钢质瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_ironenr_sewage": {
+   "name": "钢质瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_ironenr_water": {
+   "name": "钢质瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_ironenr_xiranite": {
+   "name": "钢质瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fbottle_ironenr_xiranite_poly": {
+   "name": "钢质瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fertilize_1": {
+   "name": "肥料测试1",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_fertilize_2": {
+   "name": "肥料测试2",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_filter_core": {
+   "name": "分离芯",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_plant_grass_2": {
+   "name": "芽针",
+   "rarity": 1,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_gasjar_copper_gas_acid": {
+   "name": "赤铜耐压罐",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_gasjar_copper_gas_copper": {
+   "name": "赤铜耐压罐",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_gasjar_copper_gas_copper_enr": {
+   "name": "赤铜耐压罐",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_gasjar_copper_gas_copper_enr2": {
+   "name": "赤铜耐压罐",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_gasjar_copper_gas_inert": {
+   "name": "赤铜耐压罐",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_gasjar_copper_gas_xiranite": {
+   "name": "赤铜耐压罐",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_gasjar_copper_gas_xiranite_enr": {
+   "name": "赤铜耐压罐",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_glass_cmpt": {
+   "name": "紫晶零件",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_glass_enr_bottle": {
+   "name": "高晶质瓶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_quartz_enr_powder": {
+   "name": "高晶粉末",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_glass_enr_cmpt": {
+   "name": "高晶零件",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_hscrane_1_hsmob_1_grass_1_1": {
+   "name": "潘师傅蛋羹",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_hsfly_1_slimeml_1_hsmob_1_1": {
+   "name": "清炖息壤球",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_hshog_1_hsmob_1_slimeml_1_1": {
+   "name": "武陵乱炒",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_hsmob_1_dog_1_1": {
+   "name": "竹笋炒肉",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_iron_enr": {
+   "name": "钢块",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_iron_nugget": {
+   "name": "蓝铁块",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_iron_ore": {
+   "name": "蓝铁矿",
+   "rarity": 1,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_iron_powder": {
+   "name": "蓝铁粉末",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_jzmonk_1_hsmob_1_1": {
+   "name": "陈皮拌笋",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_klbuds_1_hsfly_1_1": {
+   "name": "洗灾秘剂",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_klcreatures_1_wgthorns_1_1": {
+   "name": "蓄石秘剂",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_lbmob_1_dog_1_moss_1_1": {
+   "name": "塞什卡风肉排",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_lbmob_1_lbshamman_1_sp_1_1": {
+   "name": "软骨饼干",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_lbmob_1_moss_2_bottled_1": {
+   "name": "秘方醒神茶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_lbshamman_1_agmelee_1_1": {
+   "name": "速食骨汤",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_plant_moss_spc_1": {
+   "name": "映火荞花",
+   "rarity": 2,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_mimicw_1_moss_1_moss_2_1": {
+   "name": "开工日肉汤",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_muck_xiranite_1": {
+   "name": "膨地啪",
+   "rarity": 3,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_originium_enr_powder": {
+   "name": "致密源石粉末",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_originium_powder": {
+   "name": "源石粉末",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_plant_bbflower_powder_1": {
+   "name": "酮化灌木粉末",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_quartz_powder": {
+   "name": "紫晶粉末",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_plant_grass_1": {
+   "name": "锦草",
+   "rarity": 1,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_plant_grass_spc_powder_2": {
+   "name": "荆刺芽针粉末",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_plant_grass_powder_1": {
+   "name": "锦草粉末",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_plant_grass_powder_2": {
+   "name": "芽针粉末",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_plant_grass_seed_2": {
+   "name": "芽针种子",
+   "rarity": 1,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_plant_grass_spc_1": {
+   "name": "蓬茸锦草",
+   "rarity": 2,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_plant_grass_spc_2": {
+   "name": "荆刺芽针",
+   "rarity": 2,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_plant_moss_1": {
+   "name": "荞花",
+   "rarity": 1,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_plant_moss_enr_powder_2": {
+   "name": "细磨柑实粉末",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_plant_moss_seed_1": {
+   "name": "荞花种子",
+   "rarity": 1,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_plant_moss_seed_2": {
+   "name": "柑实种子",
+   "rarity": 1,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_plant_moss_seed_3": {
+   "name": "砂叶种子",
+   "rarity": 1,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_plant_moss_spc_powder_1": {
+   "name": "荞愈药粉",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_plant_moss_spc_powder_2": {
+   "name": "柑实冲剂",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_quartz_glass": {
+   "name": "紫晶纤维",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_plant_sp_1": {
+   "name": "灰芦麦",
+   "rarity": 2,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_plant_sp_2": {
+   "name": "苦叶椒",
+   "rarity": 2,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_plant_sp_4": {
+   "name": "金石稻",
+   "rarity": 2,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_plant_sp_seed_1": {
+   "name": "灰芦麦种子",
+   "rarity": 2,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_plant_sp_seed_2": {
+   "name": "苦叶椒种子",
+   "rarity": 2,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_plant_sp_seed_3": {
+   "name": "琼叶参种子",
+   "rarity": 2,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_plant_sp_seed_4": {
+   "name": "金石稻种子",
+   "rarity": 2,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_proc_battery_4": {
+   "name": "低容武陵电池",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_plant_tundra_insect_1": {
+   "name": "萤壳虫",
+   "rarity": 2,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_plant_tundra_insect_2": {
+   "name": "灼壳虫",
+   "rarity": 3,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_plant_tundra_insect_powder_1": {
+   "name": "萤壳虫粉末",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_plant_tundra_insect_powder_2": {
+   "name": "灼壳虫粉末",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_proc_battery_5": {
+   "name": "中容武陵电池",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_quartz_sand": {
+   "name": "紫晶矿",
+   "rarity": 1,
+   "domains": [
+    "domain_1"
+   ]
+  },
+  "item_xiranite_enr_powder": {
+   "name": "重息壤",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_proc_bomb_1": {
+   "name": "工业爆炸物",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_wgshoal_1_grass_1_grass_2_1": {
+   "name": "小糖画",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_proc_battery_2": {
+   "name": "中容谷地电池",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_proc_battery_3": {
+   "name": "高容谷地电池",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_quartz_enr": {
+   "name": "高晶纤维",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_slimeml_1_agrange_1_moss_2_1": {
+   "name": "小蜜虫布丁",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_xiranite_poly": {
+   "name": "壤晶",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_slimeml_1_erhound_1_agfly_1_1": {
+   "name": "手撕虫肉",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_sp_2_moss_2_agrange_1_1": {
+   "name": "爆辣腌渍水果",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_wgslime_1_wgthorns_1_1": {
+   "name": "神秘气泡饮料",
+   "rarity": 3,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_wgthorns_1_hshog_1_hsmob_1_1": {
+   "name": "油爆“双脆”",
+   "rarity": 4,
+   "domains": [
+    "domain_2"
+   ]
+  },
+  "item_xiranite_powder": {
+   "name": "息壤",
+   "rarity": 2,
+   "domains": [
+    "domain_2"
+   ]
+  }
+ },
+ "hubDomainMachine": {
+  "domain_1": "sp_hub_1",
+  "domain_2": "sp_hub_1"
+ }
+}

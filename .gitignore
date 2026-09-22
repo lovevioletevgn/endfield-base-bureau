@@ -1,1 +1,48 @@
-# bootstrap
+# ============================================================
+# 终末地基建知识库 · Git 忽略规则
+#
+# ⚠️ 这个文件的作用不只是「少传几个文件」，而是**版权隔离**：
+#    raw/ 是游戏解包 TableCfg（含 I18nTextTable_CN 11.4 MB 全文案），
+#    版权归鹰角网络。不进城、不上云，靠 data/raw_baked.json 构建。
+#    详见 README「数据分层与版权」一节。
+# ============================================================
+
+# ---- 游戏解包数据：绝不入库（版权） ----
+raw/
+
+# ---- 推送临时产物：每次可重建 ----
+_tx_push/
+
+# ---- 历史版本快照：版本管理由 git 取代 ----
+.baseline/
+
+# ---- 构建产物：可重建（如需归档请手动 git add -f） ----
+终末地基建查询.html
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ---- Node ----
+node_modules/
+package-lock.json
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+
+# ---- 本地调试残留（探针 / 截图 / 参照文件） ----
+_shot/
+_shot_*.py
+_ab*.py
+_*.js
+probe_*.js
+_v*_ref.html
+*.bak
+*.log

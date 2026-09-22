@@ -1,0 +1,6015 @@
+# -*- coding: utf-8 -*-
+"""
+把 data/ 下的 JSON 数据包内联进单文件 HTML，生成可双击打开的本地查询界面。
+"""
+import json
+import os
+import sys
+import io
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+DATA = os.path.join(ROOT, "data")
+OUT = os.path.join(ROOT, "终末地基建查询.html")
+
+FILES = [
+    "meta.json", "buildings.json", "build_recipes.json", "machine_recipes.json",
+    "manual_recipes.json", "items.json", "grow_cabin.json", "manufacture.json",
+    "mechanics.json", "regions.json", "categories.json", "blueprint.json",
+    "logistics.json", "rules.json", "bases.json", "recipe_groups.json", "mining_power.json",
+]
+
+bundle = {}
+for f in FILES:
+    p = os.path.join(DATA, f)
+    if os.path.exists(p):
+        with open(p, encoding="utf-8") as fh:
+            bundle[f.replace(".json", "")] = json.load(fh)
+
+# ⭐ 2026-09-21（博士反馈：「装什么东西显示不出来」）：瓶装液体 / 气罐类物品在配置表里
+#    全是同一个名字 + 同一句描述（赤铜耐压罐 ×21），区别只在 id 后缀。
+#    但配方表能反推：灌装配方的「液/气态输入」就是内容物；拆解配方反向印证；空容器也由此标记。
+#    → 构建期给 items 加 content 字段（"装：水蒸气（气态）" / "空罐（可灌装）"），页面直接显示、可搜索。
+_mrec = bundle.get("machine_recipes")
+if isinstance(_mrec, dict):
+    _mrec = _mrec.get("recipes") or list(_mrec.values())[0]
+_content = {}
+for _r in (_mrec or []):
+    _rid = str(_r.get("id", ""))
+    _ing = _r.get("ingredients") or []
+    _out = _r.get("outcomes") or []
+    _liq = [i for i in _ing if i.get("phaseType") in (2, 4)]
+    _sol = [i for i in _ing if i.get("phaseType") == 1]
+    if _r.get("machineName") == "灌装机" or _rid.startswith("filling_"):
+        if _liq and _out:
+            _c = "装：" + _liq[0]["name"] + "（" + str(_liq[0].get("phase") or "") + "）"
+            for _o in _out:
+                _content.setdefault(_o["id"], _c)
+            for _s2 in _sol:
+                _content.setdefault(_s2["id"], "空容器（可灌装）")
+for _r in (_mrec or []):
+    _rid = str(_r.get("id", ""))
+    if not _rid.startswith("dismantler_"):
+        continue
+    _ing = _r.get("ingredients") or []
+    _out = _r.get("outcomes") or []
+    _liq = [o for o in _out if o.get("phaseType") in (2, 4)]
+    _sol = [o for o in _out if o.get("phaseType") == 1]
+    if _ing and _liq and _sol:
+        _content.setdefault(_ing[0]["id"], "装：" + _liq[0]["name"] + "（" + str(_liq[0].get("phase") or "") + "）")
+_n = 0
+for _iid, _c in _content.items():
+    if _iid in bundle.get("items", {}):
+        bundle["items"][_iid]["content"] = _c
+        _n += 1
+print("content 字段注入", _n, "个物品")
+
+# ⭐ v95 数据瘦身（博士：「数据会越来越多」）：注入层裁剪 —— data/*.json 保持完整底账不动，
+#    只在打包进页面 DB 前丢掉**页面与测试均零引用**的字段。2026-09-22 五重验证：
+#    直接引用 / 「input」+「Ports」类动态拼接 / Object.keys 遍历 / for-in 遍历 / test_html.js
+#    断言引用 —— 五项全为 0。页面消费的接口数据来自 blueprint 的 ports（build.py 加工的精简版），
+#    buildings 里的原始明细属于数据底账，页面上是死重。回滚 = 删掉这段。
+_TRIM = {
+    "buildings": ("inputPorts", "outputPorts", "inputEdges", "outputEdges", "edgeNames"),
+    "blueprint_buildings": ("inputEdges", "outputEdges", "edgeNames"),
+}
+_ntrim = 0
+for _k in ("buildings", "blueprint"):
+    _arr = bundle.get(_k)
+    if isinstance(_arr, dict):
+        _arr = _arr.get("buildings")
+    if not isinstance(_arr, list):
+        continue
+    _fields = _TRIM["buildings" if _k == "buildings" else "blueprint_buildings"]
+    for _it in _arr:
+        if isinstance(_it, dict):
+            for _f in _fields:
+                if _it.pop(_f, None) is not None:
+                    _ntrim += 1
+print("注入层裁剪死字段", _ntrim, "处（buildings/blueprint 的接口原始明细）")
+
+# ⭐ v103 气体散布机（博士 2026-09-23：游戏里环境圈可见、圈色随通入的气体变）：
+#    数据链两张表：FactoryVaporizerTable（rangeExtend 外扩格数 + 四种气体的消耗与 GenEnv 映射）
+#    + FactoryEnvDisplayTable（GenEnv → 特效资源名里的颜色词）。
+#    此前本地漏拉了 Vaporizer 表，2026-09-23 从数据域补拉（已存 raw/ 并记 _download_log）。
+#    注入走 content 字段同一通道：只喂页面 DB，底账仍由 build.py 管。
+_vap_p = os.path.join(ROOT, "raw", "FactoryVaporizerTable.json")
+_env_p = os.path.join(ROOT, "raw", "FactoryEnvDisplayTable.json")
+_bp = bundle.get("blueprint")
+_bp_arr = _bp.get("buildings") if isinstance(_bp, dict) else None
+
+# ⭐v110 版权隔离（博士 2026-09-23「版权风险最低的」）：
+#    build_html.py 对 raw/ 的依赖全部收敛到 tools/bake_raw.py 的烘焙产物 data/raw_baked.json。
+#    raw/ 是游戏解包 TableCfg，不上云、不进 git；云端/无 raw 的机器靠烘焙文件构建。
+#    优先级：raw_baked.json（存在即用，不再读 raw）> raw/ 实时加工（本地兜底）> 跳过（两者皆无）。
+_BAKED_P = os.path.join(DATA, "raw_baked.json")
+_baked = None
+if os.path.exists(_BAKED_P):
+    with open(_BAKED_P, encoding="utf-8") as fh:
+        _baked = json.load(fh)
+
+if _baked and isinstance(_bp_arr, list):
+    # ---- 路径 A：烘焙直用 ----
+    _v1 = {"rangeExtend": _baked.get("vaporizer", {}).get("rangeExtend") or {}}
+    _ngas = 0
+    for _b in _bp_arr:
+        if _b.get("id") == "vaporizer_1":
+            _b["vaporizer"] = _baked.get("vaporizer") or {}
+            _ngas = len(_b["vaporizer"].get("gasGroups") or [])
+    _bp["envDisplay"] = _baked.get("envDisplay") or []
+    bundle["recipeEnv"] = _baked.get("recipeEnv") or {}
+    print("vaporizer 注入(烘焙): rangeExtend", json.dumps(_v1.get("rangeExtend")),
+          "· 气体", _ngas, "种 · envDisplay", len(_bp["envDisplay"]),
+          "条 · recipeEnv", len(bundle["recipeEnv"]), "条（环境依赖配方）")
+elif isinstance(_bp_arr, list) and os.path.exists(_vap_p) and os.path.exists(_env_p):
+    # ---- 路径 B：raw 实时加工（本地兜底，无烘焙文件时）----
+    with open(_vap_p, encoding="utf-8") as fh:
+        _vtab = json.load(fh)
+    with open(_env_p, encoding="utf-8") as fh:
+        _etab = json.load(fh)
+    _env_list = []
+    for _gid in sorted(_etab, key=lambda x: int(x)):
+        _e = _etab[_gid]
+        _eff = str(_e.get("EnvEffect", ""))
+        _c = _eff.split("scope_")[1].split("_")[0] if "scope_" in _eff else "gray"
+        _env_list.append({"id": int(_gid), "color": _c, "icon": str(_e.get("EnvIconAtlas", ""))})
+    _GAS_NAMES = {"item_gas_inert": "惰气", "item_gas_water": "水蒸气",
+                  "item_gas_acid": "酸气", "item_gas_xiranite": "息壤气"}
+    _v1 = _vtab.get("vaporizer_1") or {}
+    _ngas = 0
+    for _b in _bp_arr:
+        if _b.get("id") == "vaporizer_1":
+            _b["vaporizer"] = {
+                "rangeExtend": _v1.get("rangeExtend") or {},
+                "gasGroups": [
+                    {"item": g.get("consumeItem"),
+                     "name": _GAS_NAMES.get(g.get("consumeItem"), str(g.get("consumeItem"))),
+                     "rate": g.get("consumeRate"), "cap": g.get("consumeRateUpperLimit"),
+                     "env": g.get("genEnv")}
+                    for g in (_v1.get("groups") or [])
+                ],
+            }
+            _ngas = len(_b["vaporizer"]["gasGroups"])
+    _bp["envDisplay"] = _env_list
+    # ⭐v104 环境依赖透明化：data/machine_recipes.json 打包时裁掉了 gasEnv 字段，
+    #   这里从 raw 配方表补一份「配方 id → GenEnv」映射（仅非零的 5 条）进 DB.recipeEnv，
+    #   供产线报告（哪些机器要摆进环境圈）与配方页标签使用。
+    _mct_p = os.path.join(ROOT, "raw", "FactoryMachineCraftTable.json")
+    _recipe_env = {}
+    if os.path.exists(_mct_p):
+        with open(_mct_p, encoding="utf-8") as fh:
+            _mct = json.load(fh)
+        for _rid, _r in _mct.items():
+            _ge = _r.get("gasEnv") or 0
+            if _ge:
+                _recipe_env[_rid] = _ge
+    bundle["recipeEnv"] = _recipe_env
+    print("vaporizer 注入(raw): rangeExtend", json.dumps(_v1.get("rangeExtend")),
+          "· 气体", _ngas, "种 · envDisplay", len(_env_list), "条 · recipeEnv", len(_recipe_env), "条（环境依赖配方）")
+else:
+    bundle["recipeEnv"] = {}
+    print("⚠️ 无 raw/ 也无 data/raw_baked.json —— 环境圈与出货数据将为空，请跑 tools/bake_raw.py")
+
+# ⭐v109 协议核心出货（博士 2026-09-23：「游戏里的协议核心出货口可以点击选择物品出货」）：
+#    数据在 FactoryItemTable —— deliverItemTypeList 非空 = 这件物品可以走协议核心出货，
+#    值 [3,1] 的 1 / [3,2] 的 2 是**目标域序号**（1=四号谷地 domain_1、2=武陵 domain_2），
+#    与 FactoryConst.domain2SpHubId(=map02_lv002_sp_hub_1) 对得上：一域一台协议核心。
+#    实测 281 条可出货（与 deliver 物品数的 subType 分布一致）；其中 19 件不在 data/items.json
+#    里（掉落物 / 测试件），名字从 raw/I18nTextTable_CN.json 按 name.id 反查补上，缺的退 id。
+#    ⚠️ FactoryHubCraftTable 是「造建筑」配方，跟出货无关，别拿它当数据源（2026-09-23 已排除）。
+_hub_domain = {"1": "domain_1", "2": "domain_2"}
+_fit_p = os.path.join(ROOT, "raw", "FactoryItemTable.json")
+_itn_p = os.path.join(ROOT, "raw", "I18nTextTable_CN.json")
+_hub_items = {}
+if _baked:  # ⭐v110：烘焙优先（见上），raw 全在本地不参与云端构建
+    _hub_items = _baked.get("hubItems") or {}
+    print("协议核心出货注入(烘焙):", len(_hub_items), "件可出货物品")
+elif os.path.exists(_fit_p):
+    with open(_fit_p, encoding="utf-8") as fh:
+        _fit = json.load(fh)
+    _itn = {}
+    if os.path.exists(_itn_p):
+        with open(_itn_p, encoding="utf-8") as fh:
+            _itn = json.load(fh)
+    _itab_p = os.path.join(ROOT, "raw", "ItemTable.json")
+    _itab = {}
+    if os.path.exists(_itab_p):
+        with open(_itab_p, encoding="utf-8") as fh:
+            _itab = json.load(fh)
+    _items_db = bundle.get("items") or {}
+    _noname = 0
+    for _iid, _iv in _fit.items():
+        _dl = _iv.get("deliverItemTypeList") or []
+        if not _dl:
+            continue
+        _doms = []
+        for _v in _dl:
+            _d = _hub_domain.get(str(_v))
+            if _d and _d not in _doms:
+                _doms.append(_d)
+        if not _doms:
+            continue
+        _nm = (_items_db.get(_iid) or {}).get("name")
+        if not _nm:
+            _nid = ((_itab.get(_iid) or {}).get("name") or {}).get("id")
+            _nm = _itn.get(str(_nid)) if _nid is not None else None
+            if not _nm:
+                _nm = _iid
+                _noname += 1
+        _hub_items[_iid] = {
+            "name": _nm,
+            "rarity": ((_items_db.get(_iid) or {}).get("rarity")
+                       or (_itab.get(_iid) or {}).get("rarity") or 1),
+            "domains": _doms,
+        }
+    print("协议核心出货注入:", len(_hub_items), "件可出货物品 · 名字待补", _noname, "件")
+bundle["hubItems"] = _hub_items
+# 域 → 协议核心建筑 id（页面据此判「这台核心出什么」）；次级核心只进料不出货，不列。
+bundle["hubDomainMachine"] = ( (_baked.get("hubDomainMachine") if _baked else None)
+                              or {"domain_1": "sp_hub_1", "domain_2": "sp_hub_1"} )
+
+payload = json.dumps(bundle, ensure_ascii=False, separators=(",", ":"), indent=0)
+
+# 把 payload 拆成多行。
+# 起因：原本整份数据压成一行，最长一行 69 万字符。真实浏览器没问题，
+# 但内嵌 webview（含本应用的预览面板）遇到这种超长单行会解析失败，
+# 表现是页面只剩静态骨架、tab 和内容全空。
+# 用 indent=0 让每个数组元素/对象成员独占一行：JSON 依然合法、体积只涨约 1%，
+# 但最长行从 69 万降到几千，不会再触发上限。
+payload = "\n".join(l.strip() for l in payload.split("\n"))
+
+# ⚠️ 三引号必须是 raw（r"""），别改回普通 """。
+#    这是**防御性**的，理由说清楚：
+#    - 现状：模板里的 JS 代码只有 3 处反斜杠（/https?:\/\/\S+/ 里的 \/ 和 \S）。普通三引号下
+#      Python 会把它们当"无效转义"、原样保留，产物字节不变，但每次都报 SyntaxWarning。
+#    - 真正的危险：以后再往 JS 里写 \n / \b / \d 这类**有效**转义时，普通三引号会当场把它们
+#      变成真换行 / 退格符 —— 前者让字符串断行、后者静默改变正则语义，产物直接坏掉。
+#      早先为此改用过 String.fromCharCode(10) 绕开，现在用 raw 字符串根治。
+#    - 数据不受影响：模板里的数据是 __PAYLOAD__ 占位符、运行时才替换，
+#      所以数据里那 75 处 \n（游戏文案里的换行）跟这个三引号没关系。
+#    改模板注意两点：内容里不能出现连续三个双引号；结尾不能是反斜杠。
+#
+#    输出用 newline="\n"（LF）：线上托管产物是纯 LF，不写死的话 Windows 会转成 CRLF，
+#    跟线上比对时到处是假差异。
+HTML = r"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta content="width=device-width, initial-scale=1.0" name="viewport">
+<title>终末地基建知识库 · 1.5.3</title>
+<style>
+:root{
+  --bg:#FAFAF7; --panel:#FFFFFF; --line:#E4E2D9; --line2:#D3D1C7;
+  --ink:#23231F; --ink2:#5E5D55; --ink3:#8A897F;
+  --accent:#0F6E56; --accent-bg:#E1F5EE; --accent-line:#B8E2D4;
+  --warn:#9A5B1E; --warn-bg:#FBF0E0;
+  --chip:#F2F1EA;
+  --radius:8px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  background:var(--bg); color:var(--ink);
+  font-family:-apple-system,"Segoe UI","Microsoft YaHei","PingFang SC",sans-serif;
+  font-size:14px; line-height:1.6; -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1180px;margin:0 auto;padding:0 20px 60px}
+
+/* ---- header ---- */
+header{border-bottom:1px solid var(--line);background:var(--panel);position:sticky;top:0;z-index:50}
+.hd{max-width:1180px;margin:0 auto;padding:16px 20px 0}
+.hd-top{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+h1{font-size:19px;font-weight:650;letter-spacing:.2px}
+.ver{font-size:12px;color:var(--ink3);font-variant-numeric:tabular-nums}
+.hd-meta{font-size:11.5px;color:var(--ink3);margin-top:3px}
+nav{display:flex;gap:2px;margin-top:14px;overflow-x:auto}
+nav button{
+  background:none;border:none;border-bottom:2px solid transparent;
+  padding:9px 15px;font-size:13.5px;color:var(--ink2);cursor:pointer;
+  font-family:inherit;white-space:nowrap;border-radius:6px 6px 0 0;transition:.12s;
+}
+nav button:hover{background:var(--chip);color:var(--ink)}
+nav button.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:600}
+
+/* ---- 布局试摆（交互画布） ---- */
+.lo-wrap{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start}
+/* 画布区：格子放大后画布会超过容器宽度，这里兜一层横向滚动（flex 项必须给 min-width:0 才会收缩到内容宽度以下） */
+.lo-stage{min-width:0;max-width:100%;overflow:auto}
+.lo-bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+.lo-pal{flex:1;min-width:220px;max-height:560px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px;background:var(--panel)}
+.lo-btn{display:flex;align-items:center;gap:8px;width:100%;text-align:left;background:none;border:1px solid transparent;border-radius:6px;padding:5px 8px;cursor:pointer;font-family:inherit;font-size:12.5px;color:var(--ink)}
+.lo-btn:hover{background:var(--chip)}
+.lo-btn.sel{background:var(--accent-bg);border-color:var(--accent-line);color:var(--accent);font-weight:600}
+.lo-tag{font-size:10.5px;color:var(--ink3);white-space:nowrap}
+.lo-size{padding:5px 12px;border:1px solid var(--line2);border-radius:20px;background:var(--panel);color:var(--ink2);cursor:pointer;font-family:inherit;font-size:12.5px}
+.lo-size.on{background:var(--accent-bg);border-color:var(--accent-line);color:var(--accent);font-weight:600}
+/* 网格间距 = 格子边长的 CSS 变量 --locell（由 renderLayout 按当前档位写入），
+   和 JS 里的 LOCELL 是同一个数 —— 两处不一致就会出现「图标压在格线外」的错位。 */
+/* 画布外套一层：给「谷地预设存取线」那条外缘带子留位置。
+   ⚠️ .lo-stage 是滚动容器，**上/左方向的溢出滚不到**（会被直接裁掉），所以必须靠 padding 把空间让出来。 */
+.lo-canv{display:inline-block}
+.lo-canvas{position:relative;background:#FBFAF6;border:1px solid var(--line);border-radius:8px;overflow:visible;cursor:crosshair;background-image:linear-gradient(#E7E5DC 1px,transparent 1px),linear-gradient(90deg,#E7E5DC 1px,transparent 1px);background-size:var(--locell,20px) var(--locell,20px)}
+/* ⚠️ 上面必须是 overflow:visible：谷地预设存取线整条画在画布框**外面**（贴外缘、不占格），
+   一旦 overflow:hidden 就整条被裁 —— 和当年「接口标记看不见」是同一个坑。 */
+/* 谷地预设存取线（四号谷地：基地升级后自动铺在基地外侧边缘，玩家不用摆）。
+   颜色沿用数据里的分类色：仓储物流 #A9C7C2；源桩用核心结构的 #C98A5E —— 与基地面积页那张示意图一致。 */
+.lo-pre{position:absolute;background:#A9C7C2;border:1px solid #7FA8A2;border-radius:2px;pointer-events:none;z-index:0}
+.lo-pre-h{background-image:repeating-linear-gradient(90deg,rgba(255,255,255,.5) 0 1px,transparent 1px var(--locell,20px))}
+.lo-pre-v{background-image:repeating-linear-gradient(180deg,rgba(255,255,255,.5) 0 1px,transparent 1px var(--locell,20px))}
+.lo-pre-src{background:#C98A5E;background-image:none;border-color:#9C6742}
+/* ⭐v103→v104 气体散布机环境圈：半透明方形色块 + 同色格线。颜色/浓度经 CSS 变量从 JS 传
+   （--envbg 填充 / --envline 线框与格线 / --envop 浓度 —— 白圈(湿润)单独给高浓度，不然在浅画布上看不见）。
+   pointer-events:none —— 不挡点击 / 框选 / 摆放（游戏里范围圈也不挡）。z-index:0 与预设线同层，在建筑（DOM 在后）之下。 */
+.lo-env{position:absolute;pointer-events:none;z-index:0;border-radius:2px;opacity:var(--envop,.17);
+  background-color:var(--envbg,#3D9FD8);
+  box-shadow:inset 0 0 0 1px var(--envline,#1B6E9E);
+  background-image:linear-gradient(var(--envline,#1B6E9E) 1px,transparent 1px),linear-gradient(90deg,var(--envline,#1B6E9E) 1px,transparent 1px);
+  background-size:var(--locell,20px) var(--locell,20px);background-position:-1px -1px}
+/* ⭐v104 就地选气条：点选散布机后浮在机器正上方（博士：「想要点机器就地选」）。
+   跟随画布坐标（随格子大小/移动/撤销一起重渲染）；z-index 压过建筑层，只占一行高度。 */
+.lo-gasbar{position:absolute;z-index:5;display:flex;align-items:center;gap:4px;
+  background:#FFFDF9;border:1px solid var(--line2);border-radius:6px;padding:3px 6px;
+  box-shadow:0 1px 4px rgba(60,50,30,.18);pointer-events:auto;white-space:nowrap}
+.lo-gasbar b{font-size:11px;color:var(--ink2)}
+.lo-gasbar button{width:18px;height:18px;border-radius:4px;border:1.5px solid;cursor:pointer;padding:0}
+.lo-gasbar button.on{outline:2px solid var(--accent);outline-offset:1px}
+/* ⭐v109 协议核心出货：出料口格**内侧**的指向箭头（博士：「内部空白面积大，选货在内部给个
+   机器口对应的箭头」）。贴在口格靠里一侧、朝外指；点它开物品清单。hitbox 撑到 16px。 */
+.lo-dlv{position:absolute;z-index:4;width:12px;height:12px;transform:translate(-50%,-50%);
+  display:flex;align-items:center;justify-content:center;cursor:pointer;border-radius:3px;
+  color:#C0561F;background:rgba(255,253,249,.9);box-shadow:0 0 0 1px rgba(192,86,31,.5)}
+.lo-dlv:hover{background:#FFF1E6;box-shadow:0 0 0 1px var(--accent),0 0 0 3px rgba(192,86,31,.18)}
+.lo-dlv svg{width:9px;height:9px;display:block}
+.lo-dlv.set{color:#0F6E56;background:rgba(233,248,241,.92);box-shadow:0 0 0 1px rgba(15,110,86,.5)}
+.lo-dlv.set:hover{box-shadow:0 0 0 1px #0F6E56,0 0 0 3px rgba(15,110,86,.18)}
+/* 选中的出货物品名：贴箭头旁边，小字、不挡格 */
+.lo-dlvt{position:absolute;z-index:4;transform:translate(-50%,-50%);pointer-events:none;
+  font-size:10px;line-height:1.1;padding:1px 3px;border-radius:3px;white-space:nowrap;
+  color:#0F5B47;background:rgba(233,248,241,.94);box-shadow:0 0 0 1px rgba(15,110,86,.28);max-width:96px;
+  overflow:hidden;text-overflow:ellipsis}
+/* 出货物品清单浮层：点箭头弹出，浮在机器上方 */
+.lo-dlvpop{position:absolute;z-index:9;width:230px;max-height:262px;overflow:auto;
+  background:#FFFDF9;border:1px solid var(--line2);border-radius:8px;padding:6px;
+  box-shadow:0 4px 14px rgba(60,50,30,.22)}
+.lo-dlvpop .hd{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--ink2);
+  padding:1px 2px 5px;border-bottom:1px solid var(--line2);margin-bottom:5px;position:sticky;top:-6px;
+  background:#FFFDF9;border-radius:6px 6px 0 0}
+.lo-dlvpop .hd b{color:var(--ink)}
+.lo-dlvpop .hd .x{margin-left:auto;cursor:pointer;color:var(--ink3);padding:0 3px;font-size:13px;line-height:1}
+.lo-dlvpop .hd .x:hover{color:var(--ink)}
+.lo-dlvpop .it{display:flex;align-items:center;gap:6px;padding:3px 5px;border-radius:5px;
+  cursor:pointer;font-size:12px}
+.lo-dlvpop .it:hover{background:var(--accent-bg)}
+.lo-dlvpop .it.on{background:#E9F8F1;box-shadow:inset 0 0 0 1px rgba(15,110,86,.32)}
+.lo-dlvpop .it .rr{font-size:10px;color:#C9A227;letter-spacing:-1px;flex:none;width:34px}
+.lo-dlvpop .it .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lo-dlvpop .it .ck{color:#0F6E56;flex:none;font-size:11px}
+.lo-dlvpop .em{font-size:11.5px;color:var(--ink3);padding:6px 4px}
+/* 配方选择块（选中生产设施时出现在左栏顶部） */
+.lo-rp{border:1px solid var(--accent-line);background:var(--accent-bg);border-radius:8px;padding:8px;margin-bottom:8px}
+.lo-rp select{width:100%}
+/* 评价函数 / 方案并排比较（2026-09-21 晚 · 路线图 ①②） */
+.lo-score{border:1px solid var(--line2);background:var(--panel);border-radius:8px;padding:8px;margin:8px 0 4px}
+.lo-scv{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;margin:2px 0 6px}
+.lo-scn{font-size:26px;font-weight:700;color:var(--accent);line-height:1}
+.lo-scs{font-size:12px;color:var(--ink3)}
+.lo-bar-o{display:inline-block;width:56px;height:7px;background:var(--line2);border-radius:4px;vertical-align:middle;margin-left:6px;overflow:hidden}
+.lo-bar-i{display:block;height:7px;border-radius:4px}
+.lo-cmp{border:1px solid var(--line2);background:var(--panel);border-radius:8px;padding:8px;margin-top:10px}
+.lo-tb{width:100%;border-collapse:collapse;font-size:11.5px}
+.lo-tb td{border:1px solid var(--line2);padding:3px 6px;vertical-align:top}
+.lo-td-h{color:var(--ink3);white-space:nowrap}
+.lo-best{color:var(--accent)}
+.lo-x{background:none;border:none;color:var(--ink3);cursor:pointer;font-family:inherit;font-size:12px;padding:0 3px;margin-left:4px}
+.lo-x:hover{color:#C0392B}
+/* 设施上标出的产出物品名（选了配方才有）—— 布局图上一眼看出这台在做什么 */
+.lo-prod{font-size:calc(var(--locell,20px) * .5);font-weight:600;color:#8A5A2B;white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis}
+/* 接口按配方分「走 / 不走」：走的加亮圈，不走的淡下去 */
+.lo-port.off{opacity:.28}
+.lo-port.use{box-shadow:0 0 0 1px #fff,0 0 0 2.5px #2E8B9E}
+/* 产线闭环（排布器）的输入控件与报告 */
+.lo-num{width:76px;padding:5px 8px;border:1px solid var(--line2);border-radius:6px;background:var(--panel);color:var(--ink);font-family:inherit;font-size:12.5px}
+/* ⑥-1 收货物选择网格（2026-09-22 博士：「像游戏里那样给我个传输物品的选择器」）——
+   候选卡片（稀有度色条 + 名 + 数字）点选切换；选中态沿用 .lo-btn.sel 的 accent 范式，主题自适应 */
+.lo-pickgrid{display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 4px}
+.lo-pickcard{position:relative;min-width:150px;border:1px solid var(--line2);border-left-width:4px;border-radius:8px;background:var(--panel);padding:5px 10px 6px;cursor:pointer;font-family:inherit;text-align:left;transition:.12s;color:var(--ink)}
+.lo-pickcard:hover{background:var(--chip)}
+.lo-pickcard.on{border-color:var(--accent-line);background:var(--accent-bg)}
+.lo-pickck{position:absolute;top:3px;right:8px;font-size:12px;font-weight:700;color:var(--accent);display:none}
+.lo-pickcard.on .lo-pickck{display:inline}
+.lo-picknm{display:block;font-size:13px;font-weight:650;color:var(--ink);padding-right:14px}
+.lo-pickcard.on .lo-picknm{color:var(--accent)}
+.lo-pickmeta{display:block;font-size:11px;color:var(--ink2);margin-top:2px;line-height:1.5}
+/* ⭐v82 全库折叠区：滚动容器 + 折叠摘要（游戏里就是一份长列表，全平铺会把面板撑爆） */
+.lo-pickscroll{max-height:300px;overflow-y:auto;margin-top:4px;padding-right:2px}
+.lo-pickfold summary{user-select:none;line-height:1.6}
+.lo-plan{border-color:var(--line2);background:var(--panel)}
+.lo-plan .c-sub span{white-space:normal}
+.lo-cell{position:absolute;border:1.5px solid var(--accent);background:rgba(15,110,86,.10);border-radius:3px;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--accent);overflow:visible}
+/* ⚠️ 上面必须是 overflow:visible，别改回 hidden。
+   接口标记是压在**格线上**的（一半在建筑里、一半挑出去），一旦父级 clip，标记会被裁成贴着边框的
+   一两条细线 —— 就是 2026-09-21 博士报的「物品进出口看不见」。名字自己带省略号，不靠父级裁。 */
+/* 字形/名字字号跟着格子等比走：14px 格时就是原来的 13px / 8px，放大格子后不会显得空。 */
+.lo-glyph{font-size:calc(var(--locell,20px) * .93);line-height:1;font-weight:600}
+.lo-name{font-size:calc(var(--locell,20px) * .57);color:var(--ink2);font-weight:400;white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis}
+/* 接口标记：贴在建筑**内侧**、紧挨边框画（不是压格线）。
+   为什么要贴内侧：压格线时标记有一半伸到邻格里，一旦邻格放了传送带/管道就会互相压字（博士 2026-09-21 指出）。
+   贴内侧后标记外沿离自己的边框只有 0.5px、离邻格还有 2.5px 以上，任何情况下都不会重叠。
+   颜色/形状不变：青=进料、橙=出料；方=传送带口、圆=管道口。 */
+.lo-port{position:absolute;width:7px;height:7px;border-radius:1px;transform:translate(-50%,-50%);box-shadow:0 0 0 1px #fff;z-index:3}
+.lo-port.pipe{border-radius:50%}
+/* 已接：正对外侧那格放着同类物流件（传送带口↔传送带、管道口↔管道） */
+.lo-port.on{box-shadow:0 0 0 1px #fff,0 0 0 3px rgba(15,110,86,.32)}
+/* 物流件（1×1 可摆放件）：带系=方角青，管系=圆角紫 */
+.lo-cell.lgb{border-color:#2E8B9E;background:rgba(46,139,158,.16);color:#186C7D}
+.lo-cell.lgp{border-color:#7B62C9;background:rgba(123,98,201,.16);color:#5A46A6}
+/* 物流件的接口图（进/出边 + 功能字形或流向箭头）自己画成 SVG，铺满格内 */
+.lo-cell > svg{position:absolute;left:0;top:0;width:100%;height:100%;display:block;overflow:visible}
+/* 选中态（框选/单选共用）：暖色描边，和默认的墨绿区分开 */
+.lo-cell.sel{border-color:var(--warn);background:rgba(154,91,30,.13);color:var(--warn);box-shadow:0 0 0 2px rgba(154,91,30,.22)}
+/* 存取线未连接：跟游戏一样标红（博士 2026-09-21 实拍：游戏把没连上的预览块变红并提示）。
+   写在 .sel 之后 —— 未连接比"选中"更该被看见。 */
+.lo-cell.bad{border:2px dashed #C0392B;background:repeating-linear-gradient(45deg,rgba(192,57,43,.16) 0 6px,rgba(192,57,43,.36) 6px 12px);color:#8E2418}
+/* ⚠️ 选中态（.sel）是橙色，未连接（.bad）必须是与之拉开距离的斜纹红 ——
+   博士曾把"刚摆完还在选中态"的橙色误读成"没接上的红"。别把两者改成相近的颜色。 */
+/* 局部锁定（路线图 ⑤-1）：锁 =「这台我满意了，别动它」。
+   双线铁灰描边 + 右上角小锁，和选中（橙）/未连接（红）都区分得开。 */
+.lo-cell.lock{border-style:double;border-width:3px;border-color:#4A5560;box-shadow:0 0 0 1px rgba(74,85,96,.22)}
+.lo-cell.lock::after{content:'🔒';position:absolute;right:1px;top:0;line-height:1;pointer-events:none;font-size:calc(var(--locell,20px) * .45)}
+.lo-sel{padding:3px 8px;border:1px solid var(--line2);border-radius:6px;background:var(--panel);color:var(--ink);font-family:inherit;font-size:12px;max-width:160px}
+/* 谷地存取线示意图：粗条 = 自动铺设的存取线，角上的方块 = 源桩 */
+.bus-bar{fill:#A9C7C2}
+.bus-src{fill:#C98A5E}
+/* 框选拖拽中的橡皮筋矩形 */
+.lo-band{position:absolute;border:1.5px dashed var(--warn);background:rgba(154,91,30,.08);border-radius:3px;pointer-events:none}
+.lo-sep{width:1px;height:18px;background:var(--line2);margin:0 2px}
+.lo-size.off{opacity:.45}
+.lo-msg{color:var(--warn);font-weight:550}
+.lo-msg:empty{display:none}
+/* 左栏顶部：说明默认列了哪几类 */
+.lo-ph{font-size:11.5px;color:var(--ink3);padding:1px 2px 8px;line-height:1.65;border-bottom:1px solid var(--line);margin-bottom:6px}
+.lo-ph b{color:var(--ink2)}
+.lo-reset{background:none;border:none;color:var(--accent);cursor:pointer;font-family:inherit;font-size:11.5px;padding:0 2px;text-decoration:underline}
+/* 接口 / 物流件图例 */
+.lo-legend{display:flex;gap:14px;flex-wrap:wrap;align-items:center;font-size:11.5px;color:var(--ink3);margin:0 0 10px}
+.lo-legend span{display:inline-flex;align-items:center;gap:4px}
+.lo-legend i{display:inline-block;width:8px;height:8px;border-radius:1px}
+.lo-legend i.pipe{border-radius:50%}
+.lo-legend i.inp{background:#186C7D}
+.lo-legend i.outp{background:#C0561F}
+.lo-legend i.bg{background:#2E8B9E}
+.lo-legend i.pg{background:#7B62C9;border-radius:50%}
+
+/* ---- controls ---- */
+.bar{display:flex;gap:10px;margin:22px 0 16px;flex-wrap:wrap;align-items:center}
+input[type=search],select{
+  font-family:inherit;font-size:13.5px;padding:9px 13px;border:1px solid var(--line2);
+  border-radius:var(--radius);background:var(--panel);color:var(--ink);outline:none;
+}
+input[type=search]{flex:1;min-width:220px}
+input[type=search]:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-bg)}
+.count{font-size:12.5px;color:var(--ink3);margin-left:auto;font-variant-numeric:tabular-nums}
+
+/* ---- cards ---- */
+.list{display:flex;flex-direction:column;gap:9px}
+.card{
+  background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+  padding:14px 16px;cursor:pointer;transition:.12s;
+}
+.card:hover{border-color:var(--accent-line);box-shadow:0 1px 6px rgba(15,110,86,.07)}
+.card.open{border-color:var(--accent-line);box-shadow:0 2px 12px rgba(15,110,86,.09)}
+.c-top{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.c-name{font-size:15px;font-weight:600}
+.c-id{font-size:11.5px;color:var(--ink3);font-family:ui-monospace,Consolas,monospace}
+.c-cat{
+  font-size:11px;padding:2px 8px;border-radius:20px;background:var(--chip);
+  color:var(--ink2);white-space:nowrap;
+}
+.c-cat.acc{background:var(--accent-bg);color:var(--accent)}
+.spacer{flex:1}
+.c-sub{font-size:12.5px;color:var(--ink2);margin-top:6px;display:flex;gap:14px;flex-wrap:wrap}
+.c-desc{font-size:12.5px;color:var(--ink2);margin-top:8px;white-space:pre-wrap;line-height:1.7}
+.star{
+  font-size:12.5px;margin-top:8px;padding:7px 11px;background:var(--accent-bg);
+  border-left:2.5px solid var(--accent);border-radius:0 5px 5px 0;color:var(--accent);
+  font-weight:550;
+}
+.flag{font-size:11px;padding:2px 8px;border-radius:20px;background:var(--warn-bg);color:var(--warn);white-space:nowrap}
+
+/* detail */
+.detail{margin-top:14px;padding-top:13px;border-top:1px dashed var(--line)}
+.d-sec{margin-top:12px}
+.d-sec:first-child{margin-top:0}
+.d-h{
+  font-size:11.5px;color:var(--ink3);letter-spacing:.6px;margin-bottom:7px;
+  text-transform:uppercase;font-weight:600;
+}
+.row{display:flex;gap:9px;align-items:baseline;padding:5px 0;font-size:12.5px;flex-wrap:wrap}
+.row+.row{border-top:1px solid #F2F1EA}
+.tag{font-size:11px;padding:2px 7px;border-radius:4px;background:var(--chip);color:var(--ink2);white-space:nowrap}
+.tag.acc{background:var(--accent-bg);color:var(--accent)}
+.arrow{color:var(--ink3);font-size:12px}
+.formula{
+  display:flex;gap:10px;align-items:center;flex-wrap:wrap;
+  background:#FBFAF6;border:1px solid var(--line);border-radius:6px;padding:9px 12px;margin-top:6px;
+}
+.chain{font-size:12.5px;color:var(--ink2)}
+.chain b{color:var(--ink);font-weight:600}
+.empty{text-align:center;padding:50px 20px;color:var(--ink3);font-size:13.5px}
+
+/* ---- 占地蓝图 ---- */
+pre.grid{
+  background:#FBFAF6;border:1px solid var(--line);border-radius:6px;
+  padding:12px 14px;margin-top:7px;overflow-x:auto;
+  font-family:ui-monospace,Consolas,"Cascadia Mono",monospace;
+  font-size:12px;line-height:1.55;color:var(--ink);white-space:pre;
+}
+code{
+  font-family:ui-monospace,Consolas,monospace;font-size:11.5px;
+  background:var(--chip);padding:1px 5px;border-radius:3px;color:#7A4A12;
+}
+
+/* ---- 物流规则 ---- */
+.lg-caps{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-bottom:6px}
+.lg-cap{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px}
+.lg-cap-n{font-size:12.5px;color:var(--ink2);font-weight:600}
+.lg-cap-v{font-size:24px;font-weight:650;color:var(--accent);line-height:1.25;font-variant-numeric:tabular-nums}
+.lg-cap-v span{font-size:12px;font-weight:400;color:var(--ink3)}
+.lg-cap-v2{font-size:12.5px;color:var(--ink2);font-variant-numeric:tabular-nums}
+.lg-cap-s{font-size:11px;color:var(--ink3);margin-top:6px;font-family:ui-monospace,Consolas,monospace}
+/* 概览卡（大数字 + 小标签），玩法规则页顶部用 */
+.lg-capn{font-size:26px;font-weight:650;color:var(--accent);line-height:1.25;font-variant-numeric:tabular-nums}
+.lg-capl{font-size:12.5px;color:var(--ink2);margin-top:2px}
+.lg-ent{border-bottom:1px solid var(--line);padding:11px 2px}
+.lg-ent:last-child{border-bottom:none}
+.lg-ent-a{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.lg-ent-a b{font-size:14px;font-weight:600}
+.lg-tag{font-size:11px;padding:1px 7px;border-radius:10px;background:var(--accent-bg);color:var(--accent);border:1px solid var(--accent-line)}
+.lg-tag.pipe{background:#E8F0FB;color:#2B5B9E;border-color:#C4D8F2}
+.lg-cat{font-size:11.5px;color:var(--ink3)}
+.lg-ent-b{display:flex;gap:16px;flex-wrap:wrap;font-size:12.5px;color:var(--ink2);margin-top:5px;font-variant-numeric:tabular-nums}
+.lg-ent-b b{color:var(--ink);font-weight:600}
+.lg-tb{width:100%;border-collapse:collapse;margin-top:7px;font-size:12.5px}
+.lg-tb th{
+  text-align:left;font-weight:600;color:var(--ink3);font-size:11.5px;
+  padding:6px 8px;border-bottom:1px solid var(--line2);white-space:nowrap;
+}
+.lg-tb td{padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+.lg-tb tr:last-child td{border-bottom:none}
+.lg-tb .r{text-align:right;font-variant-numeric:tabular-nums}
+.lg-tb td.u{color:var(--ink3);font-size:11.5px}
+.lg-tb tbody tr:hover{background:#FBFAF6}
+.lg-tb .same{color:var(--warn)}
+.lg-tb td code{font-size:11px}
+
+/* ---- 玩法规则 ---- */
+.rl-note{margin:14px 0 18px;padding:12px 14px;background:#FFFDF5;border:1px solid var(--line2);
+  border-left:3px solid var(--warn);border-radius:6px;font-size:12.5px;line-height:1.85;color:var(--ink2)}
+.rl-card{background:#fff;border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin-bottom:16px}
+.rl-head{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:10px}
+.rl-title{font-size:14.5px;font-weight:600;color:var(--ink);flex:1;min-width:220px}
+.rl-tag{font-size:11px;padding:2.5px 8px;border-radius:4px;font-weight:600;white-space:nowrap;
+  background:#EAF3EC;color:#2C6B45;border:1px solid #C9E2D2}
+.rl-tag.warn{background:#FFF3E4;color:#9A5A12;border-color:#F0D6AE}
+.rl-verdict{font-size:11.5px;padding:2.5px 9px;border-radius:11px;white-space:nowrap;
+  background:#EAF3EC;color:#2C6B45;border:1px solid #C9E2D2}
+.rl-verdict.warn{background:#FFF3E4;color:#9A5A12;border-color:#F0D6AE}
+.rl-detail{font-size:12.5px;line-height:1.9;color:var(--ink2);margin:7px 0}
+.rl-caveat{margin:9px 0;padding:9px 12px;background:#FFF8F0;border-left:3px solid #D99B4A;
+  border-radius:5px;font-size:12px;line-height:1.85;color:#8A5A20}
+.rl-sub{margin:16px 0 6px;font-size:12.5px;font-weight:600;color:var(--ink);
+  padding-left:8px;border-left:3px solid var(--accent)}
+.rl-cfg{margin:8px 0;padding:9px 12px;background:#FAF9F5;border:1px solid var(--line);border-radius:6px;font-size:12px;line-height:1.8;color:var(--ink2)}
+.rl-ev{margin:10px 0 4px;border:1px solid var(--line);border-radius:6px;background:#FCFBF8}
+.rl-ev>summary{cursor:pointer;padding:8px 12px;font-size:12px;color:var(--ink3);font-weight:600;list-style:none}
+.rl-ev>summary::-webkit-details-marker{display:none}
+.rl-ev>summary:before{content:'▸ ';color:var(--accent)}
+.rl-ev[open]>summary:before{content:'▾ '}
+.rl-evbody{padding:2px 12px 10px}
+/* v101：布局试摆帮助块折叠 —— 整块黄区默认收起，summary 常显标题行 */
+details.lo-help>summary{cursor:pointer;user-select:none;list-style:none;margin:-2px 0 4px}
+details.lo-help>summary::-webkit-details-marker{display:none}
+details.lo-help>summary:before{content:'▸ ';color:var(--accent)}
+details.lo-help[open]>summary:before{content:'▾ '}
+.rl-evrow{display:flex;gap:10px;align-items:flex-start;padding:5px 0;border-top:1px dashed var(--line2);font-size:12px;line-height:1.75;color:var(--ink2)}
+.rl-src{flex:0 0 auto;font-family:ui-monospace,Consolas,monospace;font-size:10.5px;color:#6B7A8F;
+  background:#EFF2F6;padding:1.5px 6px;border-radius:3px;white-space:nowrap;margin-top:1px}
+
+/* overview */
+.ov-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:24px}
+.ov-card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:15px 17px}
+.ov-num{font-size:26px;font-weight:650;color:var(--accent);font-variant-numeric:tabular-nums;line-height:1.25}
+.ov-lbl{font-size:12.5px;color:var(--ink2);margin-top:2px}
+.note{
+  background:var(--warn-bg);border:1px solid #EFDCC2;border-left:3px solid var(--warn);
+  border-radius:0 var(--radius) var(--radius) 0;padding:13px 16px;font-size:12.5px;
+  color:#6E4315;margin-bottom:18px;line-height:1.75;
+}
+.note b{color:var(--warn)}
+footer{font-size:11.5px;color:var(--ink3);margin-top:36px;padding-top:18px;border-top:1px solid var(--line);line-height:1.8}
+@media(max-width:640px){
+  .wrap{padding:0 14px 40px}
+  .hd{padding:14px 14px 0}
+  h1{font-size:17px}
+  .c-sub{gap:10px}
+  nav button{padding:9px 11px;font-size:13px}
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="hd">
+    <div class="hd-top">
+      <h1>终末地基建知识库</h1>
+      <span class="ver" id="ver"></span>
+    </div>
+    <div class="hd-meta" id="hdmeta"></div>
+    <nav id="nav"></nav>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="bar">
+    <input id="q" placeholder="搜索名称、ID、描述…" type="search">
+    <select id="f1"></select>
+    <select id="f2" style="display:none"></select>
+    <span class="count" id="cnt"></span>
+  </div>
+  <div id="out"></div>
+  <footer id="foot"></footer>
+</div>
+
+<script>
+const DB = __PAYLOAD__;
+
+const TABS = [
+  {k:'building', label:'建筑设施'},
+  {k:'rules',    label:'玩法规则'},
+  {k:'blueprint',label:'占地蓝图'},
+  {k:'layout',  label:'布局试摆'},
+  {k:'base',     label:'基地面积'},
+  {k:'logistics',label:'物流规则'},
+  {k:'mechanics',label:'机制数值'},
+  {k:'recipe',   label:'生产配方'},
+  {k:'build',    label:'建造配方'},
+  {k:'manual',   label:'手工配方'},
+  {k:'item',     label:'物品链路'},
+  {k:'overview', label:'数据概览'},
+];
+let tab='building', kw='', f1='', f2='', openSet=new Set();
+
+const $=s=>document.querySelector(s);
+const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const domOf=b=>(b.domainNames&&b.domainNames.length)?b.domainNames.join('/'):'全地区通用';
+
+/* ---------- 初始化头尾 ---------- */
+$('#ver').textContent = DB.meta.gameVersion + ' · ' + DB.meta.dataVersion.split('@')[1];
+$('#hdmeta').textContent = '游戏 '+DB.meta.gameVersion+'　|　数据域 '+DB.meta.dataDomain+'　|　构建 '+DB.meta.builtAt;
+$('#foot').innerHTML =
+  '数据来源：<a href="'+esc(DB.meta.source.match(/https?:\/\/\S+/)?.[0]||'#')+'" style="color:var(--accent)">AKEDatabase</a>'+
+  '（'+esc(DB.meta.dataDomain)+'）<br>'+
+  esc(DB.meta.licenseNote)+'<br>'+
+  '<span style="color:#9A5B1E">⚠ '+esc(DB.meta.caveat)+'</span>';
+
+/* ---------- 渲染 ---------- */
+function navHtml(){
+  return TABS.map(t=>`<button data-k="${t.k}" class="${t.k===tab?'on':''}">${t.label}</button>`).join('');
+}
+$('#nav').innerHTML = navHtml();
+$('#nav').addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(!b) return;
+  tab=b.dataset.k; kw=''; f1=''; f2=''; openSet.clear();
+  $('#q').value='';
+  $('#nav').innerHTML=navHtml(); render();
+});
+
+/* ---------- 筛选项：一律从数据里推导，不写死 ----------
+   写死过一次就翻过车（配方页列了 8 个分类，实际只有 3 个有数据；
+   角色页漏了「四号谷地」）。宁可运行时算，也不要维护一份会和数据脱节的白名单。 */
+function uniq(arr){
+  const seen=new Set(), out=[];
+  arr.forEach(v=>{ if(v&&!seen.has(v)){ seen.add(v); out.push(v); } });
+  return out.sort((a,b)=>String(a).localeCompare(String(b),'zh'));
+}
+function opt(vals, emptyLabel){
+  return ['<option value="">'+emptyLabel+'</option>']
+    .concat(vals.map(v=>`<option value="${esc(v)}">${esc(v)}</option>`)).join('');
+}
+/* 试摆的分类下拉只列「选得出东西」的分类 —— 拉黑清单（LO_SKIP_IDS）可能整类清空
+   （博士 2026-09-21 把「物流辅助」下的洒水机/给水器/滑索架/便捷存取站/留言信标全部点名去掉），
+   留一个空选项只会让人点进去看到「没有匹配的分类」。回归测试也要求每个筛选项都有结果。 */
+function loCatOptions(){
+  return uniq(DB.blueprint.buildings
+    .filter(b=>LO_SKIP_IDS.indexOf(b.id)<0 && !(LO_HIDE_NOP&&LO_IS_NOP(b)))
+    .map(b=>b.categoryName));
+}
+function f1Html(){
+  if(tab==='building')
+    return opt(uniq(DB.buildings.map(b=>b.categoryName)), '全部分类');
+  if(tab==='blueprint')
+    return opt(['有接口','无接口','有传送带口','有管道口','有数量上限']
+      .concat(uniq(DB.blueprint.buildings.flatMap(b=>b.domainNames||[]))), '全部筛选');
+  if(tab==='base')
+    return opt(uniq(DB.bases.zones.map(z=>z.domainName)), '全部据点');
+  if(tab==='layout')
+    return opt(loCatOptions().concat(['物流件']), '默认：生产·电力·存储物流·物流件');
+  if(tab==='logistics')
+    return opt(uniq(DB.logistics.constants.map(c=>c.group))
+      .concat(uniq(DB.logistics.entities.map(e=>e.category))), '全部筛选');
+  if(tab==='rules')
+    return opt(uniq((DB.rules?DB.rules.rules:[]).map(ruleGroup)), '全部规则');
+  if(tab==='recipe')
+    return opt(uniq(DB.machine_recipes.map(r=>r.machineCategory).filter(Boolean)), '按设备分类');
+  if(tab==='manual')
+    return opt(uniq(DB.manual_recipes.map(r=>r.domainName)), '全部地区');
+  if(tab==='item')
+    return opt(uniq(Object.values(DB.items).map(v=>'R'+v.rarity))
+      .sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})), '全部稀有度');
+  return '';
+}
+function refreshFilters(){
+  const h=f1Html();
+  const s=$('#f1');
+  s.style.display=h?'':'none';
+  s.innerHTML=h;
+  if(h) s.value=f1;
+}
+
+function mechLabel(mm){
+  const p=[];
+  if(mm.rangeMeters!=null)   p.push('作用范围 '+mm.rangeMeters+'m');
+  if(mm.intervalSeconds!=null)p.push('间隔 '+mm.intervalSeconds+' 秒');
+  if(mm.attack!=null)        p.push('攻击力 '+mm.attack);
+  return p.join(' / ');
+}
+
+function renderBuilding(){
+  const arr=DB.buildings.filter(b=>{
+    if(f1 && b.categoryName!==f1) return false;
+    if(kw){
+      const s=kw.toLowerCase();
+      if(!(b.name.toLowerCase().includes(s)||b.id.toLowerCase().includes(s)||
+           (b.desc||'').toLowerCase().includes(s))) return false;
+    }
+    return true;
+  });
+  if(!arr.length) return `<div class="empty">没有匹配的建筑</div>`;
+  return `<div class="list">`+arr.map(b=>{
+    const o=openSet.has('b:'+b.id);
+    return `<div class="card ${o?'open':''}" data-id="b:${esc(b.id)}">
+      <div class="c-top">
+        <span class="c-name">${esc(b.name)}</span>
+        <span class="c-id">${esc(b.id)}</span>
+        <span class="spacer"></span>
+        <span class="c-cat ${b.domains.length?'acc':''}">${esc(domOf(b))}</span>
+        <span class="c-cat">${esc(b.categoryName)}</span>
+        ${b.hasPlaceLimit?'<span class="flag">有数量上限</span>':''}
+      </div>
+      <div class="c-sub">
+        <span>占地 ${esc(b.footprint)}</span>
+        <span>${b.needPower?'耗电 '+b.powerConsume:'无需通电'}</span>
+        <span>协议容量 ${b.bandwidth}</span>
+      </div>
+      ${b.mechanics&&Object.keys(b.mechanics).length?`<div class="star">★ ${esc(mechLabel(b.mechanics))}</div>`:''}
+      ${o?`
+      <div class="detail">
+        ${b.desc?`<div class="d-sec"><div class="d-h">游戏内描述</div><div class="c-desc">${esc(b.desc)}</div></div>`:''}
+        <div class="d-sec"><div class="d-h">属性</div>
+          <div class="row"><span class="tag">分类 ID</span><span>${esc(b.category||'—')}</span></div>
+          <div class="row"><span class="tag">占地 宽×深×高</span><span>${esc(b.footprint)}</span></div>
+          <div class="row"><span class="tag">耗电 / 协议容量</span><span>${b.needPower?b.powerConsume:'—'} / ${b.bandwidth}</span></div>
+          <div class="row"><span class="tag">协议容量说明</span><span>在集成核心区域外放置设备会消耗本地区协议容量，达到上限后无法再放置新设备</span></div>
+          <div class="row"><span class="tag">液体接口</span><span>${b.liquidEnabled?'有':'无'}</span></div>
+          <div class="row"><span class="tag">放置限制</span><span>${b.hasPlaceLimit?'有数量上限':'无'}</span></div>
+        </div>
+      </div>`:''}
+    </div>`;
+  }).join('')+`</div>`;
+}
+
+/* ---------- 玩法规则 ---------- */
+function ruleGroup(r){
+  if(r.id==='rule_core_area_definition'||r.id==='rule_belt_core_only') return '区域规则';
+  if(r.id==='rule_mining_outside_core') return '开采规则';
+  return '运输规则';
+}
+function evHtml(ev){
+  if(!ev||!ev.length) return '';
+  return `<details class="rl-ev"><summary>证据 ${ev.length} 条（点开复核）</summary><div class="rl-evbody">`+
+    ev.map(e=>{
+      const src = e.table ? `<span class="rl-src">${esc(e.table)}</span>` : `<span class="rl-src">文案 ${esc(String(e.id))}</span>`;
+      const txt = e.text || (e.field?`${e.field} = ${esc(String(e.value===undefined?'':e.value))}`:'');
+      return `<div class="rl-evrow">${src}<span>${esc(txt)}</span></div>`;
+    }).join('')+`</div></details>`;
+}
+function renderRules(){
+  const R = DB.rules;
+  if(!R) return `<div class="empty">缺少 rules.json</div>`;
+  const rules=(R.rules||[]).filter(r=>{
+    if(f1 && ruleGroup(r)!==f1) return false;
+    if(kw){ const s=(r.title+' '+(r.detail||'')+' '+(r.verdict||'')).toLowerCase(); if(s.indexOf(kw.toLowerCase())<0) return false; }
+    return true;
+  });
+  const H=[];
+  const all=R.rules||[];
+  const verified=all.filter(r=>/成立/.test(r.verdict||'')).length;
+  const evCount=all.reduce((n,r)=>n+((r.evidence||[]).length),0);
+  H.push(`<div class="lg-caps">
+    <div class="lg-cap"><div class="lg-capn">${all.length}</div><div class="lg-capl">机制规则</div></div>
+    <div class="lg-cap"><div class="lg-capn">${verified}</div><div class="lg-capl">数据证实成立</div></div>
+    <div class="lg-cap"><div class="lg-capn">${evCount}</div><div class="lg-capl">原文证据条目</div></div>
+  </div>`);
+  H.push(`<div class="rl-note">本页只收录<strong>能从配置表字段或游戏内文案逐条取证</strong>的规则。
+   每条规则下方「证据」可展开，直接看原始表名与文案 ID。<br>
+   <strong>读法：</strong>文案（I18nTextTable_CN）是规则正文，配置表是数值与端口构成。两者对不上时以文案为准并标注存疑。</div>`);
+
+  rules.forEach(r=>{
+    const v = r.verdict||'';
+    const good = /成立|基本成立/.test(v);
+    H.push(`<div class="rl-card">
+      <div class="rl-head">
+        <span class="rl-tag ${good?'ok':'warn'}">${esc(ruleGroup(r))}</span>
+        <span class="rl-title">${esc(r.title)}</span>
+        <span class="rl-verdict ${good?'ok':'warn'}">${esc(v)}</span>
+      </div>`);
+    if(r.detail) H.push(`<div class="rl-detail">${esc(r.detail)}</div>`);
+    if(r.why)    H.push(`<div class="rl-detail">${esc(r.why)}</div>`);
+    if(r.caveat) H.push(`<div class="rl-caveat"><strong>⚠ 注意：</strong>${esc(r.caveat)}</div>`);
+    if(r.corollary) H.push(`<div class="rl-detail"><strong>推论：</strong>${esc(r.corollary)}</div>`);
+    if(r.keyCorollary) H.push(`<div class="rl-detail"><strong>关键推论：</strong>${esc(r.keyCorollary)}</div>`);
+    if(r.requirement) H.push(`<div class="rl-detail"><strong>前提：</strong>${esc(r.requirement)}</div>`);
+    if(r.sameForPump) H.push(`<div class="rl-detail">${esc(r.sameForPump)}</div>`);
+    if(r.notWireless&&r.notWireless.length){
+      H.push(`<div class="rl-sub">不走无线传输的设备（反例）</div><table class="lg-tb"><tbody>`+
+        r.notWireless.map(x=>`<tr><td class="same">${esc(x.building)}</td><td>${esc(x.why)}</td></tr>`).join('')+
+        `</tbody></table>`);
+    }
+    if(r.paths&&r.paths.length){
+      r.paths.forEach(p=>{
+        H.push(`<div class="rl-sub">通路：${esc(p.source)}</div>
+          <div class="rl-detail">${esc(p.mechanism)}</div>
+          ${p.modes?`<div class="rl-detail"><strong>模式：</strong>${esc(p.modes)}</div>`:''}
+          ${p.requirement?`<div class="rl-detail"><strong>前提：</strong>${esc(p.requirement)}</div>`:''}
+          ${p.config?`<div class="rl-cfg"><span class="rl-src">${esc(p.config.table)}</span>${esc(p.config.note||'')}
+            ${p.config.fields?`<table class="lg-tb"><tbody>`+Object.keys(p.config.fields).map(k=>`<tr><td class="same">${esc(k)}</td><td>${esc(String(p.config.fields[k]))}</td></tr>`).join('')+`</tbody></table>`:''}
+          </div>`:''}
+          ${evHtml(p.evidence)}`);
+      });
+    }
+    if(r.purePipelines&&r.purePipelines.length){
+      H.push(`<div class="rl-sub">纯管道设备（无任何传送带接口）</div><table class="lg-tb"><thead><tr><th>设备</th><th>端口</th></tr></thead><tbody>`+
+        r.purePipelines.map(x=>`<tr><td class="same">${esc(x.building)}</td><td>${esc(x.ports)}</td></tr>`).join('')+
+        `</tbody></table>`);
+    }
+    if(r.mixedBuildings&&r.mixedBuildings.length){
+      H.push(`<div class="rl-sub">混合设备（带口 + 管口并存，流体侧仍必须走管）</div><table class="lg-tb"><thead><tr><th>设备</th><th>端口</th></tr></thead><tbody>`+
+        r.mixedBuildings.map(x=>`<tr><td class="same">${esc(x.building)}</td><td>${esc(x.ports)}</td></tr>`).join('')+
+        `</tbody></table>`);
+    }
+    if(r.crossRegionTool){
+      const t=r.crossRegionTool;
+      H.push(`<div class="rl-sub">跨区域工具：${esc(t.name)}</div>
+        <div class="rl-detail">${esc(t.why)}　最大配对长度 <strong>${t.maxLength}</strong> 米</div>
+        ${evHtml(t.evidence)}`);
+    }
+    if(r.regionLimit){
+      H.push(`<div class="rl-sub">附加限制：${esc(r.regionLimit.title)}</div>${evHtml(r.regionLimit.evidence)}`);
+    }
+    if(r.corollaryEvidence) H.push(evHtml(r.corollaryEvidence));
+    H.push(evHtml(r.evidence));
+    H.push(`</div>`);
+  });
+  if(!rules.length) H.push(`<div class="empty">没有匹配的规则</div>`);
+  return H.join('');
+}
+
+/* ---------- 物流规则 ---------- */
+function renderLogistics(){
+  const L = DB.logistics;
+  if(!L) return `<div class="empty">缺少 logistics.json</div>`;
+
+  // --- 吞吐速查 ---
+  const tp = (L.throughputSummary||[]).map(t=>`
+    <div class="lg-cap">
+      <div class="lg-cap-n">${esc(t.name)}</div>
+      <div class="lg-cap-v">${t.perSecond} <span>个/秒</span></div>
+      <div class="lg-cap-v2">= ${t.perMinute} 个/分钟</div>
+      <div class="lg-cap-s">${esc(t.source)}</div>
+    </div>`).join('');
+
+  // --- 物流实体表 ---
+  let ents = L.entities||[];
+  // f1 可能是实体分类，也可能是常量组名 —— 后者不该动实体表
+  const ENT_CATS = uniq((L.entities||[]).map(e=>e.category));
+  const isConstGroup = uniq((L.constants||[]).map(c=>c.group)).includes(f1);
+  if(f1==='传送带') ents=ents.filter(e=>e.medium==='传送带');
+  else if(f1==='管道') ents=ents.filter(e=>e.medium==='管道');
+  else if(f1==='暗管（地下管道）') ents=[];   // 暗管不在物流实体表，走下面的专门表格
+  else if(isConstGroup) ents=[];              // 选的是常量组，实体表不参与
+  else if(f1){ ents=ents.filter(e=>ENT_CATS.includes(f1)&&e.category===f1); }
+  if(kw){
+    const s=kw.toLowerCase();
+    ents=ents.filter(e=>String(e.name||'').toLowerCase().includes(s)||
+      e.id.toLowerCase().includes(s)||String(e.type||'').toLowerCase().includes(s));
+  }
+  const entRows = ents.map(e=>{
+    const fx = a=>(a||[]).map(v=>v+'°').join('/');
+    return `<div class="lg-ent">
+      <div class="lg-ent-a">
+        <b>${esc(e.name||e.id)}</b>
+        <code>${esc(e.id)}</code>
+        <span class="lg-tag ${e.medium==='管道'?'pipe':''}">${esc(e.medium)}</span>
+        <span class="lg-cat">${esc(e.category)}</span>
+      </div>
+      <div class="lg-ent-b">
+        <span>吞吐 <b>${e.unitsPerMinute}</b> /min</span>
+        <span>进料口 ${e.inputPortCount}（朝向 ${fx(e.inputFacings)}）</span>
+        <span>出料口 ${e.outputPortCount}（朝向 ${fx(e.outputFacings)}）</span>
+        ${e.volume!=null?`<span>容量 ${e.volume}</span>`:''}
+      </div>
+    </div>`;
+  }).join('') || (isConstGroup
+      ? '<div class="empty" style="padding:22px">当前选的是常量分组，实体表不适用 —— 下方「物流常量」已筛出对应条目</div>'
+      : '<div class="empty">没有匹配的物流实体</div>');
+
+  // --- 常量分组 ---
+  let cons = L.constants||[];
+  // f1 既可能是常量组名，也可能是物流实体分类 —— 按数据判断，别维护白名单
+  // ⚠️ ENT_CATS 上面（实体表段落）已用 const 声明过，这里只能复用，不能重复声明。
+  // 同一作用域重复 const 是 SyntaxError，会让整个 <script> 作废 → 页面全白。
+  const CONS_GROUPS = uniq(cons.map(c=>c.group));
+  if(CONS_GROUPS.includes(f1))      cons=cons.filter(c=>c.group===f1);
+  else if(ENT_CATS.includes(f1))    cons=[];   // 选的是实体分类，常量不参与
+  if(kw){
+    const s=kw.toLowerCase();
+    cons=cons.filter(c=>String(c.label).toLowerCase().includes(s)||c.key.toLowerCase().includes(s));
+  }
+  const groups={};
+  cons.forEach(c=>{ (groups[c.group]=groups[c.group]||[]).push(c); });
+  const consEmpty = ENT_CATS.includes(f1) && !CONS_GROUPS.includes(f1)
+    ? '<div class="empty" style="padding:22px">当前选的是物流实体分类，常量表不适用 —— 上方实体表已筛出对应条目</div>'
+    : '<div class="empty">没有匹配的常量</div>';
+  const consHtml = Object.keys(groups).map(g=>`
+    <div class="d-sec">
+      <div class="d-h">${esc(g)}</div>
+      ${g.indexOf('存疑')>=0?`
+      <div class="note" style="background:#FBF0E0;border-color:#E8D5B0;margin-bottom:6px">
+        <b>这一组是配置表内部矛盾项，别直接引用。</b><br>
+        <code>travelPoleNop1Radius = 300</code> 看着像滑索射程，但
+        <code>travel_pole_nop_1</code> 的建筑描述<b>白纸黑字写着「可在80m范围内相连」</b>，
+        同款的 <code>travel_pole_1</code> 也是 80m（<code>travelPole1Radius=80</code>）。<br>
+        而这 300 与 <code>udPipeConnectMaxLength = 300</code> 是<b>同一个数</b>——它被归在
+        <code>travelPole</code> 前缀下，实际是<b>暗管的配对连接长度</b>。<br>
+        <b>滑索用 80 / 110；300 是暗管的。</b>
+      </div>`:''}
+      <table class="lg-tb">
+        <thead><tr><th>常量</th><th>含义</th><th class="r">值</th><th>单位</th></tr></thead>
+        <tbody>${groups[g].map(c=>`<tr>
+          <td><code>${esc(c.key)}</code></td>
+          <td>${esc(c.label)}</td>
+          <td class="r"><b>${c.value}</b></td>
+          <td class="u">${esc(c.unit||'—')}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+    </div>`).join('') || consEmpty;
+
+  // --- 蓝图系统规则 ---
+  const br = L.blueprintRules||{};
+  const brHtml = `
+    <div class="d-sec"><div class="d-h">蓝图系统规则（FacBlueprintConst）</div>
+      <div class="row"><span class="tag">分享码前缀</span><span>${(br.shareCodePrefix||[]).map(x=>'<code>'+esc(x)+'</code>').join(' 或 ')}</span></div>
+      <div class="row"><span class="tag">码字符集</span><span><code>${esc(br.charSet||'—')}</code></span></div>
+      <div class="row"><span class="tag">蓝图最大范围</span><span>${br.maxLenX} × ${br.maxLenZ} 格</span></div>
+      <div class="row"><span class="tag">单蓝图节点上限</span><span>${br.nodeCountLimit}</span></div>
+      <div class="row"><span class="tag">我的蓝图上限</span><span>${br.myBlueprintMax}</span></div>
+      <div class="row"><span class="tag">赠送蓝图上限</span><span>${br.giftBlueprintMax}</span></div>
+      <div class="row"><span class="tag">分享码有效期</span><span>${br.shareExpireSeconds} 秒（${(br.shareExpireSeconds/86400).toFixed(0)} 天）</span></div>
+      <div class="row"><span class="tag">名称 / 描述长度上限</span><span>${br.nameMaxLen} / ${br.descMaxLen} 字</span></div>
+      <div class="row"><span class="tag">标签数上限</span><span>${br.tagMax}</span></div>
+    </div>`;
+
+  // --- 供电杆线长 ---
+  const poleRows = (L.powerPoles||[]).map(p=>p.special?'':`
+    <tr><td><code>${esc(p.id)}</code></td>
+    <td>${p.autoConnect?'自动连接':'手动连接'}</td>
+    <td class="r"><b>${p.autoConnectLength}</b></td>
+    <td>${p.rangeExtend?`${p.rangeExtend.x}/${p.rangeExtend.y}/${p.rangeExtend.z}`:'—'}</td></tr>`).join('');
+  const polesHtml = poleRows.trim()?`
+    <div class="d-sec"><div class="d-h">供电设施（线长 / 覆盖扩展）</div>
+      <table class="lg-tb">
+        <thead><tr><th>ID</th><th>连接方式</th><th class="r">自动连接长度</th><th>覆盖扩展 x/y/z</th></tr></thead>
+        <tbody>${poleRows}</tbody>
+      </table></div>`:'';
+
+  // --- 采矿/抽水/储液 ---
+  const mineRows = (L.miners||[]).map(m=>`
+    <tr><td><code>${esc(m.id)}</code></td>
+    <td class="r"><b>${m.unitsPerMinute}</b></td>
+    <td>${m.msPerRound}</td>
+    <td>${(m.mineableNames||[]).filter(Boolean).join('、')||'—'}</td>
+    <td>${m.hasDroneMode?'支持无人机':'—'}</td></tr>`).join('');
+  const pumpRows = (L.pumps||[]).map(p=>`
+    <tr><td><code>${esc(p.id)}</code></td><td>${esc(p.kind)}</td>
+    <td class="r">${p.unitsPerMinute!=null?'<b>'+p.unitsPerMinute+'</b>':'—'}</td>
+    <td>${p.maximumSuply!=null?p.maximumSuply:'—'}</td></tr>`).join('');
+  const stRows = (L.fluidStoragers||[]).map(s=>`
+    <tr><td><code>${esc(s.id)}</code></td><td class="r"><b>${s.capacity}</b></td></tr>`).join('');
+  const rateHtml = `
+    <div class="d-sec"><div class="d-h">采矿机产出速率</div>
+      <table class="lg-tb"><thead><tr><th>ID</th><th class="r">产出 /min</th><th>msPerRound</th><th>可采矿种</th><th>无人机</th></tr></thead>
+      <tbody>${mineRows}</tbody></table></div>
+    ${pumpRows?`<div class="d-sec"><div class="d-h">流体泵 / 排液口</div>
+      <table class="lg-tb"><thead><tr><th>ID</th><th>类型</th><th class="r">速率 /min</th><th>最大供给</th></tr></thead>
+      <tbody>${pumpRows}</tbody></table></div>`:''}
+    ${stRows?`<div class="d-sec"><div class="d-h">液体储罐容量</div>
+      <table class="lg-tb"><thead><tr><th>ID</th><th class="r">容量</th></tr></thead>
+      <tbody>${stRows}</tbody></table></div>`:''}`;
+
+  // --- 暗管（地下管道）---
+  const upRows = (L.undergroundPipes||[]).map(u=>`
+    <tr>
+      <td><b>${esc(u.name)}</b><br><code>${esc(u.id)}</code></td>
+      <td>${esc(u.role)}</td>
+      <td class="r">${esc(u.gridFootprint)}</td>
+      <td class="r">${u.role==='入口'?u.inputPortCount+' 进':u.outputPortCount+' 出'}</td>
+      <td class="u">${u.needPower?'耗电':'免电'}</td>
+    </tr>`).join('');
+  const upHtml = (L.undergroundPipes||[]).length?`
+    <div class="d-sec"><div class="d-h">暗管（地下管道）—— 入口/出口成对配对</div>
+      <table class="lg-tb">
+        <thead><tr><th>名称</th><th>角色</th><th class="r">占地</th><th class="r">接口</th><th>供电</th></tr></thead>
+        <tbody>${upRows}</tbody>
+      </table>
+      <div class="c-sub" style="margin-top:8px">
+        <span>入口与出口<b>成对连接</b>，传输管道中的货物</span>
+        <span>最大配对连接长度 <b>300</b></span>
+      </div>
+    </div>`:'';
+
+  // --- _nop_ 命名警告 ---
+  const nopRows = (L.nopVariants||[]).map(n=>`
+    <tr>
+      <td><code>${esc(n.baseId)}</code></td><td>${esc(n.baseName)}</td>
+      <td class="r">${n.basePower}</td>
+      <td><code>${esc(n.nopId)}</code></td><td>${esc(n.nopName)}</td>
+      <td class="r">${n.nopPower}</td>
+      <td>${n.sameName?'<b class="same">同名</b>':'异名'}</td>
+    </tr>`).join('');
+  const nopHtml = (L.nopVariants||[]).length?`
+    <div class="d-sec"><div class="d-h">⚠️ _nop_ 后缀 = 免电变体，但<b>官方名沿用原版</b></div>
+      <table class="lg-tb">
+        <thead><tr><th>原版 ID</th><th>官方名</th><th class="r">耗电</th>
+        <th>免电版 ID</th><th>官方名</th><th class="r">耗电</th><th>是否同名</th></tr></thead>
+        <tbody>${nopRows}</tbody>
+      </table>
+      <div class="note" style="margin-top:9px;background:#FBF0E0;border-color:#E8D5B0">
+        <b>别自己造名字。</b> <code>_nop_</code> 是 no-power 变体，但它的官方名<b>和原版完全一样</b>——
+        例：<code>travel_pole_nop_1</code> 的官方名就是「<b>滑索架</b>」，不叫「免电滑索架」。
+        写攻略时用官方名；需要区分时可加后缀说明，但不要把它当成正式名称。
+      </div>
+    </div>`:'';
+
+  return `
+  <div class="note" style="margin-bottom:14px">
+    <b>📡 物流规则层</b><br>
+    传送带 / 管道在游戏里是<b>独立于建筑表的物流实体</b>，本页数值直接取自配置表
+    <code>FactoryGridBeltTable</code>、<code>FactoryLiquidPipeTable</code>、<code>FactoryGridRouterTable</code> 等，
+    未做二次假设。<br>
+    <b>吞吐换算</b>：<code>msPerRound</code> 毫秒走 1 个 → 每分钟 = 60000 / msPerRound。<br>
+    <span style="color:#9A5B1E">⚠ 仍缺：传送带/管道<b>在蓝图里占几格</b>（表里没有独立占格字段，它们按路径逐格铺设）、以及<b>吞吐实测校验</b>（数值来自配置，未经游戏内实测比对）。</span>
+  </div>
+
+  <div class="d-sec" style="margin-bottom:16px">
+    <div class="d-h">吞吐速查</div>
+    <div class="lg-caps">${tp}</div>
+  </div>
+
+  <div class="d-sec">
+    <div class="d-h">物流实体（传送带 / 管道 / 分流汇流 / 连接 / 阀门）</div>
+    ${entRows || '<div class="empty">当前筛选下无物流实体（暗管见下方专表）</div>'}
+  </div>
+
+  ${upHtml}
+  ${nopHtml}
+
+  <div class="d-sec"><div class="d-h">物流常量</div></div>
+  ${consHtml}
+  ${brHtml}
+  ${polesHtml}
+  ${rateHtml}`;
+}
+
+/* ---------- 占地蓝图 ---------- */
+/* 占地平面示意改成 SVG 俯视图（对齐游戏蓝图预览那种网格观感）。
+   不用游戏贴图：蓝图码解不开、贴图有版权，而且要保持单文件离线可用 ——
+   所以照 zmd-bp-tool / IndustrialPlanner 那些第三方工具的路子自己画矢量：
+   网格 + 建筑外框 + 分类配色字标 + 接口方块/圆点 + 朝外的接口引线。
+   颜色只表达 进/出、传送带/管道 与 分类；边名仍是格坐标，不声称游戏内绝对方位。 */
+/* 配置表里「协议核心 / 次级核心」的 quickBarType 是空字符串，build.py 的兜底映射把它们归进了
+   「装饰与其他」，界面上就显示成「饰」。它们不是装饰 —— 博士 2026-09-21 指出。
+   这里在数据载入后统一改分类：之后所有按 categoryName 走的逻辑（分类字标 / 配色 / 两个分类
+   下拉 / 试摆左栏筛选）一次性全对，不用逐处打补丁。
+   ⚠️ 改 build.py 或重跑构建都不影响这里 —— 页面数据是构建时内联进 HTML 的，只能在这儿改。
+   （同样是兜底分类的 liquid_recycle_gate_1 / liquid_clean_gate_1 / power_port_1 是野外固定件，
+     不进试摆，分类保持原样。） */
+const CORE_STRUCT_IDS={'sp_hub_1':1,'sp_sub_hub_1':1};
+[DB.buildings,DB.blueprint.buildings,DB.mechanics].forEach(function(arr){
+  (arr||[]).forEach(function(b){ if(b&&CORE_STRUCT_IDS[b.id]) b.categoryName='核心结构'; });
+});
+
+const CAT_COLOR={'资源采集':'#C7B57A','基础加工':'#9FB4C7','组件加工':'#C79A9A','物流辅助':'#B8C79B','电力设施':'#E4C36A','仓储物流':'#A9C7C2','防御设施':'#C79BA8','装饰与其他':'#D3D0C7','核心结构':'#C98A5E','物流件':'#8E86C9'};
+const CAT_GLYPH={'资源采集':'采','基础加工':'炼','组件加工':'组','物流辅助':'流','电力设施':'电','仓储物流':'储','防御设施':'御','装饰与其他':'饰','核心结构':'核','物流件':'运'};
+function catColor(b){ return CAT_COLOR[b.categoryName]||CAT_COLOR['装饰与其他']; }
+function catGlyph(b){ return CAT_GLYPH[b.categoryName]||CAT_GLYPH['装饰与其他']; }
+/* 物流件的色 / 字形按介质分：传送带系青、管道系紫；功能件用「汇/分/桥/阀」，纯带子留箭头 */
+function lgColor(b){ return b.lgMedium==='管道'?'#7B62C9':'#2E8B9E'; }
+function lgGlyph(b){
+  if(b.lgType==='Belt'||b.lgType==='Pipe') return '▶';
+  if(String(b.name).indexOf('汇流')>=0) return '汇';
+  if(String(b.name).indexOf('分流')>=0) return '分';
+  if(String(b.name).indexOf('桥')>=0) return '桥';
+  if(String(b.name).indexOf('准入口')>=0) return '阀';
+  return '运';
+}
+function loPieceGlyph(b){ return b&&b.isLogi?lgGlyph(b):catGlyph(b); }
+
+/* ---------- 物流件的「进/出边」怎么算 ----------
+   配置表（FactoryGridRouterTable / FactoryGridConnecterTable / FactoryBoxValveTable）里每个接口带
+   rotation.y ∈ {0,90,180,270}。它**不是朝向本身，而是物料的流向**：
+       rotation.y  0=下(+z)  90=右(+x)  180=上(-z)  270=左(-x)     （画布术语）
+   规则：**进料口在流向的反侧，出料口在流向那一侧**。
+
+   验证（别再来回猜，这套是回代过的）：
+     汇流器   进{90,180,270} / 出{180}  → 进「左/下/右」、出「上」 = 3 进 1 出 ✓
+     分流器   进{180} / 出{90,180,270}  → 进「下」、出「右/上/左」 = 1 进 3 出 ✓
+     物品准入口 进{180} / 出{180}       → 进「下」、出「上」 = 直线穿过 ✓
+     物流桥   全四向进出               → 四条边都双向 ✓
+   再拿**全部 267 个建筑接口**回代：266 个吻合，唯一例外是 3×1 的仓库存取口 ——
+   1 格厚的建筑 z=0 与 z=D-1 是同一条线、几何退化，位置法只能取 z 边。
+
+   画布术语（右/下/左/上）只是本沙盘的记号，**不声称游戏内绝对方位**（同「接口边名用格坐标」的规矩）。 */
+const LOGI_FLOW={0:'b', 90:'r', 180:'t', 270:'l'};    // rotation.y → 流向
+const LOGI_OPP={t:'b', b:'t', l:'r', r:'l'};
+const LOGI_STEP={r:'b', b:'l', l:'t', t:'r'};         // 与画布顺时针旋转同向（0°=右）
+const LGNAME={t:'上', b:'下', l:'左', r:'右'};
+/* ⭐v109 协议核心出货箭头：画在出料口格内侧、**朝外指**（口朝哪边就指哪边）。
+   用 Lo 的 u/d/l/r 那套方向命名（LportDir 的返回值），不是 LOGI 的 t/b/l/r。 */
+const LO_DLVARROW={
+  r:'<svg viewBox="0 0 12 12"><path d="M1 6h7M6 3l3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  l:'<svg viewBox="0 0 12 12"><path d="M11 6H4M6 3L3 6l3 3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  d:'<svg viewBox="0 0 12 12"><path d="M6 1v7M3 6l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  u:'<svg viewBox="0 0 12 12"><path d="M6 11V4M3 6l3-3 3 3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+};
+function lgRotSteps(rot){ return ((Math.round(rot/90)%4)+4)%4; }
+function lgSides(list, rot, isInput){
+  const k=lgRotSteps(rot), out=[];
+  (list||[]).forEach(th=>{
+    let d=LOGI_FLOW[((th%360)+360)%360];
+    if(!d) return;
+    if(isInput) d=LOGI_OPP[d];
+    for(let i=0;i<k;i++) d=LOGI_STEP[d];
+    if(out.indexOf(d)<0) out.push(d);
+  });
+  return out;
+}
+function lgPortSides(b, rot){
+  if(b.lgInFacings&&b.lgInFacings.length){
+    return {in:lgSides(b.lgInFacings,rot,true), out:lgSides(b.lgOutFacings,rot,false)};
+  }
+  /* 传送带 / 管道在配置表里没有接口数组：按「一格一段、穿过」处理 —— 进在尾、出在头 */
+  let f='r'; for(let i=0;i<lgRotSteps(rot);i++) f=LOGI_STEP[f];
+  return {in:[LOGI_OPP[f]], out:[f]};
+}
+function lgSideNames(b, rot, which){
+  const a=(which==='in'?lgPortSides(b,rot).in:lgPortSides(b,rot).out);
+  return a.length?a.map(d=>LGNAME[d]).join('/'):'—';
+}
+/* 9×9 的格内坐标系（.lo-cell 的 padding box），中心 4.5 */
+const LG_BAR={ t:[2,0,5,2], b:[2,7,5,2], l:[0,2,2,5], r:[7,2,2,5] };
+const LG_HALF={ t:[[2,0,2.5,2],[4.5,0,2.5,2]], b:[[2,7,2.5,2],[4.5,7,2.5,2]],
+                l:[[0,2,2,2.5],[0,4.5,2,2.5]], r:[[7,2,2,2.5],[7,4.5,2,2.5]] };
+const LG_IN='#186C7D', LG_OUT='#C0561F';
+/* 把一件物流件画成 SVG：边上贴进/出色条（青=进 橙=出，双向边画成半青半橙），
+   中心放功能字形；传送带/管道改放一个流向箭头（并配一进一出两条色条）。 */
+function lgSvg(b, rot, inSide){
+  const ps=lgPortSides(b, rot), role={};
+  /* ⭐v106（博士 2026-09-23 游戏截图「一格拐弯画不了」）：带/管的**进色条**要用真实拓扑
+     （renderLayout 用 flowIn 由邻居反推的 inSide）——弯头格 rot 单值推的「进=出的反向」
+     与真实进边不同轴，旧版色条画上边、弧却从左边绕，自相矛盾。
+     功能件（汇/分/桥/阀）是多边进出，单进边覆盖不适用，保持按配置表画。 */
+  const inOverride=(b.lgType==='Belt'||b.lgType==='Pipe')&&inSide;
+  (inOverride?[inSide]:ps.in).forEach(d=>{ role[d]=role[d]||{}; role[d].i=1; });
+  ps.out.forEach(d=>{ role[d]=role[d]||{}; role[d].o=1; });
+  let s='';
+  ['t','b','l','r'].forEach(d=>{
+    const r=role[d]; if(!r) return;
+    const rect=(q,c)=>`<rect x="${q[0]}" y="${q[1]}" width="${q[2]}" height="${q[3]}" rx="0.7" fill="${c}"/>`;
+    if(r.i&&r.o){
+      s+=rect(LG_HALF[d][0],LG_IN)+rect(LG_HALF[d][1],LG_OUT);
+    } else {
+      s+=rect(LG_BAR[d], r.i?LG_IN:LG_OUT);
+    }
+  });
+  if(b.lgType==='Belt'||b.lgType==='Pipe'){
+    /* ⭐ 2026-09-21（博士反馈：拐弯箭头不直观）：知道进边时，弯道格画成 L 形圆弧带
+       （进边中点 → 圆角 → 出边中点 + 出口小箭头），和游戏里的弯道一个观感；
+       直线格 / 线头（不知道进边）保持原来的直箭头。 */
+    const outD=(ps.out&&ps.out[0])||'r';
+    const perp=(inSide==='t'||inSide==='b') ? (outD==='l'||outD==='r')
+             : (inSide==='l'||inSide==='r') ? (outD==='t'||outD==='b') : false;
+    if(inSide && inSide!==outD && perp){
+      const P={t:[4.5,0], b:[4.5,9], l:[0,4.5], r:[9,4.5]};
+      const ip=P[inSide], op=P[outD];
+      const corner=(inSide==='t'||inSide==='b')?[op[0],ip[1]]:[ip[0],op[1]];
+      const DEG={r:0, b:90, l:180, t:270};
+      s+=`<path d="M${ip[0]} ${ip[1]} Q${corner[0]} ${corner[1]} ${op[0]} ${op[1]}"`
+        +` fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>`
+        +`<g transform="rotate(${(DEG[outD]-90)} 4.5 4.5)">`
+        +`<path d="M4.5 8.6 L3.1 6.7 L5.9 6.7 Z" fill="currentColor"/></g>`;
+    } else {
+      s+=`<g transform="rotate(${lgRotSteps(rot)*90} 4.5 4.5)" fill="none" stroke="currentColor"`
+        +` stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">`
+        +`<path d="M1.7 4.5 L7.1 4.5"/><path d="M4.6 2.5 L7.1 4.5 L4.6 6.5"/></g>`;
+    }
+  } else {
+    s+=`<text x="4.5" y="6.6" font-size="5.6" font-weight="700" text-anchor="middle"`
+      +` fill="currentColor">${esc(lgGlyph(b))}</text>`;
+  }
+  return `<svg viewBox="0 0 9 9" aria-hidden="true">${s}</svg>`;
+}
+/* 采集类建筑的「无线传输」信息（2026-09-22 博士问的）：
+   矿机在配置表里确实挂着 3 个传送带出料口，但**电驱矿机默认是「无线传输模式」**（hasDroneMode / 10 秒一次），
+   产物直接回仓库 —— 所以那 3 个口平时不用接带子。展示层必须把这件事画/写出来，
+   否则「矿机顶着 3 个出货口」会让人以为要拉带子（博士原话：矿机挖完是无线传回仓库的）。 */
+function gatherInfo(id){
+  return ((DB.mining_power||{}).gather||[]).filter(g=>g.id===id)[0]||null;
+}
+function mdBold(s){
+  return String(s||'').replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>').replace(/`([^`]+)`/g,'<code>$1</code>');
+}
+function footprintSvg(b){
+  const pp=b.gridFootprint.split('×');
+  const W=pp[0]|0, D=pp[1]|0;
+  if(!W||!D) return '';
+  const gi=gatherInfo(b.id), wi=!!(gi&&gi.wireless);
+  const isMiner=!!(gi&&gi.kind==='采矿机');   /* 矿机的传送带出料口一律不画（见下面的说明） */
+  const CELL=46, PAD=32;
+  const Wd=PAD*2+W*CELL, Hd=PAD*2+D*CELL;
+  const gx=i=>PAD+i*CELL, gy=i=>PAD+i*CELL;
+  const cx=i=>gx(i)+CELL/2, cz=i=>gy(i)+CELL/2;
+  const C_IN_B='var(--accent)', C_IN_P='#7FCDB6',
+        C_OUT_B='var(--warn)', C_OUT_P='#E8C79A', C_X='#B3261E',
+        C_WIFI='#C9A227',   /* 无线回传口（矿机）：金色，与「出料口」的橙分开 */
+        C_CACHE='#6E8AA8';  /* 便携源石矿机的缓存区口：灰蓝（也不接带子，但要人手动取） */
+  const cells={};
+  (b.ports||[]).forEach(pt=>{
+    if(pt.z<0||pt.z>=D||pt.x<0||pt.x>=W) return;
+    /* ⭐⭐ 矿机的**传送带出料口不画**（博士 2026-09-22 两次指出，并问「那这样 4 还用吗，玩家都是用无线传输的」）：
+       配置表里矿机确实记着 3 个传送带出料口，但**两种模式都用不上** ——
+       默认「无线传输模式」产物直接回仓库；切「仓储模式」也只是进缓存区、**手动取出**（文案原文：
+       「切换到仓储模式后，会和源石矿机一样不会将矿物送回仓库，必须从缓存区手动取出」）。
+       换句话说这 3 个口对玩家**没有任何用途** —— 画出来只会让人以为要接带子。
+       数据层仍保留 `ports`（那是配置表事实），只是示意图不画；改画建筑内的「⇡ 无线回传」徽标。
+       水驱矿机的**管道进料口**（清水）是真口，照常画。 */
+    if(isMiner && pt.kind==='output' && !pt.isPipe) return;
+    const k=pt.x+','+pt.z;
+    if(!cells[k]) cells[k]={x:pt.x,z:pt.z,kind:{},n:0};
+    cells[k].n++;
+    const kk=(pt.kind==='input'?'in':'out')+(pt.isPipe?'P':'B');
+    cells[k].kind[kk]=(cells[k].kind[kk]||0)+1;
+  });
+  let s='';
+  s+='<svg viewBox="0 0 '+Wd+' '+Hd+'" width="100%" style="max-width:720px;display:block" role="img" aria-label="'+esc(b.name)+' 占地平面示意">';
+  s+='<rect x="0" y="0" width="'+Wd+'" height="'+Hd+'" rx="8" fill="#FBFAF6"/>';
+  let i;
+  for(i=0;i<=W;i++) s+='<line x1="'+gx(i)+'" y1="'+gy(0)+'" x2="'+gx(i)+'" y2="'+gy(D)+'" stroke="#E7E5DC"/>';
+  for(i=0;i<=D;i++) s+='<line x1="'+gx(0)+'" y1="'+gy(i)+'" x2="'+gx(W)+'" y2="'+gy(i)+'" stroke="#E7E5DC"/>';
+  s+='<rect x="'+gx(0)+'" y="'+gy(0)+'" width="'+(W*CELL)+'" height="'+(D*CELL)+'" rx="4" fill="'+catColor(b)+'" fill-opacity="0.12" stroke="var(--accent)" stroke-width="2"/>';
+  for(i=0;i<W;i++) s+='<text x="'+cx(i)+'" y="'+(gy(0)-11)+'" text-anchor="middle" font-size="11" fill="var(--ink3)">'+i+'</text>';
+  for(i=0;i<D;i++) s+='<text x="'+(gx(0)-14)+'" y="'+(cz(i)+4)+'" text-anchor="end" font-size="11" fill="var(--ink3)">'+i+'</text>';
+  if(W>=3&&D>=3){
+    s+='<text x="'+cx((W-1)/2)+'" y="'+(cz((D-1)/2)-10)+'" text-anchor="middle" font-size="20" font-weight="600" fill="'+catColor(b)+'">'+catGlyph(b)+'</text>';
+    s+='<text x="'+cx((W-1)/2)+'" y="'+(cz((D-1)/2)+6)+'" text-anchor="middle" font-size="12" font-weight="600" fill="var(--ink)">'+esc(b.name)+'</text>';
+    s+='<text x="'+cx((W-1)/2)+'" y="'+(cz((D-1)/2)+22)+'" text-anchor="middle" font-size="10.5" fill="var(--ink3)">'+W+'×'+D+' · '+(b.gridArea||(W*D))+'格² · 格高'+b.gridHeight+'</text>';
+    /* 矿机：把「产物怎么走」直接标在建筑上（比画 3 个用不上的出料口清楚得多） */
+    if(isMiner){
+      const bx=gx(W)-7, by=gy(0)+15;
+      s+='<text x="'+bx+'" y="'+by+'" text-anchor="end" font-size="11.5" font-weight="700" fill="'+(wi?C_WIFI:C_CACHE)+'">'
+        +(wi?'⇡ 无线回传仓库':'⇥ 缓存区 · 手动收取')+'</text>';
+    }
+  } else {
+    s+='<text x="'+cx((W-1)/2)+'" y="'+(cz((D-1)/2)+4)+'" text-anchor="middle" font-size="'+(W===1?'14':'16')+'" font-weight="600" fill="'+catColor(b)+'">'+catGlyph(b)+'</text>';
+  }
+  Object.keys(cells).forEach(k=>{
+    const c=cells[k], X=cx(c.x), Z=cz(c.z);
+    const ks=Object.keys(c.kind);
+    let fill, txt, circle=false, stroke='', wifi=false;
+    if(ks.length>1){ fill=C_X; txt='×'; }
+    else{
+      const key=ks[0], isIn=key.indexOf('in')===0, isP=key.indexOf('P')>=0;
+      if(isIn&&isP){ fill=C_IN_P; txt='i'; circle=true; stroke='var(--accent)'; }
+      else if(isIn){ fill=C_IN_B; txt='I'; }
+      else if(isP){ fill=C_OUT_P; txt='o'; circle=true; stroke='var(--warn)'; }
+      else { fill=C_OUT_B; txt='O'; }
+    }
+    const edges=[];
+    if(c.z===0)edges.push([0,-1]);
+    if(c.z===D-1)edges.push([0,1]);
+    if(c.x===0)edges.push([-1,0]);
+    if(c.x===W-1)edges.push([1,0]);
+    const col=circle?stroke:fill;
+    edges.slice(0,1).forEach(v=>{
+      s+='<line x1="'+(X+v[0]*13)+'" y1="'+(Z+v[1]*13)+'" x2="'+(X+v[0]*25)+'" y2="'+(Z+v[1]*25)
+        +'" stroke="'+col+'" stroke-width="3"'+(circle?' stroke-dasharray="4 3"':'')+'/>';
+    });
+    if(circle){
+      s+='<circle cx="'+X+'" cy="'+Z+'" r="11" fill="'+fill+'" stroke="'+stroke+'" stroke-width="2"/>';
+      s+='<text x="'+X+'" y="'+(Z+4)+'" text-anchor="middle" font-size="12" font-weight="600" fill="var(--ink)">'+txt+'</text>';
+    }else if(wifi){
+      /* 无线回传口：金色虚线方框 + ⇡（不是让你接带子的意思） */
+      s+='<rect x="'+(X-12)+'" y="'+(Z-12)+'" width="24" height="24" rx="3" fill="'+fill+'" stroke="#FFFFFF" stroke-width="2" stroke-dasharray="4 3"/>';
+      s+='<text x="'+X+'" y="'+(Z+5)+'" text-anchor="middle" font-size="14" font-weight="700" fill="#FFFFFF">'+txt+'</text>';
+    }else{
+      s+='<rect x="'+(X-12)+'" y="'+(Z-12)+'" width="24" height="24" rx="3" fill="'+fill+'"/>';
+      s+='<text x="'+X+'" y="'+(Z+4)+'" text-anchor="middle" font-size="12" font-weight="600" fill="#FFFFFF">'+txt+'</text>';
+    }
+    const cnt=ks.length===1?c.kind[ks[0]]:c.n;
+    if(cnt>1) s+='<text x="'+(X+14)+'" y="'+(Z-13)+'" font-size="10" fill="var(--ink3)">×'+cnt+'</text>';
+  });
+  s+='</svg>';
+  return s;
+}
+
+function gridHtml(b){
+  const svg=footprintSvg(b);
+  const pp=b.gridFootprint.split('×');
+  const W=pp[0]|0, D=pp[1]|0;
+  const gi=gatherInfo(b.id);
+  if(!svg) return '';
+  return `<div class="d-sec"><div class="d-h">占地平面示意（${W}×${D} 格 · 俯视图）</div>
+    <div style="margin-top:8px">${svg}</div>
+    <div class="c-sub" style="margin-top:10px">
+      <span>横轴 = x（0 ~ ${W-1}）</span>
+      <span>纵轴 = z（0 为第一行）</span>
+      <span>外圈短线 = 口朝哪条边外</span>
+    </div>
+    <div class="c-sub">
+      <span><b style="color:var(--accent)">■</b> I = 进料口（传送带）</span>
+      <span><b style="color:#7FCDB6">●</b> i = 进料口（管道）</span>
+      <span><b style="color:var(--warn)">■</b> O = 出料口（传送带）</span>
+      <span><b style="color:#E8C79A">●</b> o = 出料口（管道）</span>
+      ${gi&&gi.wireless?`<span><b style="color:#C9A227">⇡ 无线回传仓库</b> = 产物直接进仓库（<b>不用接带子</b>）</span>`:''}
+      ${gi&&!gi.wireless&&gi.kind==='采矿机'?`<span><b style="color:#6E8AA8">⇥ 缓存区 · 手动收取</b> = 产物进缓存区（<b>也不接带子</b>）</span>`:''}
+      <span><b style="color:#B3261E">■</b> × = 同格多口</span>
+    </div>
+    ${gi&&gi.kind==='采矿机'?`<div class="c-sub" style="margin-top:6px"><span style="color:var(--ink3)">⚠️ 配置表里这台还记着 <b>3 个传送带出料口</b>，但<b>两种模式都用不上</b>（默认无线回传；切「仓储模式」也只是进缓存区、要手动取出）——
+      所以示意图<b>不画它们</b>（数据仍保留在 <code>ports</code> 里）。水驱矿机左边那个<b>管道进料口</b>（清水）是真的，照常画。</span></div>`:''}
+    ${gi?`<div class="c-sub" style="margin-top:8px"><span style="color:#8A5A2B">${mdBold(gi.wirelessNote)}${gi.wirelessSource?('　<span class="c-id">（来源：'+esc(gi.wirelessSource)+'）</span>'):''}</span></div>`:''}
+  </div>`;
+}
+
+function renderBlueprint(){
+  let arr=DB.blueprint.buildings;
+  if(f1){
+    if(f1==='有接口')        arr=arr.filter(b=>b.portCount>0);
+    else if(f1==='无接口')   arr=arr.filter(b=>b.portCount===0);
+    else if(f1==='有传送带口')arr=arr.filter(b=>b.hasBeltPorts);
+    else if(f1==='有管道口') arr=arr.filter(b=>b.hasPipePorts);
+    else if(f1==='有数量上限')arr=arr.filter(b=>b.hasPlaceLimit);
+    else                     arr=arr.filter(b=>(b.domainNames||[]).includes(f1));
+  }
+  if(kw){
+    const s=kw.toLowerCase();
+    arr=arr.filter(b=>b.name.toLowerCase().includes(s)||b.id.toLowerCase().includes(s)||
+      (b.gridFootprint||'').includes(s));
+  }
+  if(!arr.length) return `<div class="empty">没有匹配的设施</div>`;
+  return `<div class="note" style="margin-bottom:14px">
+    <b>蓝图用法</b><br>
+    占地 = <b>宽 × 深</b>（整数格，蓝图摆放依据）；高度 = 占用格高（可堆叠依据）。
+    <code>modelHeight</code> 是模型实际高度（米），<b>纯视觉，不要用于蓝图</b>。<br>
+    边名用格坐标（<code>z=0</code> / <code>z=D-1</code> / <code>x=0</code> / <code>x=W-1</code>），
+    只表示"口在这块地的哪条边"，<b>不声称游戏内绝对方位</b>。<br>
+    角上的口会同时命中两条边。经验规律：加工机多为「进料在 <code>z=D-1</code> 边、出料在 <code>z=0</code> 边」，
+    但并非全员适用，<b>以每座自己的示意为准</b>。<br>
+    <b>⚠️ 矿机的出料口一律不画</b>（博士 2026-09-22 指出并追问「那这样 4 还用吗，玩家都是用无线传输的」）：
+    配置表里矿机记着 3 个传送带出料口，但<b>两种模式都用不上</b> —— 默认<b>无线回传仓库</b>
+    （电驱 / 二型电驱 / 水驱矿机；水驱是博士实机确认），切「仓储模式」也只是进<b>缓存区、手动取出</b>。
+    所以示意图直接在建筑上标 <b>⇡ 无线回传仓库</b>（或便携源石矿机的 <b>⇥ 缓存区 · 手动收取</b>），
+    不再画那 3 个用不上的口（数据仍保留在 <code>ports</code>）；水驱矿机的<b>管道进料口</b>是真的，照常画。
+  </div><div class="list">`+arr.map(b=>{
+    const o=openSet.has('p:'+b.id);
+    return `<div class="card ${o?'open':''}" data-id="p:${esc(b.id)}">
+      <div class="c-top">
+        <span class="c-name">${esc(b.name)}</span>
+        <span class="c-id">${esc(b.id)}</span>
+        <span class="spacer"></span>
+        <span class="c-cat ${(b.domainNames||[])[0]!=='全地区通用'?'acc':''}">${esc((b.domainNames||['全地区通用']).join('/'))}</span>
+        <span class="c-cat">${esc(b.categoryName)}</span>
+        ${b.hasPlaceLimit?'<span class="flag">有数量上限</span>':''}
+      </div>
+      <div class="c-sub">
+        <span><b>占地 ${esc(b.gridFootprint)}</b> 格</span>
+        <span>面积 ${b.gridArea} 格²</span>
+        <span>格高 ${b.gridHeight}</span>
+        <span>外圈 ${b.gridPerimeter} 格</span>
+        <span>${b.isSquare?'正方形':'非正方形'}</span>
+      </div>
+      <div class="c-sub">
+        <span>接口 ${b.portCount} 个（${esc(b.portSummary)}）</span>
+        <span>${b.needPower?'耗电 '+b.powerConsume:'无需通电'}</span>
+        ${b.liquidEnabled?'<span>支持液体</span>':''}
+      </div>
+      <div class="star">★ ${esc(b.layoutNote)}</div>
+      ${o?`
+      <div class="detail">
+        ${b.portCount?gridHtml(b):'<div class="d-sec"><div class="empty">该设施没有物流接口</div></div>'}
+        <div class="d-sec"><div class="d-h">蓝图属性</div>
+          <div class="row"><span class="tag">占地方格 宽×深</span><span>${esc(b.gridFootprint)}</span></div>
+          <div class="row"><span class="tag">占格高度</span><span>${b.gridHeight} 格</span></div>
+          <div class="row"><span class="tag">模型高度（勿用于蓝图）</span><span>${b.modelHeight!=null?b.modelHeight+' m':'—'}</span></div>
+          <div class="row"><span class="tag">占格面积 / 外圈周长</span><span>${b.gridArea} 格² / ${b.gridPerimeter} 格</span></div>
+          <div class="row"><span class="tag">长宽比 / 尺寸档</span><span>${b.aspect||'—'} / ${esc(b.buildSizeClass||'—')}</span></div>
+          <div class="row"><span class="tag">放置限制</span><span>${b.hasPlaceLimit?'有数量上限':'无'}</span></div>
+          <div class="row"><span class="tag">进料口所在边</span><span>${esc(b.inputEdgeLabel)}</span></div>
+          <div class="row"><span class="tag">出料口所在边</span><span>${esc(b.outputEdgeLabel)}</span></div>
+          <div class="row"><span class="tag">进出是否同边</span><span>${b.mixedSides?'同一组边（走线需交错安排）':'不同边（可对向直连）'}</span></div>
+        </div>
+        ${b.portCount?`<div class="d-sec"><div class="d-h">接口明细（格坐标）</div>
+          ${b.ports.map(p=>`<div class="row">
+            <span class="tag ${p.kind==='input'?'acc':''}">${p.kind==='input'?'进':'出'} #${p.index}</span>
+            <span>x=${p.x} y=${p.y} z=${p.z}</span>
+            <span>${esc(p.edgeLabel)}</span>
+            <span>${esc(p.medium)}</span>
+          </div>`).join('')}
+        </div>`:''}
+      </div>`:''}
+    </div>`;
+  }).join('')+`</div>`;
+}
+
+/* ---------- 基地面积 / 建造上限 ----------
+   这一页的数据来源和别页不一样：面积是社区实测、不是配置表。
+   页面上必须把两类数据分开标注，别混着说。 */
+function baseCards(){
+  return DB.bases.areas.map(a=>`<div class="card">
+      <div class="c-top">
+        <span class="c-name">${esc(a.domainName)} · ${esc(a.kind)}</span>
+        <span class="c-id">${esc(a.coreId)}</span>
+        <span class="spacer"></span>
+        <span class="c-cat acc">${esc(a.size)} = ${a.cells} 格</span>
+      </div>
+      <div class="c-sub">
+        <span>建设区边长 <b>${a.side}</b> 格</span>
+        <span>单边最多 <b>${a.slotsPerSide}</b> 路存取口</span>
+        <span>扣掉 ${esc(a.coreName)} 9×9 → 可建 ${a.usableCells} 格</span>
+      </div>
+      <div class="c-sub">
+        <span>可信度：${esc(a.confidence)}</span>
+      </div>
+      <div class="c-sub">
+        <span>来源：${a.sources.map(s=>esc(s.id)+'· '+esc(s.site)+' · '+esc(s.author)+'（'+esc(s.date)+'）').join('　')}</span>
+      </div>
+    </div>`).join('');
+}
+
+function baseExpansionTable(){
+  const zs=DB.bases.zones.filter(z=>z.hasBuiltArea&&(!f1||z.domainName===f1));
+  if(!zs.length) return `<div class="empty">没有匹配的建造区</div>`;
+  return `<div style="overflow-x:auto"><table class="lg-tb">
+    <thead><tr>
+      <th>建造区</th><th>所属据点</th><th>据点</th>
+      <th class="r">区域扩大·一</th><th class="r">区域扩大·二</th>
+      <th class="r">存取线档数</th><th class="r">全解锁合计</th>
+    </tr></thead>
+    <tbody>${zs.map(z=>{
+      const e1=z.expansion[0]||{}, e2=z.expansion[1]||{};
+      const total=(z.expansionCostTotal||0)+(z.busCostTotal||0);
+      return `<tr>
+        <td><b>${esc(z.zoneName)}</b> <span class="c-id">${esc(z.levelId)}</span></td>
+        <td>${esc(z.domainName)}</td>
+        <td>${esc(z.currency||'—')}</td>
+        <td class="r">${e1.cost!=null?e1.cost:'—'}</td>
+        <td class="r">${e2.cost!=null?e2.cost:'—'}</td>
+        <td class="r">${z.busCount}</td>
+        <td class="r">${total?total:'—'}</td>
+      </tr>`;}).join('')}</tbody>
+  </table></div>`;
+}
+
+function baseDevTables(){
+  const ds=DB.bases.domains.filter(d=>!f1||d.name===f1);
+  return ds.map(d=>{
+    const zones=(d.levels[0]&&d.levels[0].regions)||[];
+    return `<div class="d-h" style="margin-top:16px">${esc(d.name)}　据点发展等级 → 建造上限（满级 Lv${d.maxLevel}）</div>
+    <div style="overflow-x:auto"><table class="lg-tb">
+      <thead><tr>
+        <th class="r">等级</th><th class="r">升级经验</th><th class="r">资金上限</th>
+        ${zones.map(z=>`<th class="r">${esc(z.zoneName)}${z.buildable?'':' *'}</th>`).join('')}
+      </tr></thead>
+      <tbody>${d.levels.map(l=>`<tr>
+        <td class="r"><b>${l.level}</b></td>
+        <td class="r">${l.levelUpExp!=null?l.levelUpExp:'—'}</td>
+        <td class="r">${l.moneyLimit!=null?l.moneyLimit:'—'}</td>
+        ${zones.map(z=>{
+          const r=(l.regions||[]).find(x=>x.levelId===z.levelId);
+          if(!r) return '<td class="r">—</td>';
+          return `<td class="r"><b>${r.bandwidth}</b> <span class="c-id">${r.battleBuildingLimit}/${r.travelPoleLimit}${r.mineOutputUp?'+矿':''}</span></td>`;
+        }).join('')}
+      </tr>`).join('')}</tbody>
+    </table></div>`;}).join('');
+}
+
+/* 满级基地总览：每片基地一行（每个据点 1 主 + 3 副），全部按最大值取 */
+function maxBaseTable(){
+  const rows=DB.bases.maxBases||[];
+  if(!rows.length) return `<div class="empty">没有基地数据</div>`;
+  const cell=a=>{
+    if(!a) return '<span class="c-id">—</span>';
+    const bp=a.blueprint?`<br><span class="c-id">${esc(a.blueprint.note)}${a.slotMeasured?'':' · 路数推算'}</span>`:'';
+    return `<b>${esc(a.size)} = ${a.cells} 格</b>`
+      + `<br><span class="c-id">可建 ${a.usableCells} 格（扣掉核心 9×9）</span>${bp}`;
+  };
+  return `<div style="overflow-x:auto"><table class="lg-tb">
+    <thead><tr>
+      <th>基地</th><th>据点</th>
+      <th>类型（核心）</th>
+      <th class="r">建设区面积（满级）</th>
+      <th class="r">单边存取口</th>
+      <th class="r">满级<br>协议容量</th>
+      <th class="r">防御建筑<br>/ 滑索</th>
+      <th class="r">全解锁券</th>
+    </tr></thead>
+    <tbody>${rows.map(r=>{
+      const a=r.area, c=r.caps||{};
+      const isMain=r.role==='主基地';
+      return `<tr>
+        <td><b>${esc(r.zoneName)}</b> <span class="c-id">${esc(r.levelId)}</span></td>
+        <td>${esc(r.domainName)}<br><span class="c-id">满级 Lv${r.maxDevLevel!=null?r.maxDevLevel:'—'}</span></td>
+        <td><span class="c-cat ${isMain?'acc':''}">${esc(r.role)}</span>
+            <br><span class="c-id">${esc(a?a.coreName:'—')}</span></td>
+        <td class="r">${cell(a)}</td>
+        <td class="r">${a?a.slotsPerSide:'—'}</td>
+        <td class="r"><b>${c.bandwidth!=null?c.bandwidth:'—'}</b></td>
+        <td class="r">${c.battleBuildingLimit!=null?c.battleBuildingLimit:'—'} / ${c.travelPoleLimit!=null?c.travelPoleLimit:'—'}${c.mineOutputUp?' <span class="c-id">+矿</span>':''}</td>
+        <td class="r">${r.unlockCostTotal?r.unlockCostTotal+'<br><span class="c-id">'+esc(r.currency||'')+'</span>':'<span class="c-id">—</span>'}</td>
+      </tr>`;}).join('')}</tbody>
+  </table></div>`;
+}
+
+/* 谷地存取线示意图（实测）：只画「几条边排满」—— 方位随镜头旋转而变，
+   沙盘已经能转镜头（LO.viewRot），按"几条边"摆就对得上，不需要固定标边。 */
+function busSvgOne(z){
+  const side=z.side||40;
+  const S=Math.max(70,Math.round(side*1.5)), t=Math.max(5,Math.round(S*0.10));
+  /* 游戏里的真实关系（博士 2026-09-21 实拍）：源桩自己占一角、和基段同宽，基段紧贴着它往两个方向延伸；
+     副基地没有源桩，自动铺好的一条边横贯整个上边缘，直接用就行。源桩必须与基段条严丝合缝，不能凸出。 */
+  const hasSrc=!!z.source;
+  const src=t, o=hasSrc?src:0;
+  let bars='';
+  if(hasSrc){
+    bars='<rect x="'+o+'" y="0" width="'+(S-o)+'" height="'+t+'" class="bus-bar"/>'    // 上边：紧贴源桩右侧
+        +'<rect x="0" y="'+o+'" width="'+t+'" height="'+(S-o)+'" class="bus-bar"/>';   // 左边：紧贴源桩下方
+  }else{
+    bars='<rect x="0" y="0" width="'+S+'" height="'+t+'" class="bus-bar"/>';           // 副基地：整条上边
+  }
+  const srcRect=hasSrc?'<rect x="0" y="0" width="'+src+'" height="'+src+'" class="bus-src"/>':'';
+  return '<svg viewBox="0 0 '+S+' '+S+'" width="'+S+'" height="'+S+'" '
+    +'style="border:1px solid var(--line2);background:#FBFAF6;border-radius:4px;vertical-align:top">'
+    +bars+srcRect
+    +'</svg>';
+}
+function renderBase(){
+  const B=DB.bases;
+  const S=B.maxBasesSummary||{};
+  const cost=Object.entries(S.unlockCostByCurrency||{}).map(([k,v])=>esc(k)+' '+v).join('　／　');
+  const cellLine=Object.entries(S.cellsByDomain||{}).map(([k,v])=>
+    esc(k)+' '+v.mainN+' 主 '+v.main+' 格 + '+v.subN+' 副 '+v.sub+' 格 = <b>'+v.total+' 格</b>').join('　／　');
+  const bo=B.busObservations||{};
+  const busSvg=((bo.zones||[]).length)?`
+    <div class="d-sec" style="margin-top:16px"><div class="d-h">谷地存取线铺在基地哪几条边（实测 · 视角无关）</div>
+      <div class="note" style="margin-bottom:10px">${esc(bo.note||'')}</div>
+      <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start">
+        ${bo.zones.map(z=>`<div style="text-align:center">
+          ${busSvgOne(z)}
+          <div style="font-size:12.5px;margin-top:5px">${esc(z.zoneName)}</div>
+          <div class="c-sub" style="justify-content:center">${z.edges>=2?'源桩一角 · 相连两条边排满':'一条边自动铺满 · 贴放存取口即可'}</div>
+        </div>`).join('')}
+      </div>
+      <div class="c-sub" style="margin-top:8px">
+        <span>粗条 = 自动铺设的存取线</span>
+        <span>角上的方块 = 源桩（只有枢纽区有，基段紧贴它延伸）</span>
+        <span>副基地不用摆任何东西，自动铺好一条边，直接贴放存货口 / 取货口</span>
+        <span>只记「几条边」—— 具体是哪条边随镜头变，在沙盘里按「旋转视角」转一下就对得上</span>
+      </div>
+    </div>`:'';
+  return `<div class="note">
+      <b>📐 基地面积与建造上限</b><br>${B.areaSourceNote}
+    </div>
+    <div class="d-sec" style="margin-top:16px"><div class="d-h">满级基地总览（每片基地一行 · 全部按最大值取）</div>
+      <div class="note" style="margin-bottom:10px">${B.maxBasis}</div>
+      <div class="note" style="margin-bottom:10px">${B.baseRoleNote}</div>
+      <div class="note" style="margin-bottom:10px">${B.baseOnlyNote}</div>
+      <div class="c-sub" style="margin-bottom:8px">
+        <span>共 <b>${S.rows}</b> 片基地（${S.zonesTotal} 个建造区里只有这些有基地）</span>
+        <span>主基地 <b>${S.mainCount}</b> 片 · 副基地 <b>${S.subCount}</b> 片</span>
+        <span>满级协议容量合计 <b>${S.protocolCapacityTotal}</b></span>
+        <span>地面格数合计 <b>${S.cellsTotal}</b> 格</span>
+      </div>
+      <div class="c-sub" style="margin-bottom:8px"><span>${cellLine}</span></div>
+      <div class="c-sub" style="margin-bottom:8px"><span>全解锁券合计：${cost}（两种券，不能相加）</span></div>
+      ${maxBaseTable()}
+      <div class="c-sub" style="margin-top:8px">
+        <span>「全解锁券」= 区域扩大·一/二 + 全部仓库存取线，同券累加</span>
+        <span>「可建」= 扣掉核心本体 9×9 之后的地面格数</span>
+      </div>
+    </div>
+    <div class="d-sec" style="margin-top:18px"><div class="d-h">各基地建设区域面积（按地区看 · 满级）</div>
+      <div class="list">${baseCards()}</div>
+    </div>
+    <div class="note" style="margin-top:12px">
+      <b>边长 ↔ 存取口路数</b>　${esc(B.slotRule.formula)}<br>${esc(B.slotRule.note)}
+    </div>
+    <div class="d-sec" style="margin-top:18px"><div class="d-h">面积 vs 蓝图上限</div>
+      <div class="note" style="margin-bottom:10px">
+        一张蓝图最大 <b>50×50 格 / 160 个节点</b>（配置表硬上限）。所以：
+        武陵副基地（50×50）正好能被一张满规格蓝图铺满；
+        四号谷地主基地（70×70）与武陵主基地（80×80）边长都超过 50，一张铺不满，得拼。
+      </div>
+      ${B.areaComparisons.map(c=>`<div class="row">
+        <span class="tag">${esc(c.label)}</span><span>${esc(c.size)}</span>
+        <span>${esc(c.note)}</span>
+        ${c.exactMatch?'<span class="c-cat acc">正好一张蓝图</span>':''}
+      </div>`).join('')}
+    </div>
+    <div class="d-sec" style="margin-top:18px"><div class="d-h">蓝图系统硬上限（配置表 FacBlueprintConst）</div>
+      ${B.blueprintCaps.map(c=>`<div class="row">
+        <span class="tag">${esc(c.label)}</span><span><b>${esc(c.value)}</b></span>
+        <span class="c-id">${esc(c.key)}</span>
+      </div>`).join('')}
+    </div>
+    <div class="d-sec" style="margin-top:18px"><div class="d-h">扩建价目（配置表 FactoryPanelStoreTable）</div>
+      <div class="note" style="margin-bottom:10px">
+        在集成管家里买。只列配置表里有扩建条目的建造区；
+        「全解锁合计」= 区域扩大两档 + 全部仓库存取线（同一种券累加）。
+      </div>
+      ${baseExpansionTable()}
+    </div>
+    <div class="d-sec" style="margin-top:18px"><div class="d-h">据点发展等级 → 建造上限（配置表 DomainDataTable）</div>
+      <div class="note" style="margin-bottom:10px">
+        格内读法：<b>协议容量</b> <span class="c-id">防御建筑上限 / 滑索上限</span>；
+        标 <b>+矿</b> 表示该等级起矿机产出提升。<br>
+        列名带 <b>*</b> 的建造区<strong>没有基地</strong>（配置表里没有「区域扩大」条目）——
+        表里的协议容量只约束该区的<strong>野外设备</strong>，与基地无关。
+        有基地的只有上表那 8 个。
+      </div>
+      ${baseDevTables()}
+    </div>
+    <div class="d-sec" style="margin-top:18px"><div class="d-h">面积数据来源（社区实测，可逐条复核）</div>
+      ${B.sources.map(s=>`<div class="row">
+        <span class="tag acc">${esc(s.id)}</span>
+        <span>${esc(s.title)}</span>
+        <span>${esc(s.site)} · ${esc(s.author)} · ${esc(s.date)}</span>
+      </div>
+      <div class="row"><span class="tag"></span><span>${esc(s.claim)}</span></div>`).join('')}
+    </div>
+    <div class="note" style="margin-top:18px"><b>⚠ 数据边界（这些别当成配置表数据）</b></div>
+    ${B.boundaries.map(b=>`<div class="row"><span class="tag">边界</span><span>${b}</span></div>`).join('')}
+      ${busSvg}
+  `;
+}
+
+/* ---------- 布局试摆：交互画布 ----------
+   只在页面里摆占地，不做产线连线（连线数据不在配置表）。
+   左栏选建筑 → 画布点击摆放；单击已放建筑选中、双击移除；
+   空白处拖拽框选一批，拖动选中项整体移动；
+   选中后 R 原地转 90°、Del 删除、Ctrl+D 复制、Ctrl+Z / Ctrl+Y 撤销重做。
+   坐标靠 getBoundingClientRect 反算 —— 真实浏览器可用；vm 回归不触发事件，
+   但 Lput/Lrot/Ldel/Lundo/Ldup 都是纯函数，回归脚本直接调它们做断言。 */
+/* 格子边长（px）。2026-09-21 博士反馈「格子太小、物流件的流向箭头看不清」，
+   默认值从 14 提到 20，并在工具栏加了 14/20/26/32 四档可以随时调。
+   这个数同时决定：画布像素尺寸、鼠标坐标反算（Lxy）、框选橡皮筋、拖动预览位置，
+   以及 .lo-canvas 的背景网格间距（经 CSS 变量 --locell 传过去）—— 改一处就得同步另一处。 */
+let LOCELL=20;
+let LO=null, LODRAG=null;
+/* 物流件（传送带 / 管道 / 汇流分流 / 物流桥 / 阀门）不在 blueprint.buildings 里，
+   它们来自 logistics.entities。这里包一层「和建筑同形」的外壳，
+   让摆放 / 旋转 / 拖动 / 复制 / 删除 / 撤销整套逻辑原样复用，不用另开一条分支。 */
+function Llogi(){ return (DB.logistics&&DB.logistics.entities)||[]; }
+function LO_LG(e){
+  return {id:e.id,name:e.name,categoryName:'物流件',gridFootprint:'1×1',gridArea:1,gridHeight:0,
+    portCount:0,ports:[],isLogi:true,lgType:e.type,lgMedium:e.medium,
+    lgInFacings:e.inputFacings||[],lgOutFacings:e.outputFacings||[],
+    lgPerMin:e.unitsPerMinute,lgPerSec:e.unitsPerSecond};
+}
+function byBp(id){
+  const b=DB.blueprint.buildings.find(x=>x.id===id);
+  if(b) return b;
+  const e=Llogi().find(x=>x.id===id);
+  return e?LO_LG(e):null;
+}
+/* ⭐v104 气体散布机：范围/气体来自 FactoryVaporizerTable（rangeExtend + gasGroups）。
+   ENV_HEX 按**游戏 UI 实拍**校准（博士 2026-09-23 截图「本设备可生成的环境一览」）：
+   稳定=青蓝 / 湿润=白 / 酸性=橙黄 / 息壤=翠绿。
+   ⚠️ v103 曾按特效资源名 P_fxfac_vaporizer_scope_<色>_ 的颜色词猜色，把稳定/湿润对反了 ——
+   资源名是内部命名（white/blue 指特效白模/模板），**不是**显示色；仍保留在 envDisplay.color 里做溯源。
+   键直接用 GenEnv 1-4（博士问「哪来的第五种」：gray 只是查不到时的防御性兜底，游戏只有 4 种环境）。 */
+const ENV_HEX={1:'#3D9FD8',2:'#F4F7F8',3:'#E7AC3F',4:'#43B06E',gray:'#B4B2A9'};
+const ENV_EDGE={1:'#1B6E9E',2:'#93A8B4',3:'#96660F',4:'#1F7040',gray:'#5F5E5A'};
+const ENV_NAME={1:'稳定',2:'湿润',3:'酸性',4:'息壤'};
+/* 白圈（湿润）在浅色画布上几乎隐形 —— 给它专属的不透明度，其余维持轻透 */
+const ENV_OP={1:0.17,2:0.45,3:0.17,4:0.17,gray:0.17};
+function vaporizerOf(b){ return (b&&b.vaporizer)||null; }
+function envColorOf(env){ return ENV_HEX[env]||ENV_HEX.gray; }
+function envEdgeOf(env){ return ENV_EDGE[env]||ENV_EDGE.gray; }
+function envOpOf(env){ return ENV_OP[env]||ENV_OP.gray; }
+function envGasName(env){ const b=byBp('vaporizer_1'); const g=b&&b.vaporizer&&((b.vaporizer.gasGroups||[]).find(x=>x.env===env)); return g?g.name:('环境 '+env); }
+/* 环境圈边长（格）：占地 外扩*2；返回 [宽, 深, 外扩] */
+function vaporizerSide(b){ const vp=vaporizerOf(b); const ext=(vp&&vp.rangeExtend&&vp.rangeExtend.x)||0; const fp=Lfp(b); return [fp[0]+ext*2, fp[1]+ext*2, ext]; }
+/* ⭐v109 协议核心出货（博士 2026-09-23：「游戏里的协议核心出货口可以点击选择物品出货」+
+   「内部空白面积大，选货能不能在内部给个机器口对应的箭头什么的」）。
+   数据来自构建期注入的 DB.hubItems（raw/FactoryItemTable.deliverItemTypeList 非空者，
+   key = 物品 id，value = {name, rarity, domains}）；domains 里的域决定**哪台核心**能出它。
+   一个基地同时只有一台协议核心，所以「本核心可出货清单」= 该核心所属域的物品。
+   域怎么定：核心摆在哪个基地 → 基地的 domainName 反查 DB.bases.domains（四号谷地/武陵）。 */
+function hubIsHub(b){ return !!b&&b.id==='sp_hub_1'; }
+/* 当前摆放里那台协议核心（一台核心 = 一个基地，取第一台即可） */
+function hubObj(){ const L=Linit(); return L.objs.filter(o=>{ const b=byBp(o.id); return hubIsHub(b); })[0]||null; }
+/* 这台核心属于哪个域：基地（L.base 是 levelId）→ 地区名 → 域 id。
+   ⚠️ 必须用页面自己的 Lbases()（8 条基地、带 levelId），不能用 DB.bases.areas ——
+   areas 只有 4 条且**没有 levelId**（v109 首版踩过，武陵基地永远匹配不上，测试抓到）。
+   没选基地时退回出货方向下拉的出发地。 */
+function hubDomainOf(o){
+  const L=Linit();
+  const base=(Lbases()||[]).filter(x=>x.levelId===L.base)[0]||null;
+  const dn=base&&base.domainName;
+  const doms=(DB.bases&&DB.bases.domains)||[];
+  const hit=doms.filter(d=>d.name===dn)[0];
+  if(hit) return hit.id;
+  return LshipFromId?LshipFromId():'domain_1';
+}
+function hubDomainName(id){ const d=((DB.bases&&DB.bases.domains)||[]).filter(x=>x.id===id)[0]; return d?d.name:String(id||''); }
+/* 该核心可出货物品（按稀有度降序、同名相邻；只在需要时算，几十条量级） */
+function hubCands(domId){
+  const out=[];
+  const all=DB.hubItems||{};
+  Object.keys(all).forEach(iid=>{
+    const v=all[iid];
+    if((v.domains||[]).indexOf(domId)>=0) out.push({id:iid, name:v.name||iid, rarity:v.rarity||1});
+  });
+  out.sort((a,b)=> (b.rarity-a.rarity)||(a.name<b.name?-1:a.name>b.name?1:0));
+  return out;
+}
+/* ⭐ 只允许**出料口**（input 口是进料的，出货挂在 output 口上）。
+   也顺手把 hasPlaceLimit 之类不相关的口排除掉 —— 核心只有传送带口，无需过滤介质。 */
+function hubPicksOf(o){ const L=Linit(); return (L.hubPicks&&L.hubPicks[o.uid])||{}; }
+function hubPickGet(o,idx){ const m=hubPicksOf(o); return m[idx]||''; }
+function hubPickSet(uid,idx,itemId){
+  const L=Linit(); if(!L.hubPicks) L.hubPicks={};
+  if(!L.hubPicks[uid]) L.hubPicks[uid]={};
+  if(itemId) L.hubPicks[uid][idx]=itemId; else delete L.hubPicks[uid][idx];
+}
+function hubPickItem(o,idx){ const iid=hubPickGet(o,idx); return iid?((DB.hubItems||{})[iid]||null):null; }
+/* 稀有度 → 星串（列表里用，纯字符不给字号列表加样式负担） */
+function hubStars(r){ r=Math.max(1,Math.min(6,r|0)); return '★'.repeat(r); }
+/* 打开某台核心的出料口选货清单 */
+function LdlvOpen(uid,idx){ const L=Linit(); L.dlvPop={uid:uid, idx:idx}; render(); }
+function LdlvClose(){ const L=Linit(); L.dlvPop=null; render(); }
+function LdlvPick(uid,idx,itemId){
+  const L=Linit();
+  const cur=L.hubPicks&&L.hubPicks[uid]?L.hubPicks[uid][idx]:'';
+  const same=cur===itemId;                            // 再点同一件 = 取消
+  hubPickSet(uid,idx, same?'':itemId);
+  const it=itemId?((DB.hubItems||{})[itemId]||{}):null;
+  L.msg=same?('出料口 #'+idx+' 已取消出货物品')
+            :('出料口 #'+idx+' → '+((it&&it.name)||itemId));
+  render();
+}
+/* 走向命名：本页把 0° 定义成 +x（画布向右），顺时针每 90° 一档。
+   这纯粹是本画布内部的走向记号 —— 配置表没把 x/z 轴对应到游戏内绝对方位（同「接口边名」的说明），
+   所以不声称这是游戏里的朝向。 */
+function LdirName(rot){ return ({0:'右',90:'下',180:'左',270:'上'})[((rot%360)+360)%360]||'右'; }
+function LrotFrom(a,b){
+  if(b[0]>a[0]) return 0;
+  if(b[1]>a[1]) return 90;
+  if(b[0]<a[0]) return 180;
+  return 270;
+}
+function LfreeIn(list,x,y){
+  for(let i=0;i<list.length;i++){
+    const q=list[i];
+    if(x<q.x+q.w&&x+1>q.x&&y<q.y+q.d&&y+1>q.y) return false;
+  }
+  return true;
+}
+/* 接口朝外的方向：取该接口格压在占地方框的哪条边上。
+   角上的接口两条边都算，这里固定取 z 边（配置表里进料口压倒性多在 z=D-1 边）。 */
+function LportDir(q,W,D){
+  const onX=(q.x===0||q.x===W-1), onZ=(q.z===0||q.z===D-1);
+  if(onX&&!onZ) return q.x===0?'l':'r';
+  if(onZ) return q.z===0?'u':'d';
+  return '';
+}
+/* 某个接口外侧那一格有没有同类物流件 —— 有就是「接上了」 */
+function LlogiAt(idx,x,y,isPipe){
+  const o=idx[x+','+y];
+  if(!o) return false;
+  const b=byBp(o.id);
+  return !!b&&!!b.isLogi&&((!!isPipe)===(b.lgMedium==='管道'));
+}
+function Linit(){
+  if(!LO) LO={size:50,pick:null,pickRot:0,objs:[],sel:[],undo:[],redo:[],seq:0,msg:'',lastT:0,lastUid:'',showPort:true,showGas:true,zone:'',viewRot:0,base:'',plan:null,plans:[],tgt:'item_iron_cmpt',rate:10,selfLoop:false,shipIn:false,tv:0,tvHours:1,mt:[],shipPick:'',shipCands:[],shipDmap:null,shipRawSet:null,
+    /* ⭐⑥-3 收货方向（2026-09-22 博士：两地对称互传，现在用谷地→武陵；下拉为未来新地区留口） */
+    shipFrom:'domain_1', shipTo:'domain_2', pickShow:false,
+    /* ⭐v109 协议核心出货：{uid:{口index:物品id}} + 当前打开的选货浮层 {uid,idx} */
+    hubPicks:{}, dlvPop:null};
+  return LO;
+}
+/* 占地规格：rot 为 90/270 时宽进深互换（与游戏内旋转一致） */
+function Lfp(b){
+  const fp=String(b.gridFootprint||'').split('×');
+  return [fp[0]|0, fp[1]|0];
+}
+function Ldims(b,rot){
+  const fp=Lfp(b);
+  return (rot===90||rot===270) ? {w:fp[1],d:fp[0]} : {w:fp[0],d:fp[1]};
+}
+/* 接口格坐标按 rot 顺时针旋转： (x,z) -> (d-1-z, x)，同时宽深互换 */
+function LportXY(p,rot,w0,d0){
+  let x=p.x, z=p.z, W=w0, D=d0;
+  const n=(rot/90)%4;
+  for(let k=0;k<n;k++){
+    const nx=D-1-z, nz=x;
+    x=nx; z=nz;
+    const t=W; W=D; D=t;
+  }
+  return {x:x,z:z};
+}
+function Lmk(b,x,y,rot){
+  const L=Linit(); L.seq++;
+  const dm=Ldims(b,rot);
+  const o={uid:'o'+L.seq, id:b.id, x:x, y:y, rot:rot, w:dm.w, d:dm.d};
+  /* ⭐v103：散布机落位默认通惰气（GenEnv 1，白圈）—— 有个可见的默认态，选中后可切 */
+  if(vaporizerOf(b)) o.gas=1;
+  return o;
+}
+/* ---- 撤销 / 重做：整块快照（尺寸 + 摆放），最简单也最不容易错（单页几十座量级） ---- */
+function Lsnap(){ const L=Linit(); return JSON.stringify({size:L.size, base:L.base, objs:L.objs}); }
+function Lpush(){
+  const L=Linit();
+  L.undo.push(Lsnap());
+  if(L.undo.length>80) L.undo.shift();
+  L.redo.length=0;
+}
+function Lapply(s){
+  const L=Linit(), d=JSON.parse(s);
+  L.size=d.size; L.base=d.base||''; L.objs=d.objs;
+  L.sel=L.sel.filter(u=>L.objs.some(o=>o.uid===u));
+}
+function Lundo(){
+  const L=Linit();
+  if(!L.undo.length){ L.msg='没有可撤销的操作'; render(); return; }
+  L.redo.push(Lsnap()); Lapply(L.undo.pop()); L.msg='已撤销'; render();
+}
+function Lredo(){
+  const L=Linit();
+  if(!L.redo.length){ L.msg='没有可重做的操作'; render(); return; }
+  L.undo.push(Lsnap()); Lapply(L.redo.pop()); L.msg='已重做'; render();
+}
+function LselObjs(){ const L=Linit(); return L.objs.filter(o=>L.sel.indexOf(o.uid)>=0); }
+/* ---------- 局部锁定（路线图 ⑤-1，2026-09-22）----------
+   锁 =「这台我满意了，别动它」。两层含义：
+   ① 交互保护：拖动 / 删除 / 旋转 / 复制 一律跳过锁定件 —— 手调好的东西不会被误操作带走；
+   ② 重排约束：「重排其余」把锁定件当固定件，其余机器重新分层摆位并绕开它们，管线整条重铺。
+   ⚠️ 锁定只对**机器**有意义：管线是排布器算出来的产物，重排时一定重铺（按钮会提示）。 */
+function LlockSel(on){
+  const L=Linit();
+  const sel=LselObjs();
+  if(!sel.length){ L.msg='先选中要'+(on?'锁定':'解锁')+'的件（单击选中 / 空白处拖拽框选）'; render(); return; }
+  const ch=sel.filter(o=>(!!o.lock)===!on);
+  if(!ch.length){ L.msg='选中的 '+sel.length+' 个件本来就是「'+(on?'已锁定':'未锁定')+'」的'; render(); return; }
+  Lpush();
+  ch.forEach(o=>{ if(on) o.lock=true; else delete o.lock; });
+  L.msg=(on?'已锁定 ':'已解锁 ')+ch.length+' 个件'
+    +(on?'（锁定后：拖不动 / 删不掉 / 转不了；「重排其余」时位置不动）':'');
+  render();
+}
+function LunlockAll(){
+  const L=Linit();
+  const n=L.objs.filter(o=>o.lock).length;
+  if(!n){ L.msg='当前没有锁定的件'; render(); return; }
+  Lpush();
+  L.objs.forEach(o=>{ delete o.lock; });
+  L.msg='已解锁全部 '+n+' 个件（可撤销）'; render();
+}
+/* 能不能放：界内 + 不与 ign 之外的建筑重叠 */
+function Lfree(x,y,w,d,ign){
+  const L=Linit();
+  if(x<0||y<0||x+w>L.size||y+d>L.size) return false;
+  for(let i=0;i<L.objs.length;i++){
+    const o=L.objs[i];
+    if(ign&&ign.indexOf(o.uid)>=0) continue;
+    if(x<o.x+o.w&&x+w>o.x&&y<o.y+o.d&&y+d>o.y) return false;
+  }
+  return true;
+}
+function Lpick(id){
+  const L=Linit(); L.pick=byBp(id);
+  L.msg=L.pick&&L.pick.isLogi?'物流件：在空白格按住拖动可一次铺一排；R 换走向':''; render();
+}
+/* 把上方分类下拉切到指定分类（'' = 回到默认三类）；下拉要跟着同步，否则重渲染会把它拨回去 */
+function Lonly(v){
+  f1=v;
+  const s=$('#f1');
+  if(s) s.value=v;
+  Linit().msg='';
+  render();
+}
+/* 视角旋转：像游戏里那样转镜头。纯视图操作 —— 摆放数据不动，连点四次回到原位，
+   所以不进撤销栈。画布是正方形，旋转 90° 不改变包围盒，鼠标坐标由 Lxy 逆变换兜住。 */
+function LrotView(){
+  const L=Linit();
+  L.viewRot=((L.viewRot||0)+90)%360;
+  L.msg='视角已旋转到 '+L.viewRot+'°（只转镜头，摆放不动；连点四次回原位）';
+  render();
+}
+/* 切换「按哪个建造区的存取线上限来算」—— 只影响计数显示，不动摆放 */
+function Lzone(v){
+  const L=Linit();
+  L.zone=v;
+  L.msg='存取线上限改为按「'+v+'」的满级档位算';
+  render();
+}
+/* 只改格子边长，不动已摆的东西 —— 所以不进撤销栈，也不清空摆放 */
+function Lcell(n){
+  const L=Linit();
+  if(n===LOCELL){ render(); return; }
+  LOCELL=n;
+  L.msg='格子边长改为 '+n+'px';
+  render();
+}
+function Lsize(n){
+  const L=Linit(); Lpush();
+  const wasBase=!!L.base;
+  L.size=n; L.base=''; L.objs=[]; L.sel=[]; L.pick=null;
+  L.msg='画布改为 '+n+'×'+n+'，原有摆放已清空（可撤销）'+(wasBase?'；并回到自由模式（不限地区）':'');
+  render();
+}
+function Lclear(){
+  const L=Linit();
+  if(!L.objs.length){ L.msg='画布本来就是空的'; render(); return; }
+  Lpush(); L.objs=[]; L.sel=[]; L.msg='已清空（可撤销）'; render();
+}
+/* ⭐ 2026-09-21（博士反馈「放不上去」）：游戏里分/汇流器可以「替换」线上的普通物流段 ——
+   手里拿分/汇流器、点（或拖到）一个「介质匹配的传送带/管道格」→ 删掉那段、放分/汇流器。
+   机器与其他建筑依然拒绝（汇流器不能压机器）。命中并替换返回 true。 */
+function LreplaceCell(x,y){
+  const L=Linit();
+  if(!L.pick||!L.pick.isLogi) return false;
+  const pk=L.pick;
+  /* ⭐ 2026-09-21（博士：物流桥和准入口犯了同样的毛病）——两类行为不同：
+     串接类（分/汇流器、准入口）→ **替换**线上普通段；桥类（物流桥/管道桥）→ **叠加**（原线保留，立体跨线）。 */
+  const kind=(pk.lgType==='Router'||pk.lgType==='FluidRepeater'||pk.lgType==='BoxValve'||pk.lgType==='FluidValve') ? 'replace'
+           : (pk.lgType==='Connector'||pk.lgType==='FluidConnector') ? 'overlay' : null;
+  if(!kind) return false;
+  const occ=L.objs.find(o=>x>=o.x&&x<o.x+o.w&&y>=o.y&&y<o.y+o.d);
+  if(!occ) return false;
+  if(occ.lock) return false;   /* ⑤-1 局部锁定：锁定的段不许被替换 / 叠桥 */
+  const ob=byBp(occ.id);
+  if(!ob||!ob.isLogi||(ob.lgType!=='Belt'&&ob.lgType!=='Pipe')||ob.lgMedium!==pk.lgMedium) return false;
+  Lpush();
+  if(kind==='replace') L.objs=L.objs.filter(o=>o!==occ&&o.uid!==occ.uid);
+  const o=Lmk(pk,x,y,L.pickRot);
+  o.planRole='link';
+  L.objs.push(o); L.sel=[o.uid];
+  L.msg= kind==='replace' ? ('已把该格物流段替换成 '+pk.name) : (pk.name+' 已叠上（跨线，原线保留）');
+  render();
+  return true;
+}
+function Lput(x,y){
+  const L=Linit();
+  if(!L.pick) return;
+  const b=L.pick, dm=Ldims(b,L.pickRot);
+  if(!dm.w||!dm.d) return;
+  if(!Lfree(x,y,dm.w,dm.d,null)){
+    if(LreplaceCell(x,y)) return;
+    L.msg='这里放不下：越界或与已放建筑重叠'; render(); return;
+  }
+  Lpush();
+  const o=Lmk(b,x,y,L.pickRot);
+  L.objs.push(o); L.sel=[o.uid]; L.msg='';
+  render();
+}
+/* 物流件连铺：空白格按下即起手，拖动沿直线把这一排铺满（横还是竖由拖拽主轴决定）。
+   整段手势只压一次撤销栈（按下时 Lpush），拖动过程中来回改的是同一批格子。 */
+/* ⭐ 2026-09-21（博士截图反馈）：拉线升级成游戏的手感 ——
+   ① L 形拐弯：拖拽主轴先走、再转第二轴，弯头格的朝向自动衔接（渲染层按 rot 画，弯道箭头自动拐）；
+   ② 端点吸附：起手/落点压在机器上时，自动吸到该机「输出口/输入口」外一格（口外那格 = 游戏里
+      「出口旁边那格开始拉」；机器占格本身画布上被机器占着，带子贴着机器铺，视觉一致）。 */
+/* ⭐v107（博士图2「想要红箭头那种」）：拐弯先走哪条轴**跟手势**——
+   轨迹里第一个偏移过 1 格的点，它的主轴就是第一轴（先往上拖就先铺竖段）；
+   旧版按总位移大小（|dx|>=|dy| 先横），博士想先竖后横时被强行画成镜像。
+   轨迹退化/斜拖同帧双轴时回退旧判定（构造 LODRAG 没 hist 的旧调用方同样回退）。 */
+function LlayAxis(st){
+  const fb=Math.abs(st.ex-st.sx)>=Math.abs(st.ey-st.sy)?'h':'v';
+  if(!st.hist) return fb;
+  for(let i=0;i<st.hist.length;i++){
+    const ax=Math.abs(st.hist[i][0]-st.sx), ay=Math.abs(st.hist[i][1]-st.sy);
+    if(ax>=1||ay>=1) return ax===ay?fb:(ax>ay?'h':'v');
+  }
+  return fb;
+}
+function LlayPath(st){
+  const dx=st.ex-st.sx, dy=st.ey-st.sy;
+  const horizFirst=st.hf!=='v';
+  const cells=[];
+  const push=(x,y)=>{ const last=cells[cells.length-1];
+    if(last&&last[0]===x&&last[1]===y) return;
+    cells.push([x,y]); };
+  if(horizFirst){
+    const sx2=dx>=0?1:-1;
+    for(let x=st.sx;;x+=sx2){ push(x,st.sy); if(x===st.ex) break; }
+    const sy2=dy>=0?1:-1;
+    for(let y=st.sy;;y+=sy2){ push(st.ex,y); if(y===st.ey) break; }
+  }else{
+    const sy2=dy>=0?1:-1;
+    for(let y=st.sy;;y+=sy2){ push(st.sx,y); if(y===st.ey) break; }
+    const sx2=dx>=0?1:-1;
+    for(let x=st.sx;;x+=sx2){ push(x,st.ey); if(x===st.ex) break; }
+  }
+  return {cells:cells, horiz:horizFirst};
+}
+/* 端点吸附：格子上压着机器时，返回该机「输出口/输入口」外一格的坐标；空地返回 null（原格直用） */
+function LsnapEnd(x,y,which){
+  const L=Linit();
+  const hit=L.objs.filter(o=>x>=o.x&&x<o.x+o.w&&y>=o.y&&y<o.y+o.d && o.planRole!=='link');
+  for(let hi=0;hi<hit.length;hi++){
+    const o=hit[hi], b=byBp(o.id);
+    if(!b||!b.ports||!b.ports.length) continue;
+    const kind=which==='out'?'output':'input';
+    const cands=(b.ports||[]).filter(p=>p.kind===kind);
+    if(!cands.length) continue;
+    let best=null, bd=1e9;
+    cands.forEach(p=>{
+      const q=LportXY(p,o.rot,o.w,o.d);
+      const d=Math.abs(o.x+q.x-x)+Math.abs(o.y+q.z-y);
+      if(d<bd){ bd=d; best=q; }
+    });
+    if(!best) continue;
+    const dir=LportDir(best,o.w,o.d);
+    if(!dir) continue;
+    const DVEC={r:[1,0], l:[-1,0], d:[0,1], u:[0,-1]};
+    const v=DVEC[dir];
+    return {x:o.x+best.x+v[0], y:o.y+best.z+v[1], dir:dir};
+  }
+  return null;
+}
+/* 起点吸附：从机器口那一格起手（游戏里就是从「红圈」口上拉带子）——
+   起手格只有机器、外侧格是空的 → 把起点移到口外那一格（LsnapEnd 已给了「口外一格」的语义）。
+   ⭐v108：v107 只在起手格**空着**时才让 LlayTo 里的 LsnapEnd 生效 —— 但机器占着格子时
+   起手格命中机器，LonMouseDown 的 `if(Lfree(lx,ly,1,1,null))` 直接失败，压根进不了连铺，
+   「从红圈起手」在试摆器里根本做不到。这里加一个「纯探测」入口：只判断能不能吸、吸到哪，
+   **不改 LODRAG**（调用方 LsnapStart 返回值决定要不要起手，避免探测阶段污染拖拽态）。
+   返回 {x,y} = 口外那一格；不成立返回 null。 */
+function LsnapStart(x,y){
+  const L=Linit();
+  const sn=LsnapEnd(x,y,'out');
+  if(!sn) return null;
+  if(!LfreeIn(L.objs,sn.x,sn.y)) return null;
+  return sn;
+}
+function LlayTo(ex,ey){
+  const L=Linit(), st=LODRAG;
+  if(!st||st.mode!=='lay'||!L.pick) return;
+  st.hist=st.hist||[]; st.hist.push([ex,ey]);   /* ⭐v107 记录鼠标轨迹（格级），拐弯第一轴跟手势 */
+  st.ex=ex; st.ey=ey;
+  /* 端点吸附：压在机器上 → 吸到口外一格（起点=输出口、终点=输入口） */
+  let sx=st.sx, sy=st.sy, ex2=ex, ey2=ey;
+  const sSnap=LsnapEnd(st.sx, st.sy, 'out');
+  if(sSnap){ sx=sSnap.x; sy=sSnap.y; }
+  const eSnap=LsnapEnd(ex, ey, 'in');
+  if(eSnap){ ex2=eSnap.x; ey2=eSnap.y; }
+  const ln=LlayPath({sx:sx, sy:sy, ex:ex2, ey:ey2, hf:LlayAxis(st)});
+  /* 先把本手势上一帧铺的格摘掉，再整体重铺 —— 逐格 push 会让判定把自己的格子当障碍 */
+  if(st.uids&&st.uids.length) L.objs=L.objs.filter(o=>st.uids.indexOf(o.uid)<0);
+  const base=L.objs.slice(), added=[];
+  ln.cells.forEach((c,i)=>{
+    if(!LfreeIn(base,c[0],c[1])||!LfreeIn(added,c[0],c[1])) return; /* 压到建筑或自己重叠的格跳过 */
+    const nxt=ln.cells[i+1];
+    /* 每格朝下一格；末格沿用前一格走向（游戏里拉带子收尾也是这个手感） */
+    const rot=nxt?LrotFrom(c,nxt):(i>0?LrotFrom(ln.cells[i-1],c):L.pickRot);
+    added.push(Lmk(L.pick,c[0],c[1],rot));
+  });
+  st.uids=added.map(o=>o.uid);
+  if(!added.length){ L.msg='这条线上没有可放的空格'; render(); return; }
+  added.forEach(o=>L.objs.push(o));
+  L.msg='已铺 '+added.length+' 格（'+(ln.horiz?'横向':'纵向')+'）';
+  render();
+}
+function LtogglePort(){
+  const L=Linit(); L.showPort=!L.showPort;
+  L.msg=L.showPort?'已显示建筑接口':'已隐藏建筑接口（不影响摆放）'; render();
+}
+/* ⭐v103：环境圈整层开关 + 改选中散布机通入的气体（圈色按 EnvDisplay 映射跟着变） */
+function LtoggleGas(){
+  const L=Linit(); L.showGas=!L.showGas;
+  L.msg=L.showGas?'已显示气体散布机环境圈':'已隐藏环境圈（不影响摆放）'; render();
+}
+function LgasSet(v){
+  const L=Linit();
+  const sel=LselObjs().filter(o=>vaporizerOf(byBp(o.id)));
+  if(!sel.length){ L.msg='先在画布上选中气体散布机，再选通入的气体'; render(); return; }
+  Lpush();
+  sel.forEach(o=>{ o.gas=v; });
+  L.msg='已把选中的 '+sel.length+' 台散布机切到「'+envGasName(v)+'」（'+(ENV_NAME[v]||('环境'+v))+'环境 · 青蓝/白/橙黄/翠绿圈色按游戏校准）';
+  render();
+}
+/* 旋转：有选中就整体转（绕选区外接矩形中心，像游戏里那样刚体转），
+   没选中就把左栏待放置的朝向转一下 */
+function Lrot(){
+  const L=Linit();
+  const selAll=LselObjs(), sel=selAll.filter(o=>!o.lock);   /* ⑤-1：锁定件不参与旋转 */
+  if(!sel.length){
+    if(selAll.length){ L.msg='选中的 '+selAll.length+' 个件是锁定状态，先解锁再旋转'; render(); return; }
+    if(!L.pick){ L.msg='先在左栏选一座建筑，或选中已放的建筑'; render(); return; }
+    L.pickRot=(L.pickRot+90)%360;
+    L.msg='待放置朝向：'+L.pickRot+'°'; render(); return;
+  }
+  const minX=Math.min.apply(null,sel.map(o=>o.x)),
+        minY=Math.min.apply(null,sel.map(o=>o.y)),
+        maxX=Math.max.apply(null,sel.map(o=>o.x+o.w)),
+        maxY=Math.max.apply(null,sel.map(o=>o.y+o.d));
+  /* 全用 2 倍坐标做整数运算，避免半格；最后取整 */
+  const gx2=minX+maxX, gy2=minY+maxY;
+  /* 只把「真正要转的」排掉，锁定件留在原地 —— 若把它们也当忽略，转过来会压住它们 */
+  const ign=sel.map(o=>o.uid);
+  const moved=sel.map(o=>{
+    const nr=(o.rot+90)%360, dm=Ldims(byBp(o.id),nr);
+    const ox2=2*o.x+o.w, oy2=2*o.y+o.d;
+    return {o:o, nr:nr, w:dm.w, d:dm.d,
+      x:Math.round((gx2-(oy2-gy2)-dm.w)/2),
+      y:Math.round((gy2+(ox2-gx2)-dm.d)/2)};
+  });
+  for(let i=0;i<moved.length;i++){
+    const m=moved[i];
+    if(!Lfree(m.x,m.y,m.w,m.d,ign)){ L.msg='旋转后会越界或压到别的建筑，已取消'; render(); return; }
+  }
+  Lpush();
+  moved.forEach(m=>{ m.o.x=m.x; m.o.y=m.y; m.o.rot=m.nr; m.o.w=m.w; m.o.d=m.d; });
+  const skipN=(selAll.length-sel.length);
+  L.msg='已旋转 90°（'+moved.length+' 座）'+(skipN?('；'+skipN+' 座锁定中，跳过了'):'');
+  render();
+}
+function Ldel(uid){
+  const L=Linit();
+  const targets=uid?[uid]:L.sel.slice();
+  if(!targets.length){ L.msg='先选中要删的建筑（单击选中 / 空白处拖拽框选）'; render(); return; }
+  /* ⑤-1 局部锁定：锁定件跳过（全锁住就整条拒绝）—— 双击删除也走这里 */
+  const byUid=u=>L.objs.filter(o=>o.uid===u)[0];
+  const lkd=targets.filter(u=>{ const o=byUid(u); return !!o&&!!o.lock; });
+  const del=targets.filter(u=>lkd.indexOf(u)<0);
+  if(!del.length){ L.msg='选中的 '+lkd.length+' 个件是锁定状态，先解锁再删（工具栏「解锁选中」）'; render(); return; }
+  Lpush();
+  L.objs=L.objs.filter(o=>del.indexOf(o.uid)<0);
+  L.sel=L.sel.filter(u=>del.indexOf(u)<0);
+  L.msg='已删除 '+del.length+' 座'+(lkd.length?('；'+lkd.length+' 座锁定中，跳过了'):''); render();
+}
+/* 复制：整体往右挪一个选区宽，右边放不下就往下，再不行就报错（游戏里也是这个逻辑） */
+function Ldup(){
+  const L=Linit();
+  const selAll=LselObjs(), sel=selAll.filter(o=>!o.lock);   /* ⑤-1：锁定件不参与复制 */
+  if(!sel.length){
+    L.msg=selAll.length?'选中的都是锁定件，先解锁再复制':'先选中要复制的建筑'; render(); return;
+  }
+  const minX=Math.min.apply(null,sel.map(o=>o.x)),
+        minY=Math.min.apply(null,sel.map(o=>o.y)),
+        maxX=Math.max.apply(null,sel.map(o=>o.x+o.w)),
+        maxY=Math.max.apply(null,sel.map(o=>o.y+o.d));
+  const gw=maxX-minX, gd=maxY-minY;
+  const tries=[[gw,0],[0,gd],[gw,gd]];
+  for(let i=0;i<tries.length;i++){
+    const dx=tries[i][0], dy=tries[i][1];
+    let ok=dx||dy;
+    for(let j=0;j<sel.length&&ok;j++){
+      const o=sel[j];
+      if(!Lfree(o.x+dx,o.y+dy,o.w,o.d,null)) ok=false;
+    }
+    if(!ok) continue;
+    Lpush();
+    const news=sel.map(o=>{
+      const b=byBp(o.id);
+      const c=Lmk(b,o.x+dx,o.y+dy,o.rot);
+      L.objs.push(c); return c;
+    });
+    L.sel=news.map(o=>o.uid);
+    L.msg='已复制 '+news.length+' 座'; render(); return;
+  }
+  L.msg='旁边放不下副本，先腾点空间'; render();
+}
+/* 单击/框选后的高亮：直接改 DOM，避免重建（重建会让双击的第二个 click 落到新节点上） */
+function LpaintSel(c){
+  const L=Linit();
+  const nodes=c.querySelectorAll('.lo-cell');
+  for(let i=0;i<nodes.length;i++){
+    const n=nodes[i], on=L.sel.indexOf(n.dataset.uid)>=0;
+    if(on) n.classList.add('sel'); else n.classList.remove('sel');
+  }
+}
+/* 框选命中：矩形（格坐标，右下开区间）与建筑外接框有交集就选中 */
+function LselIn(x1,y1,x2,y2){
+  const L=Linit();
+  L.sel=L.objs.filter(o=>o.x<x2&&o.x+o.w>x1&&o.y<y2&&o.y+o.d>y1).map(o=>o.uid);
+  return L.sel.length;
+}
+function Lxy(e,c){
+  const r=c.getBoundingClientRect();
+  /* 视角旋转后包围盒仍是正方形（40/50/70/80 的平方），尺寸不变；
+     但视口坐标要按当前角度逆旋转回画布坐标，否则点哪儿都偏 */
+  const W=r.width, half=W/2;
+  let dx=e.clientX-r.left-half, dy=e.clientY-r.top-half;
+  const deg=(LO&&LO.viewRot)?LO.viewRot:0;
+  if(deg){
+    const th=deg*Math.PI/180, co=Math.cos(th), si=Math.sin(th);
+    const x=dx*co+dy*si, y=-dx*si+dy*co;
+    dx=x; dy=y;
+  }
+  return {fx:(dx+half)/LOCELL, fy:(dy+half)/LOCELL};
+}
+/* ⭐v109：点是否落在某台机器的**某个口**上（用于「口上点击=拉线 / 拖动=移机器」的分流）。
+   判定用「口的那个格」+ 该口的朝向：点在口格上即算命中（画布上口就画在那格里）。
+   返回 {o,b,p,dir,ox,oy} = 机器、建筑、口、口朝向、口外那一格；没命中返回 null。 */
+function LhitPort(o,fx,fy){
+  const b=byBp(o.id);
+  if(!b||!b.ports||!b.ports.length) return null;
+  const cx=Math.floor(fx), cy=Math.floor(fy);
+  for(let i=0;i<b.ports.length;i++){
+    const p=b.ports[i];
+    const q=LportXY(p,o.rot,o.w,o.d);
+    const gx=o.x+q.x, gy=o.y+q.z;
+    if(gx!==cx||gy!==cy) continue;
+    const dir=LportDir(q,o.w,o.d);
+    if(!dir) continue;
+    const DV={r:[1,0], l:[-1,0], d:[0,1], u:[0,-1]}[dir];
+    return {o:o, b:b, p:p, dir:dir, ox:gx+DV[0], oy:gy+DV[1]};
+  }
+  return null;
+}
+function LonMouseDown(e){
+  if(tab!=='layout'||e.button!==0) return;
+  /* ⭐v104 就地选气条浮在画布内（.lo-gasbar）：点它的按钮不能被当成「点画布摆放」——
+     否则手里拿着散布机时点色块会**再放一座**（博士 2026-09-23 实测），还顺带清掉选中。
+     这里直接放行，让按钮自己的 onclick=LgasSet 接手。 */
+  if(e.target.closest&&e.target.closest('.lo-gasbar')) return;
+  /* ⭐v109 协议核心出货：内部箭头（.lo-dlv）与选货浮层（.lo-dlvpop）自成一套点击 ——
+     放行给它们自己的 onclick，否则点箭头会被当成「点画布 → 清选中 / 摆新件」。
+     点画布别处则顺手关掉浮层（浮层外点击 = 收起）。 */
+  if(e.target.closest&&e.target.closest('.lo-dlv')) return;
+  if(e.target.closest&&e.target.closest('.lo-dlvpop')) return;
+  if(Linit().dlvPop) Linit().dlvPop=null;
+  const c=e.target.closest('.lo-canvas'); if(!c) return;
+  e.preventDefault();
+  const L=Linit(), p=Lxy(e,c);
+  const cellEl=e.target.closest('.lo-cell');
+  const hit=cellEl?L.objs.filter(o=>o.uid===cellEl.dataset.uid)[0]:null;
+  L.msg='';
+  if(hit){
+    /* ⭐ 点已有实体：pick 是分/汇流器且点的是同类介质普通段 → 替换（游戏同款）；
+       其余仍走选中/移动。 */
+    if(LreplaceCell(hit.x,hit.y)) return;
+    if(L.sel.indexOf(hit.uid)<0) L.sel=e.shiftKey?L.sel.concat([hit.uid]):[hit.uid];
+    else if(e.shiftKey) L.sel=L.sel.filter(u=>u!==hit.uid);
+    LpaintSel(c);
+    /* ⑤-1 局部锁定：锁定件不参与拖动 —— 整组拖动时把它们从拖动集合里摘掉；
+       全是锁定件就只做选中、不起拖（也顺带挡掉双击删除）。 */
+    const dragSel=L.sel.filter(u=>{ const q=L.objs.filter(x=>x.uid===u)[0]; return !!q&&!q.lock; });
+    if(!dragSel.length){ LODRAG=null; L.msg='选中的是锁定件，动不了（工具栏「解锁选中」或按 L 解锁）'; render(); return; }
+    /* ⭐v109（博士 2026-09-23「点机器口机器会被拖动」）：手拿物流件、按在**该机的口格**上 →
+       先只选中、进「待决态」不起拖。原地松手 = 从口外起手连铺；拖过 4px 才转成移动机器。
+       旧版命中机器就直接进 move，v108 的「口外起手」分支在后面永远走不到 —— 想从口红圈拉线，
+       一动就把机器拖走了。 */
+    const pkPortPend=L.pick&&L.pick.isLogi&&LhitPort(hit,p.fx,p.fy);
+    if(pkPortPend){
+      LODRAG={mode:'portpend', uid:hit.uid, fx:p.fx, fy:p.fy, sel:dragSel,
+        from:L.objs.map(o=>({uid:o.uid,x:o.x,y:o.y})), moved:false, dx:0, dy:0};
+      L.msg='按在出料口上：原地松手=从这里拉线，拖动=移动机器';
+      return;
+    }
+    LODRAG={mode:'move', uid:hit.uid, fx:p.fx, fy:p.fy, sel:dragSel,
+      from:L.objs.map(o=>({uid:o.uid,x:o.x,y:o.y})), moved:false, dx:0, dy:0};
+    return;
+  }
+  L.sel=[];
+  LpaintSel(c);
+  /* 手里拿着物流件、按在空白格上 → 起手连铺，不走框选 */
+  if(L.pick&&L.pick.isLogi){
+    const lx=Math.floor(p.fx), ly=Math.floor(p.fy);
+    /* ⭐v108（博士图：「游戏里是从红圈里开始拉」）：起手格压在机器上、但出口外侧格空着
+       → 从**口外那一格**起手（在机器的「红圈」口上拉带子，游戏手感）。
+       先只探测、不动状态；确认能起手才 Lpush（整段手势只压一次撤销栈）。 */
+    const free=Lfree(lx,ly,1,1,null);
+    const sn=free?null:LsnapStart(lx,ly);
+    if(free||sn){
+      const sx0=sn?sn.x:lx, sy0=sn?sn.y:ly;
+      Lpush();
+      LODRAG={mode:'lay', sx:sx0, sy:sy0, ex:sx0, ey:sy0, uids:[], hist:[[sx0,sy0]]};
+      LlayTo(sx0,sy0);
+      return;
+    }
+    LODRAG=null;                       /* 探测阶段留下的临时拖拽态丢掉，走原逻辑 */
+    if(LreplaceCell(lx,ly)) return;    /* 分/汇流器点在同类介质物流段上 → 替换（游戏同款） */
+  }
+  LODRAG={mode:'band', fx:p.fx, fy:p.fy, x:p.fx, y:p.fy, moved:false, band:null};
+}
+function LonMouseMove(e){
+  if(!LODRAG||tab!=='layout') return;
+  const c=document.querySelector('.lo-canvas'); if(!c) return;
+  const p=Lxy(e,c), st=LODRAG;
+  if(st.mode==='band'){
+    st.x=p.fx; st.y=p.fy;
+    const dx=p.fx-st.fx, dy=p.fy-st.fy;
+    if(!st.moved&&Math.abs(dx)*LOCELL<4&&Math.abs(dy)*LOCELL<4) return;
+    st.moved=true;
+    if(!st.band){ st.band=document.createElement('div'); st.band.className='lo-band'; c.appendChild(st.band); }
+    st.band.style.left=(Math.min(st.fx,st.x)*LOCELL)+'px';
+    st.band.style.top=(Math.min(st.fy,st.y)*LOCELL)+'px';
+    st.band.style.width=(Math.abs(dx)*LOCELL)+'px';
+    st.band.style.height=(Math.abs(dy)*LOCELL)+'px';
+    return;
+  }
+  if(st.mode==='lay'){
+    const lx=Math.floor(p.fx), ly=Math.floor(p.fy);
+    if(lx!==st.ex||ly!==st.ey) LlayTo(lx,ly);
+    return;
+  }
+  /* ⭐v109 待决态：手拿物流件按在口上 —— 还没动就是「还没决定」，动过阈值才转成移机器 */
+  if(st.mode==='portpend'){
+    const dx0=p.fx-st.fx, dy0=p.fy-st.fy;
+    if(Math.abs(dx0)*LOCELL<4&&Math.abs(dy0)*LOCELL<4) return;
+    st.mode='move';   /* 拖了就按移机器走，后面这段逻辑复用 */
+  }
+  const ddx=Math.round(p.fx-st.fx), ddy=Math.round(p.fy-st.fy);
+  if(!st.moved&&Math.abs(p.fx-st.fx)*LOCELL<4&&Math.abs(p.fy-st.fy)*LOCELL<4) return;
+  st.moved=true; st.dx=ddx; st.dy=ddy;
+  const L=Linit();
+  st.sel.forEach(u=>{
+    const f=st.from.filter(q=>q.uid===u)[0];
+    const el=c.querySelector('[data-uid="'+u+'"]');
+    if(!f||!el) return;
+    el.style.left=((f.x+ddx)*LOCELL)+'px';
+    el.style.top=((f.y+ddy)*LOCELL)+'px';
+  });
+}
+function LonMouseUp(){
+  if(!LODRAG) return;
+  const st=LODRAG; LODRAG=null;
+  if(tab!=='layout') return;
+  const L=Linit();
+  if(st.mode==='lay'){
+    /* ⭐ 2026-09-21（博士「拖拽到传送带上还是不行」）：拖拽的**落点**压在同类介质物流段上时，
+       松手 = 把该格替换成分/汇流器（游戏同款）—— 拖动过程只预览、不破坏已有线。 */
+    if(L.pick && LreplaceCell(st.ex, st.ey)){ render(); return; }
+    L.sel=(st.uids||[]).slice();
+    L.msg=(st.uids&&st.uids.length)
+      ? ('已铺 '+st.uids.length+' 格物流件（Ctrl+Z 可撤销这一步）')
+      : '没铺上：格子上已经有建筑或物流件';
+    render(); return;
+  }
+  if(st.mode==='band'){
+    if(st.band&&st.band.parentNode) st.band.parentNode.removeChild(st.band);
+    if(st.moved){
+      const x1=Math.floor(Math.min(st.fx,st.x)), y1=Math.floor(Math.min(st.fy,st.y));
+      const x2=Math.ceil(Math.max(st.fx,st.x)), y2=Math.ceil(Math.max(st.fy,st.y));
+      LselIn(x1,y1,x2,y2);
+      L.msg=L.sel.length?('框选 '+L.sel.length+' 座'):'框选范围内没有建筑';
+    } else if(L.pick){
+      /* 没拖动 = 单击空白：按待放置建筑摆一座（自带越界/重叠判定） */
+      Lput(Math.floor(st.fx),Math.floor(st.fy));
+      return;
+    }
+    render(); return;
+  }
+  /* ⭐v109 待决态原地松手 = 从口外起手拉线（博士「游戏里是从红圈里开始拉」）：
+     点口不再拖走机器，而是从这里开始铺。 */
+  if(st.mode==='portpend'){
+    const lx=Math.floor(st.fx), ly=Math.floor(st.fy);
+    const sn=LsnapStart(lx,ly);
+    if(!sn){ L.msg='这个口的外侧没有空格，放不下物流件'; render(); return; }
+    Lpush();
+    LODRAG={mode:'lay', sx:sn.x, sy:sn.y, ex:sn.x, ey:sn.y, uids:[], hist:[[sn.x,sn.y]]};
+    LlayTo(sn.x,sn.y);
+    L.msg='从口外 ('+sn.x+','+sn.y+') 起手拉线，拖到终点松手';
+    render(); return;
+  }
+  if(st.moved&&(st.dx||st.dy)){
+    let ok=true;
+    for(let i=0;i<st.sel.length&&ok;i++){
+      const u=st.sel[i];
+      const o=L.objs.filter(q=>q.uid===u)[0];
+      const f=st.from.filter(q=>q.uid===u)[0];
+      if(!o||!f) continue;
+      if(!Lfree(f.x+st.dx,f.y+st.dy,o.w,o.d,st.sel)) ok=false;
+    }
+    if(ok){
+      Lpush();
+      st.sel.forEach(u=>{
+        const o=L.objs.filter(q=>q.uid===u)[0];
+        const f=st.from.filter(q=>q.uid===u)[0];
+        if(o&&f){ o.x=f.x+st.dx; o.y=f.y+st.dy; }
+      });
+      L.msg='已移动 '+st.sel.length+' 座（'+st.dx+', '+st.dy+'）';
+    } else {
+      /* ⭐ 2026-09-21（博士「拖到传送带上放不上」）：拖的是分/汇流器（Router/FluidRepeater 单选）
+         且落点格恰好是「同类介质的普通物流段」→ 替换该格：删段、分/汇流器移过去。 */
+      if(st.sel.length===1){
+        const o=L.objs.filter(q=>q.uid===st.sel[0])[0];
+        const f=st.from.filter(q=>q.uid===st.sel[0])[0];
+        const mb=o?byBp(o.id):null;
+        const mKind=(mb&&mb.isLogi)
+          ? ((mb.lgType==='Router'||mb.lgType==='FluidRepeater'||mb.lgType==='BoxValve'||mb.lgType==='FluidValve') ? 'replace'
+           : (mb.lgType==='Connector'||mb.lgType==='FluidConnector') ? 'overlay' : null)
+          : null;
+        if(o&&f&&mKind){
+          const nx=f.x+st.dx, ny=f.y+st.dy;
+          const occ=L.objs.find(q=>q!==o&&nx>=q.x&&nx<q.x+q.w&&ny>=q.y&&ny<q.y+q.d);
+          const ob=occ?byBp(occ.id):null;
+          if(occ&&occ.x===nx&&occ.y===ny&&occ.w===1&&occ.d===1&&ob&&ob.isLogi
+             &&(ob.lgType==='Belt'||ob.lgType==='Pipe')&&ob.lgMedium===mb.lgMedium){
+            Lpush();
+            if(mKind==='replace') L.objs=L.objs.filter(q=>q!==occ);   /* 串接类：删段换上 */
+            o.x=nx; o.y=ny;                                            /* 桥类：叠上（原线保留） */
+            L.msg= mKind==='replace' ? ('已把该格物流段替换成 '+mb.name) : (mb.name+' 已叠上（跨线，原线保留）');
+            render(); return;
+          }
+        }
+      }
+      L.msg='移动后会越界或压到别的建筑，已还原';
+    }
+  } else if(st.uid){
+    /* 自己判双击：不用原生 dblclick —— 中间只要重建过 DOM，原生双击就哑了 */
+    const t=Date.now();
+    if(t-L.lastT<420&&L.lastUid===st.uid){ Ldel(st.uid); return; }
+    L.lastT=t; L.lastUid=st.uid;
+  }
+  render();
+}
+function LonKeyDown(e){
+  if(tab!=='layout') return;
+  const t=e.target, tag=(t&&t.tagName)?String(t.tagName).toLowerCase():'';
+  if(tag==='input'||tag==='select'||tag==='textarea') return;
+  const k=e.key, mod=e.ctrlKey||e.metaKey;
+  if(mod&&(k==='z'||k==='Z')){ e.preventDefault(); if(e.shiftKey) Lredo(); else Lundo(); return; }
+  if(mod&&(k==='y'||k==='Y')){ e.preventDefault(); Lredo(); return; }
+  if(mod&&(k==='d'||k==='D')){ e.preventDefault(); Ldup(); return; }
+  if(k==='r'||k==='R'){ e.preventDefault(); Lrot(); return; }
+  /* ⑤-1 局部锁定：L 键 = 锁定 / 解锁选中（选中里有未锁的就锁，全锁了就解） */
+  if(k==='l'||k==='L'){
+    e.preventDefault();
+    const L=Linit(), sel=LselObjs();
+    LlockSel(sel.filter(o=>!o.lock).length>0);
+    return;
+  }
+  if(k==='Delete'||k==='Backspace'){ e.preventDefault(); Ldel(); return; }
+  if(k==='Escape'){ Linit().sel=[]; Linit().msg=''; render(); }
+}
+/* 布局试摆默认只列「能进基地产线」的基建：
+     生产   = 基础加工 + 组件加工
+     电力   = 电力设施
+     存储物流 = 仓储物流 + 物流辅助
+   另外放行「核心结构」—— 协议核心 / 次级核心。它们在配置表里 quickBarType 为空、被兜底归进
+   「装饰与其他」（界面上显示成「饰」），但 9×9 占地 + 20 个接口，基地布局绕不开，所以按 ID
+   单独放行（不按名称匹配，免得踩中文名变动的坑）。分类本身已在数据载入时改成「核心结构」，
+   见前面的 CORE_STRUCT_IDS 段。
+   ⚠️ 这里曾经把「产物排出口 liquid_recycle_gate_1 / 污水接入口 liquid_clean_gate_1」也一并放行 ——
+   它们是武陵净水节点上的野外固定闸口（allowPlayerMove=false、canDelete=false），不在基地里，
+   博士 2026-09-21 在游戏里找不到、核查后移除。
+   默认不列：资源采集（矿机/水泵只能放野外矿点）、防御设施、装饰（玩偶/立牌/田块等）。
+   要单独看某一类，用上方的分类下拉直接选。 */
+const LO_KEEP_CATS=['基础加工','组件加工','电力设施','仓储物流','物流辅助'];
+const LO_KEEP_IDS=['sp_hub_1','sp_sub_hub_1'];
+/* 沙盘里一概不提供的建筑（按 ID 拉黑，含多地区同名变体）：
+     中继器 power_pole_2 / 息壤中继器 power_pole_3 —— 博士 2026-09-21 要求去掉。
+     洒水机 squirter / 给水器 dumper / 滑索架 travel_pole（含长距滑索架 travel_pole_2）
+     / 便捷存取站 carrier_1 / 留言信标 marker_1 —— 博士 2026-09-21 要求不出现在试摆里。
+   拉黑对「默认清单」和「分类下拉单独看」都生效；要放回来，把 ID 从这里删掉即可。 */
+const LO_SKIP_IDS=['power_pole_2','power_pole_3',
+  'squirter_1','squirter_nop_1',        /* 洒水机 */
+  'dumper_1','dumper_nop_1',            /* 给水器 */
+  'travel_pole_1','travel_pole_nop_1',  /* 滑索架 */
+  'travel_pole_2',                      /* 长距滑索架（同类，博士 2026-09-21 一并去掉） */
+  'carrier_1','marker_1'];            /* 便捷存取站 / 留言信标（博士 2026-09-21） */
+/* 免电变体（id 带 _nop_，如 storager_nop_1）不在试摆里列 —— 博士 2026-09-21：同名只留正常版。
+   要放回来，把下面改成 false 即可。 */
+const LO_HIDE_NOP=true;
+const LO_IS_NOP=b=>String(b.id).indexOf('_nop_')>=0;
+/* ---------- 基地 / 地区：武陵与四号谷地的存取线是两套规则，别混着算 ----------
+   博士 2026-09-21：「布局试摆我看不见四号谷地的预设存取线，能把武陵和四号谷地分开讨论吗」。
+   两地差别（依据：data/bases.json 的 busObservations、zones[].busCap）：
+     · 四号谷地：存取线由基地升级后**自动铺在基地外侧边缘**，玩家不用摆；配置表档位里也没有数量。
+     · 武陵：源桩 + 基段**要自己摆**，有满级上限（源桩 2 / 基段 12·25），没接上的件游戏里会标红。
+   所以沙盘按「基地」分模式：
+     · 选谷地 → 左栏不给源桩 / 基段；也不判「贴靠」（预设线坐标属关卡场景数据，配置表里是 0，判不了）。
+     · 选武陵 → 原样：自己摆 + 上限 + 标红。
+     · 自由模式（不选基地）→ 沿用武陵那套，只是不带地区名。
+   ⚠️ 谷地预设线**暂不画**（博士 2026-09-21 定的：等他在游戏里给截图再按实测收录）。
+      将来画的时候按「只做可视参考、不占格、不挡摆放」的口径叠在画布最外圈。 */
+const LO_BUS_IDS=['log_hongs_bus_source','log_hongs_bus'];
+const LO_PRESET_BUS_REGIONS=['四号谷地'];
+function Lbases(){
+  return ((DB.bases&&DB.bases.maxBases)||[]).map(r=>({
+    levelId:r.levelId, zoneName:r.zoneName, domainName:r.domainName,
+    role:r.role, side:(r.area&&r.area.side)||0
+  })).filter(r=>!!r.side);
+}
+function LbaseRow(){ const L=Linit(); return Lbases().filter(r=>r.levelId===L.base)[0]||null; }
+/* 当前地区名；'' = 自由模式（不限地区） */
+function Lregion(){ const r=LbaseRow(); return r?r.domainName:''; }
+/* 谷地：存取线是预设自动铺的 —— 玩家不摆源桩/基段，贴靠也判不了 */
+function LisPresetBus(){ return LO_PRESET_BUS_REGIONS.indexOf(Lregion())>=0; }
+/* 当前基地对应的「谷地存取线实测档」（bases.json 的 busObservations.zones，按 levelId 索引） */
+function LbusZone(){
+  const L=Linit();
+  const z=(((DB.bases||{}).busObservations||{}).zones)||[];
+  return z.filter(r=>r.levelId===L.base)[0]||null;
+}
+/* ---------- ⭐⑥-3 收货方向：从 / 到（2026-09-22 博士定）----------
+   两地对称互传（规则原文：「各地区仓库互相独立，可以从其他地区的仓库传输物品到本地区仓库」），
+   现在实际用的是 四号谷地 → 武陵；方向做成**下拉**、地区清单从 DB.bases.domains 动态读，
+   以后新地区开放（domain_3…）不用改代码。 */
+function Ldomains(){ return ((DB.bases&&DB.bases.domains)||[]); }
+function LdomainName(id){ const d=Ldomains().filter(x=>x.id===id)[0]; return d?d.name:String(id); }
+function LshipFromId(){ const L=Linit(); return L.shipFrom||'domain_1'; }
+function LshipToId(){ const L=Linit(); return L.shipTo||'domain_2'; }
+function LshipFromName(){ return LdomainName(LshipFromId()); }
+function LshipToName(){ return LdomainName(LshipToId()); }
+/* 改方向：选自己=无操作提示、选另一端=换向（两地对称互传的唯一入口）；出发地变 → 「出发地能产」清单变 → 旧收货选择作废；有产线就重算（开关即重算同款） */
+function LshipDirV(which, id){
+  const L=Linit();
+  const fid=LshipFromId(), tid=LshipToId();
+  const self=(which==='from')?fid:tid, other=(which==='from')?tid:fid;
+  if(id===self){ L.msg='收货方向没变（仍是「'+LshipFromName()+' → '+LshipToName()+'」）'; render(); return; }
+  let swap=false;
+  if(id===other){
+    /* 单端下拉选了另一端 → 解释为**换向**（交换两端）。两地现状下中间态必然同端，
+       不这么解释「武陵→谷地」就永远配不出来 —— 对称互传（⑥-3 拍板）必须在 UI 上可达。 */
+    L.shipFrom=tid; L.shipTo=fid; swap=true;
+  }else{
+    if(which==='from') L.shipFrom=id; else L.shipTo=id;
+  }
+  L.shipPick='';
+  L.msg='跨地区收货方向'+(swap?'已换向':'改为')+'「'+LshipFromName()+' → '+LshipToName()+'」'+(L.plan&&L.plan.res?'，已按新方向重算':'');
+  if(L.plan&&L.plan.res) LawRun(L.tgt, L.rate); else render();
+}
+/* ---------- 谷地预设存取线：贴在**画布外缘**的带子 ----------
+   博士 2026-09-21 定的口径：「就是贴在画布外缘，不占基地格子」——
+   所以整条带子画在画布框**外面**（负偏移），一格都不占，也不参与碰撞与撤销。
+   摆法按基地面积页那张示意图（博士 2026-09-21 确认「就按这张示意图画」）：
+     · 枢纽区   源桩占左上角 + 与之相连的上、左两条边铺满（busObservations.edges=2, source=true）
+     · 三个副基地 一条边铺满、没有源桩（edges=1, source=false）
+   ⚠️ 这是**示意图的摆法**，不是游戏内实测的绝对方位 —— 具体哪条边随镜头变，
+      要跟游戏里对齐就用工具栏的「旋转视角」。别把它写成"实测方位"。 */
+function LpresetBand(z,C,S){
+  if(!z) return '';
+  const W=S*C, t='四号谷地 · 预设仓库存取线（基地升级后自动铺，玩家不用摆）';
+  let h='';
+  if(z.source) h+='<i class="lo-pre lo-pre-src" style="left:'+(-C)+'px;top:'+(-C)+'px;width:'+C+'px;height:'+C+'px"'
+    +' title="'+t+' · 源桩（占一角，基段紧贴它延伸）"></i>';
+  h+='<i class="lo-pre lo-pre-h" style="left:0px;top:'+(-C)+'px;width:'+W+'px;height:'+C+'px"'
+    +' title="'+t+' · 画布上边缘"></i>';
+  if((z.edges||1)>=2) h+='<i class="lo-pre lo-pre-v" style="left:'+(-C)+'px;top:0px;width:'+C+'px;height:'+W+'px"'
+    +' title="'+t+' · 画布左边缘（与上边缘相连）"></i>';
+  return h;
+}
+/* 切基地：设画布边长 + 切地区模式。边长没变就保留摆放；变了就照换尺寸的规矩清空（可撤销）。 */
+function LbaseSet(id){
+  const L=Linit();
+  const r=Lbases().filter(x=>x.levelId===id)[0];
+  if(!r){ L.base=''; L.msg='已回到自由模式（不限地区）'; render(); return; }
+  const sameSize=(L.size===r.side);
+  if(L.base===r.levelId&&sameSize){ L.msg='当前就是「'+r.zoneName+'」'; render(); return; }
+  Lpush();
+  L.base=r.levelId; L.size=r.side;
+  if(!sameSize){ L.objs=[]; L.sel=[]; L.pick=null; }
+  /* ⭐⑥-3：切基地 → 收货方向「到」自动跟随当前基地所在地区（货要进**这片产线所在地区**的仓库才有用）；
+     「从」若被顶成同一个地区，就自动换成另一片（两地区现状；未来 >2 地区时保持原选择即可）。 */
+  const doms=Ldomains();
+  const toDom=doms.filter(d=>d.name===r.domainName)[0];
+  if(toDom && L.shipTo!==toDom.id){
+    L.shipTo=toDom.id; L.shipPick='';
+    if(L.shipFrom===L.shipTo){
+      const other=doms.filter(d=>d.id!==L.shipTo)[0];
+      if(other) L.shipFrom=other.id;
+    }
+  }
+  L.msg='已切到 '+r.domainName+'·'+r.zoneName+'（'+r.role+' '+r.side+'×'+r.side+'）'
+    +(sameSize?'，摆放留着':'，边长变了所以摆放已清空（可撤销）')
+    +(LisPresetBus()?' —— 谷地：存取线由基地自动铺，左栏不再给源桩 / 基段'
+                    :' —— 武陵：源桩 / 基段要自己摆，没接上会标红')
+    +(toDom?'；收货方向已对齐「'+LshipFromName()+' → '+LshipToName()+'」':'');
+  render();
+}
+/* ========== 生产配方：选物品 + 产能配比（2026-09-21）==========
+   数据来源（都在配置表里，不是估的）：
+     · DB.machine_recipes  317 条，靠 machineId ↔ 建筑 id 挂到设施上
+     · DB.recipe_groups   28 个配方组，给「固态料 / 流体料分别能走哪几个接口」+ 相态
+       ⚠️ 键名是 recipe_groups（下划线），不是 recipeGroups —— 构建脚本按文件名去 .json 生成键。
+   相态判据：FactoryItemTable.phaseType（1 固态 / 2 液态 / 4 气态）→ 固态走传送带口、液态气态走管道口。
+   ⚠️ 三条口径别记错（都写在 recipe_groups.json 里）：
+     ① **不是一对一映射**：能说「固态料走 0/1/2」，不能说「1 号料进 1 号口」（灌装机 7 口 / 最多 2 料）。
+     ② 组声明的是**能力上限**（组内并集，可能含预留），不保证每个配方都用得上；
+        强制方向只有「配方需要的 ⊆ 组声明的」——已用 317 条配方全量回代，0 漏声明。
+     ③ 已知 2 处「组多声明」记在 recipe_groups.json 的 anomalies（天有洪炉的流体产出口），别当解析错误。
+   下面这组函数是**纯函数、不碰 DOM** —— 博士 2026-09-21 要求「产能配比在后台按最优计算，
+   为以后全生产基地产线最精简 / 产能最大化基建摆放做准备」，所以它们是给以后排布器用的地基。 */
+function RbyId(id){ return (DB.machine_recipes||[]).filter(r=>r.id===id)[0]||null; }
+function Rof(machineId){
+  return (DB.machine_recipes||[]).filter(r=>r.machineId===machineId)
+    .sort((a,b)=>((a.sortId||0)-(b.sortId||0))||(a.id<b.id?-1:a.id>b.id?1:0));
+}
+function Rgroup(r){ return r?((((DB.recipe_groups||{}).groups)||{})[r.group]||null):null; }
+function RphaseName(t){ return (((DB.recipe_groups||{}).phaseNames)||{})[String(t)]||('相态'+t); }
+/* 每分钟轮数：配方的 seconds 是「一轮多少秒」→ 一分钟 60/seconds 轮 */
+function Rrounds(r){ return (r&&r.seconds)?(60/r.seconds):0; }
+/* 这份配方走哪几个口（组级能力，同类接口内的下标） */
+function RportSets(r){
+  const g=Rgroup(r)||{};
+  const flat=bs=>{ const s=[];
+    (bs||[]).forEach(b=>(b.ports||[]).forEach(i=>{ if(s.indexOf(i)<0) s.push(i); }));
+    return s.sort((a,b)=>a-b); };
+  return {beltIn:flat(g.solidIn), pipeIn:flat(g.fluidIn),
+          beltOut:flat(g.solidOut), pipeOut:flat(g.fluidOut)};
+}
+/* 产能：每种料的每分钟量 + 固态 / 流体分别汇总。
+   传送带 30 个/分、管道 120 个/分（配置表 msPerRound 推出来的，见物流页），用来算要几条带。 */
+const R_BELT_PER_MIN=30, R_PIPE_PER_MIN=120;
+function Rrate(r){
+  if(!r) return null;
+  const k=Rrounds(r);
+  const mk=rows=>(rows||[]).map(x=>({id:x.id, name:x.name, phase:x.phase||'',
+    perMin:Math.round((x.count||0)*k*1000)/1000}));
+  const ins=mk(r.ingredients), outs=mk(r.outcomes);
+  const sum=(arr,fluid)=>arr.filter(x=>fluid?(x.phase!=='固态'):(x.phase==='固态'))
+                            .reduce((s,x)=>s+x.perMin,0);
+  const ps=RportSets(r);
+  return {
+    id:r.id, seconds:r.seconds, roundsPerMin:Math.round(k*1000)/1000,
+    in:ins, out:outs,
+    solidIn:Math.round(sum(ins,false)*1000)/1000, fluidIn:Math.round(sum(ins,true)*1000)/1000,
+    solidOut:Math.round(sum(outs,false)*1000)/1000, fluidOut:Math.round(sum(outs,true)*1000)/1000,
+    ports:ps,
+  };
+}
+/* 要几条带 / 几条管（向上取整；0 就不需要） */
+function Rcarriers(perMin,isPipe){ return (!perMin||perMin<=0)?0:Math.ceil(perMin/(isPipe?R_PIPE_PER_MIN:R_BELT_PER_MIN)); }
+/* 给目标产出速率反推机器台数与各料需求 —— 排布器的入口。targetPerMin 不传就按单台算。 */
+function Rplan(recipeId,targetPerMin){
+  const r=RbyId(recipeId); if(!r) return null;
+  const rt=Rrate(r); if(!rt) return null;
+  const main=rt.out[0];
+  if(!main||!main.perMin) return null;
+  const n=(targetPerMin&&targetPerMin>0)?Math.ceil(targetPerMin/main.perMin):1;
+  const need=rt.in.map(x=>({id:x.id, name:x.name, phase:x.phase,
+    perMin:Math.round(x.perMin*n*1000)/1000, machines:Math.round(x.perMin?n:0)}));
+  return {recipeId:recipeId, machines:n, perMachinePerMin:main.perMin, out:main, need:need,
+    carriersIn:Rcarriers(rt.solidIn*n,false)+Rcarriers(rt.fluidIn*n,true),
+    carriersOut:Rcarriers(rt.solidOut*n,false)+Rcarriers(rt.fluidOut*n,true)};
+}
+/* 一句配方摘要（tooltip 与计数区共用，避免两处口径不一致） */
+function Rsummary(r){
+  if(!r) return '';
+  const rt=Rrate(r), ps=rt.ports;
+  const io=rows=>rows.map(x=>x.name+(x.count>1?'×'+x.count:'')).join(' + ');
+  const pn=a=>a.length?a.join('/'):'—';
+  return io(r.ingredients)+' → '+io(r.outcomes)
+    +' · '+rt.seconds+' 秒/轮 · 每分钟 '+rt.roundsPerMin+' 轮'
+    +' · 产出 '+(rt.out.map(x=>x.name+' '+x.perMin+'/分').join('、')||'—')
+    +' · 进料口：传送带 '+pn(ps.beltIn)+' / 管道 '+pn(ps.pipeIn)
+    +' · 出料口：传送带 '+pn(ps.beltOut)+' / 管道 '+pn(ps.pipeOut);
+}
+/* 选中对象里「能选配方」的那批 —— 按第一台选中设施的机种算，同机种一起改（批量） */
+function Rtargets(){
+  const L=Linit();
+  const sel=LselObjs();
+  if(!sel.length) return [];
+  const first=byBp(sel[0].id);
+  if(!first||!Rof(first.id).length) return [];
+  return sel.filter(o=>o.id===first.id);
+}
+/* 给选中的设施设配方（'' = 清掉）。批量：只动与第一台同机种的那些。 */
+function LsetRecipe(rid){
+  const L=Linit(), list=Rtargets();
+  if(!list.length){ L.msg='先选中一台生产设施（能选配方的只有有配方的那 18 台）'; render(); return; }
+  Lpush();
+  list.forEach(o=>{ if(rid) o.r=rid; else delete o.r; });
+  const r=rid?RbyId(rid):null;
+  const b=byBp(list[0].id);
+  L.msg=(r?('「'+b.name+'」×'+list.length+' 已设为：'+Rsummary(r)):(b.name+'×'+list.length+' 的配方已清掉'));
+  render();
+}
+/* 选中设施的配方摘要（给计数区用） */
+function RselectedInfo(){
+  const list=Rtargets();
+  if(!list.length) return null;
+  const b=byBp(list[0].id);
+  const ids=[];
+  list.forEach(o=>{ if(o.r&&ids.indexOf(o.r)<0) ids.push(o.r); });
+  return {building:b, count:list.length, recipes:Rof(b.id), chosen:ids,
+          recipe:ids.length===1?RbyId(ids[0]):null};
+}
+/* ========== 产线闭环 · 排布器 v1（2026-09-21）==========
+   博士：「做排布器，先做一次产线闭环」+「连连线也自动」+「按有启动料算，
+   产线如何启动时告诉我要在哪个机器塞什么启动料」。
+   流程：目标物品 + 目标速率 → 展开配方树 → 按深度分层摆机器 → 自动连传送带/管道 → 出报告。
+   ⚠️ 三个真问题（都已在数据里查实，不是假设）：
+     ① **配方图里有环**（全图去重 25 组）。例：赤铜耐压罐 ← 塑形机 ← 赤铜块 + 惰气；
+        而惰气 ← 拆解机 ← 赤铜耐压罐。但拆解机配方是「1 罐进、1 罐 + 1 惰气出」——
+        **罐子没被消耗，它只是载体** → 不是死循环，是「**需要一颗种子**」：塞 1 个罐子就能自持。
+        处理：能换配方就避环（赤铜块改走精炼炉那条），避不开就标 seed 并输出**启动清单**。
+     ② **200 个物品能机器产、其中 40 个有多份配方** → 必须自己选。评分：先避开环，再取单台产出最高的（台数最少）。
+     ③ **原料 = 没有机器配方的物品**（蓝铁矿 / 赤铜矿 / 清水 / 惰气…）——野外采集或外部输入，基地里不摆。
+   ⚠️ v1 **不做**（写清楚，别当成有）：最优布局搜索、带拥堵与吞吐校验、
+      **多条并行带的自动并联**（一条依赖只连一条线，需要并联会在报告里点名）、绕线避让优化。 */
+const RW_BELT=30, RW_PIPE=120;
+function RwMade(regionName){
+  /* itemId → 能产出它的配方列表（按地区过滤缓存）。
+     ⭐⑥-3 对称互传（2026-09-22 博士）：「出发地能产」要按**出发地的机器**算 ——
+     天有洪炉（息壤/重息壤/膨地啪的唯一产地）是武陵限定，谷地集成工业产不了它们，
+     所以从谷地出发就不能传这三件（游戏口径：本地区集成工业可生产的任意一种物品）。
+     不传 regionName = 不过滤（评分/展开/老路径全都不受影响，缓存键分开）。 */
+  const key=regionName||'*';
+  if(!RwMade._c) RwMade._c={};
+  if(RwMade._c[key]) return RwMade._c[key];
+  const m={};
+  const _bmap={};
+  (DB.buildings||[]).forEach(b=>{ _bmap[b.id]=b; });
+  (DB.machine_recipes||[]).forEach(r=>{
+    if(regionName){
+      const b=_bmap[r.machineId];
+      if(b && !b.isUniversal && (b.domainNames||[]).indexOf(regionName)<0) return;
+    }
+    (r.outcomes||[]).forEach(o=>{(m[o.id]=m[o.id]||[]).push(r);});
+  });
+  RwMade._c[key]=m; return m;
+}
+function RwItemName(id){ return ((DB.items||{})[id]||{}).name||id; }
+/* 物品相态（固态 → 传送带；液态/气态 → 管道）。
+   ⚠️ 必须查得到：配方树里的**中间节点也要有相态**，否则连线时会按"固态"去走传送带口，
+   液态料就接不上（2026-09-21 实测踩到：清水的连接报"传送带口不够"）。 */
+function RwPhaseOf(id){
+  if(!RwPhaseOf._c){
+    const m={};
+    (DB.machine_recipes||[]).forEach(r=>{
+      (r.ingredients||[]).concat(r.outcomes||[]).forEach(x=>{ if(x.phase) m[x.id]=x.phase; });
+    });
+    RwPhaseOf._c=m;
+  }
+  return RwPhaseOf._c[id]||'';
+}
+function RwFluid(phase){ return !!phase && phase!=='固态'; }
+/* 单台每分钟「产出该物品」的量（取该物品在产物里的那一项；317 条里多数只有 1 个产物，
+   但拆解机那种是「罐子进、罐子+惰气出」，必须按目标物品那一项算，不能取 outcomes[0]） */
+function RwPerMin(r, iid){
+  if(!r||!r.seconds) return 0;
+  const outs=r.outcomes||[];
+  const o=iid?outs.filter(x=>x.id===iid)[0]:null;
+  const use=o||outs[0];
+  return use?(use.count*60/r.seconds):0;
+}
+/* 「载体」料：原料 id 也出现在产物里 → 只是过一遍，净消耗 0（拆解机的罐子就是这种） */
+function RwCarrierIds(r){
+  const outs={}; (r.outcomes||[]).forEach(o=>{ outs[o.id]=o.count; });
+  const c=[]; (r.ingredients||[]).forEach(i=>{ if(outs[i.id]!==undefined) c.push(i.id); });
+  return c;
+}
+/* 「分离配方」：原料里有自己产的这个物品 —— 那是拆解/提纯，不是"造"。
+   造东西必须用**不吃自己**的配方（拆解机能拆出惰气，但它不叫"造惰气"）。 */
+function RwIsSplit(r, iid){ return (r.ingredients||[]).some(i=>i.id===iid); }
+/* ⚠️ 「回收配方」——2026-09-21 的关键修正，一步判定：某个原料是**用本物品做出来的**。
+   典型：拆解机 ← 装水的赤铜罐，而装水罐是灌装机用「空罐（就是本物品）」灌出来的
+   → 那条拆解机配方是**回收**，不是"造空罐"。把它当生产配方会选错路线。
+   ⚠️ 为什么必须用 id 判：空罐 `item_copper_jar` 和装水罐 `item_gasjar_copper_gas_water`
+      **名字都显示成「赤铜耐压罐」，但是两个不同物品**。按名字判会全错。 */
+function RwIsRecycle(r, iid){
+  const carriers=RwCarrierIds(r);
+  return (r.ingredients||[]).some(i=>{
+    if(carriers.indexOf(i.id)>=0) return false;
+    return (RwMade()[i.id]||[]).some(r2=>(r2.ingredients||[]).some(j=>j.id===iid));
+  });
+}
+/* 只有回收路线的物品，直接当「需外部输入」，不再往里钻 ——
+   否则会拖出一串「灌装机 ↔ 拆解机」来回倒（惰气就是这种：唯一做法是拆装惰气的罐子）。 */
+const RW_STOP_AT_RECYCLE=true;
+/* 链深上限：超过就当「外部输入 / 外购」，并写明原因。
+   为什么需要它：像**清水**这种其实是在野外用抽水泵抽的（配置表里没有"泵能抽什么"的字段 —— 那依赖地形，
+   属关卡场景数据），但配方表里它有「提纯机 ← 惰性壤晶废液 ← 液化息壤 ← 天有洪炉 ← …」一条巨链。
+   不限深的话，10/分 赤铜耐压罐会展开成 90 台机器。限深后清水→提纯机只展开到 3 层，规模可控，
+   而且报告里会明确写「按外部输入处理」，不会悄悄少算。 */
+const RW_MAX_DEPTH=3;
+/* 规模闸门：展开超过这么多台就不生成，改成报告里说明原因（免得画布上堆一坨垃圾） */
+const RW_MAX_MACHINES=60;
+/* ⭐⭐ ⑥-4 建筑专属限摆（2026-09-22 博士拍板 + 查证）：
+   配置表 buildings.json 的 hasPlaceLimit 字段**不含「科技解锁型限摆」数据域** —— 天有洪炉在
+   1.5.3 配置表里 hasPlaceLimit=false，但游戏里息壤工业科技满级也只许摆 **12 台**（武陵合计；
+   1.2 工业计划从 8 抬到 12，3DM/TapTap/NGA/1.4 蓝图攻略四源印证）。这类是运行时系统数值
+   （同矿脉产率），配置表拿不到，手工维护本表；版本更新抬上限时改这里。
+   口径：**报警不拦截** —— 超限产线照常生成（对分期建造/降速规划仍有参考价值），msg 点名超限。 */
+const RW_PLACE_LIMITS={
+  xiranite_oven_1:{ n:12, name:'天有洪炉', why:'息壤工业科技满级（1.2 工业计划起 8 → 12，武陵合计）' }
+};
+/* 按机器蓝图对台数求和再对表 —— 单目标/多目标（RexplodeFinal 共享段）两条路径的 res.machines 都适用 */
+function RwPlaceLimitWarn(res){
+  const out=[], cnt={};
+  (res.machines||[]).forEach(n=>{ if(n.machineId) cnt[n.machineId]=(cnt[n.machineId]||0)+(n.machines||0); });
+  Object.keys(RW_PLACE_LIMITS).forEach(mid=>{
+    const lim=RW_PLACE_LIMITS[mid], got=cnt[mid]||0;
+    if(got>lim.n) out.push(lim.name+' 超限：这条链要 '+got+' 台，游戏里 '+lim.why+'最多 '+lim.n+' 台 —— 降低速率或用跨地区收货补上游料');
+  });
+  return out;
+}
+/* 子树代价预判：0 = 已经是原料；越大越难得；绕回路径给大惩罚。
+   —— 这一条是 06:0x 那版翻车的直接原因：只看"这一步有没有回头"会选到高产出但绕圈的配方。 */
+const RW_COST_CYCLE=500, RW_COST_CARRIER=2, RW_COST_DEPTH=5, RW_COST_BUDGET=4000;
+function RwCost(iid, path, depth, budget){
+  budget=budget||{n:0};
+  if(budget.n++>RW_COST_BUDGET) return 50;
+  if(path.indexOf(iid)>=0) return RW_COST_CYCLE;
+  if(depth>=RW_COST_DEPTH) return 8;
+  const cands=(RwMade()[iid]||[]).filter(r=>!RwIsSplit(r,iid));
+  if(!cands.length) return 0;                      /* 没有「造」的配方 → 当原料/需外部给 */
+  let best=1e9;
+  cands.forEach(r=>{
+    const carriers=RwCarrierIds(r);
+    let c=1;
+    (r.ingredients||[]).forEach(i=>{
+      c += (carriers.indexOf(i.id)>=0) ? RW_COST_CARRIER : RwCost(i.id, path.concat([iid]), depth+1, budget);
+    });
+    if(c<best) best=c;
+  });
+  return best;
+}
+/* ⭐⭐ ⑥-1 跨地区供货（2026-09-22，博士：只用「四号谷地 → 武陵」超库存传输）
+   口径（全部来自配置表 / 文案，见 DB.rules 里的 rule_domain_transfer）：
+     · 出发地 = 四号谷地（domain_1），可传「本地区集成工业可生产的任意一种物品」；
+     · 超库存传输**不扣出发地库存**、目的地直接获得 → 出发地只需要「有产能」就行，
+       所以判定依据是 **RwMade() 里有没有本地区的机器配方**，不是仓库里有没有货；
+     · 目的地收货侧：那件料只要在 `DB.items[.domains]` 里（= FactoryItemTable.transferDomainIds 非空）
+       就**能送到**，所以收货侧按「能送到」处理 —— 纯函数，不读全局开关，opts 传进来方便测试。 */
+function RwCanShip(iid, made){
+  const m = made || RwMade();
+  return !!(m[iid] && m[iid].length);
+}
+function RwCanReceive(iid){
+  const d=(DB.items||{})[iid];
+  return !!(d && (d.domains||[]).length);
+}
+/* 展开配方树。纯函数（selfLoop 走 opt 传进来，不读全局，方便测试）。
+   opt.selfLoop=true = 「闭环自持」开关：
+     只有回收路线的物品**照样往里展开**，靠 载体 / 链上绕回 形成闭环，
+     并把启动时要塞的东西记进 seeds —— 博士 2026-09-21 要的就是这个。
+   默认 false = 那种料按「外部输入」处理（链短、好摆）。 */
+function Rexplode(targetId, perMin, opt){
+  opt=opt||{};
+  const selfLoop=!!opt.selfLoop;
+  /* ⭐⑥-1：跨地区收货清单 —— 这些料不从野外采、也不在本地做，改由**别的地区传过来**。
+     只为「能送到」的料建（RwCanReceive），送不到的照样按原来的原料处理。
+     ⚠️ 参数名用 shipInList，别用 shipIn —— 那是 Linit() 里的**布尔开关**，同名会炸。 */
+  const shipIn={};
+  const shipInList=(opt.shipInList && typeof opt.shipInList.forEach==='function')?opt.shipInList:[];
+  shipInList.forEach(x=>{ const iid=(typeof x==='string')?x:(x&&x.itemId);
+    if(iid && RwCanReceive(iid)) shipIn[iid]=1; });
+  /* ⭐⑥-2 多目标共享中间产物（2026-09-22）：opt.seeds = [{itemId,perMin},…] 时按「一图多目标」展开 ——
+     同一件中间料只建**一套**机器（memo 去重：需求合并、台数按合并需求重算、层级沉到最深消费者下面），
+     每个消费者挂一条「幽灵边」（ref 回指共享节点），路由层按幽灵边逐条连线 / 分流。
+     ⚠️ 不传 seeds 就是单目标老路径，一行都不多跑（601 项回归逐字节依赖它）。 */
+  const seedList=(opt.seeds&&opt.seeds.length)?opt.seeds.map(s=>({itemId:s.itemId, perMin:+s.perMin||0})):null;
+  const useDedup=!!seedList;
+  const seedArr=seedList||[{itemId:targetId, perMin:perMin}];
+  const memo={}, allEdges=[], softEdges=[], allReal=[];
+  /* ⭐⑥-3：opt.region = 按「这个地区有哪些机器」过滤配方（选点分析用）；
+     不传 = 不过滤（老路径一字不变）。opt.shipFromName = 收货文案里的出发地地区名。 */
+  const _made0=RwMade(opt.region||'');
+  const made={};
+  /* 跨地区收货的料在本地「没有配方」→ pick 返回 null → 自动落进原料分支。
+     这里只是让 RwCost 的选路也看不见它们（否则它还会往里算子树代价）。 */
+  Object.keys(_made0).forEach(k=>{ if(!shipIn[k]) made[k]=_made0[k]; });
+  const seeds=[], warns=[], raw=[], externals=[];
+  const r3=x=>Math.round(x*1000)/1000;
+  function pick(iid, path){
+    const all=made[iid]||[];
+    if(!all.length) return null;
+    /* ① 首选「不吃自己 且 不是回收」的生产配方 */
+    let cand=all.filter(r=>!RwIsSplit(r,iid) && !RwIsRecycle(r,iid));
+    let recycled=false;
+    if(!cand.length){
+      /* ② 没有纯生产配方：只剩回收路线。
+         默认 → 当外部输入（别往里钻）；
+         开了「闭环自持」→ 钻进去，让 载体/绕回 变成启动料。 */
+      if(RW_STOP_AT_RECYCLE && !selfLoop) return {external:true};
+      cand=all.filter(r=>!RwIsSplit(r,iid));
+      recycled=true;
+      if(!cand.length){ cand=all.slice(); }        /* ③ 最后才退回载体/拆分路线 */
+    }
+    /* 比子树代价（能不能便宜地做到原料），再比单台产出（台数最少） */
+    const cost=r=>{
+      const carriers=RwCarrierIds(r), b={n:0};
+      return (r.ingredients||[]).reduce((s,i)=>s+((carriers.indexOf(i.id)>=0)
+        ? RW_COST_CARRIER : RwCost(i.id, path.concat([iid]), 1, b)), 1);
+    };
+    cand.sort((a,b)=>(cost(a)-cost(b)) || (RwPerMin(b,iid)-RwPerMin(a,iid)));
+    return {r:cand[0], recycled:recycled};
+  }
+  function build(iid, demand, depth, path){
+    const n={itemId:iid, name:RwItemName(iid), phase:RwPhaseOf(iid), demand:r3(demand), depth:depth,
+             recipeId:null, machineId:null, machineName:'', machines:0, perMachine:0, actualOut:0,
+             children:[], raw:false, seed:false, carrier:false, external:false, recycled:false, note:''};
+    const ch=pick(iid, path);
+    if(!ch){
+      n.raw=true; n.seed=true;
+      if(shipIn[iid]){ n.shipIn=true; n.note='跨地区收货：由出发地（'+(opt.shipFromName||'四号谷地')+'）超库存传输过来，本地不建产线'; }
+      if(raw.indexOf(iid)<0) raw.push(iid); return n;
+    }
+    if(ch.external){
+      n.raw=true; n.seed=true; n.external=true;
+      n.note='唯一做法是回收路线 → 按「需外部输入」处理：启动时给一次，之后靠循环自持';
+      if(raw.indexOf(iid)<0) raw.push(iid);
+      if(externals.indexOf(iid)<0) externals.push(iid);
+      return n;
+    }
+    const r=ch.r;
+    n.recycled=!!ch.recycled;
+    /* ⭐⑥-2：这件料已经建过一套 → 不再建第二套，返回「幽灵边」节点（ref 回指共享节点；
+       需求/台数/层级由 RexplodeFinal 按合并口径统一重算，路由层把幽灵边当一条普通依赖连） */
+    if(useDedup && memo[iid]){
+      return {itemId:iid, name:n.name, phase:n.phase, demand:r3(demand), depth:depth,
+        recipeId:memo[iid].recipeId, machineId:memo[iid].machineId, machineName:memo[iid].machineName,
+        machines:memo[iid].machines, ghost:true, ref:memo[iid],
+        pname:(path.length?RwItemName(path[path.length-1]):'')};
+    }
+    if(useDedup){ memo[iid]=n; allReal.push(n); }
+    /* 链深到顶还想往下做的：按外部输入处理（清水就是这种——实际靠野外抽水泵，不是自己造） */
+    if(depth>=RW_MAX_DEPTH && (made[iid]||[]).length){
+      n.raw=true; n.seed=true; n.external=true;
+      n.note='链深已达 '+RW_MAX_DEPTH+' 层上限 → 按「外部输入 / 外购」处理（这类料通常是野外采集，如清水）';
+      if(raw.indexOf(iid)<0) raw.push(iid);
+      if(externals.indexOf(iid)<0) externals.push(iid);
+      return n;
+    }
+    const pm=RwPerMin(r, iid);
+    n.recipeId=r.id; n.machineId=r.machineId; n.machineName=r.machineName;
+    n.perMachine=r3(pm); n.machines=Math.max(1, Math.ceil(demand/(pm||1)));
+    n.actualOut=r3(n.machines*pm);
+    /* ⚠️⑥-2：多目标路径的这条警告挪到 RexplodeFinal（台数按合并需求重算后再判才有意义） */
+    if(!useDedup && n.actualOut>r3(demand)+1e-6) warns.push(n.name+'：按整台算，实际产出 '+n.actualOut+'/分，比需要的 '+n.demand+'/分 多 '+r3(n.actualOut-n.demand));
+    const oc=(r.outcomes.filter(x=>x.id===iid)[0]||r.outcomes[0]||{}).count||1;
+    const carriers=RwCarrierIds(r);
+    (r.ingredients||[]).forEach(i=>{
+      const tot=r3(n.actualOut*(i.count/oc));
+      if(carriers.indexOf(i.id)>=0){
+        const c={itemId:i.id, name:i.name, phase:i.phase, carrier:true, demand:0, need:i.count,
+          note:'载体：净消耗 0，但启动时要先塞 '+i.count+' 个'};
+        n.children.push(c);
+        softEdges.push({p:n, node:c, cnt:i.count, oc:oc, kind:'carrier'});
+        seeds.push({itemId:i.id, name:i.name, count:i.count, machineName:n.machineName,
+          machineId:n.machineId, reason:'载体（净消耗 0）'});
+        return;
+      }
+      if(path.indexOf(i.id)>=0 && made[i.id]){
+        const c={itemId:i.id, name:i.name, phase:i.phase, seed:true, demand:tot,
+          note:'链上绕回自己（需启动料 / 或用回收路线）'};
+        n.children.push(c);
+        softEdges.push({p:n, node:c, cnt:i.count, oc:oc, kind:'loop'});
+        seeds.push({itemId:i.id, name:i.name, count:i.count, machineName:n.machineName,
+          machineId:n.machineId, reason:'链上绕回'});
+        return;
+      }
+      const c=build(i.id, tot, depth+1, path.concat([iid]));
+      /* ⭐⑥-2：所有「消费边」统一包成幽灵边（**含首次创建的共享节点**）——
+         否则首个消费者的边是实体子节点、其余是幽灵边，两套口径会让路由/记账打架。
+         子节点本体永远只经由 ghost.ref 被引用；单目标路径（useDedup=false）不走这里。 */
+      if(useDedup && c.recipeId && !c.ghost){
+        const g={itemId:c.itemId, name:c.name, phase:c.phase, demand:tot, depth:c.depth,
+          recipeId:c.recipeId, machineId:c.machineId, machineName:c.machineName,
+          machines:c.machines, ghost:true, ref:c, pname:RwItemName(iid)};
+        n.children.push(g);
+        allEdges.push({to:c, from:n, ghost:g, cnt:i.count, oc:oc});
+        return;
+      }
+      n.children.push(c);
+      /* ⭐⑥-2：机器子节点记一条边（幽灵边 ref 回指共享节点；需求由 RexplodeFinal 沿边统一摊）。
+         原料/绕回子节点记软边 —— 父节点台数重算后它们的 demand 要跟着最终 actualOut 刷新。 */
+      if(c.recipeId) allEdges.push({to:(c.ghost?c.ref:c), from:n, ghost:(c.ghost?c:null), cnt:i.count, oc:oc});
+      else softEdges.push({p:n, node:c, cnt:i.count, oc:oc, kind:'raw'});
+    });
+    return n;
+  }
+  const rootObjs=[];
+  seedArr.forEach(s=>{
+    const rn=build(s.itemId, s.perMin, 0, []);
+    allEdges.push({to:(rn.ghost?rn.ref:rn), seed:true, perMin:s.perMin, ghost:(rn.ghost?rn:null)});
+    rootObjs.push(rn);
+  });
+  /* ⭐⑥-2：多目标路径先「需求汇总 → 台数重算 → 层级重排」，再收集节点（单目标跳过，老路径一字不变） */
+  if(useDedup) RexplodeFinal(allReal, allEdges, softEdges, warns);
+  const nodes=[], machines=[]; const seenD=new Set();
+  const walk=function(n){
+    if(n.ghost){ walk(n.ref); return; }
+    if(seenD.has(n)) return; seenD.add(n);
+    nodes.push(n); if(n.machines) machines.push(n);
+    (n.children||[]).forEach(walk);
+  };
+  rootObjs.forEach(walk);
+  const shipIns=nodes.filter(n=>n.shipIn);
+  const tgts=seedArr.map(s=>({id:s.itemId, name:RwItemName(s.itemId), perMin:s.perMin}));
+  return {root:rootObjs[0], nodes:nodes, machines:machines, raw:raw, externals:externals, seeds:seeds, warns:warns,
+          shipIn:shipIns,
+          target:targetId, targetName:RwItemName(targetId), perMin:perMin,
+          targets:(seedArr.length>1?tgts:null),
+          shared:(useDedup?allReal.filter(n=>n.sharedTo&&Object.keys(n.sharedTo).length):[]),
+          totalMachines:machines.reduce((s,n)=>s+n.machines,0)};
+}
+/* ⭐⑥-2 配套（2026-09-22）：多目标 DAG 的「需求汇总 → 台数重算 → 层级重排」。
+   输入 build 期收集的 allEdges（机器→机器的边，含种子边与幽灵边）与 softEdges（原料/绕回/载体边）。
+   Kahn：需求沿边自上而下摊（父 actualOut × 配比），某节点的**全部入边**都定了才轮到它 ——
+   多父合流自动求和；台数 = ceil(合并需求 / 单台速率)；「按整台算多产出」的警告在这里统一生成。
+   层级：最长路松弛（DAG 必停）—— 共享节点沉到**最深消费者**下面，出料向上自然分流。 */
+function RexplodeFinal(allReal, allEdges, softEdges, warns){
+  const r3=x=>Math.round(x*1000)/1000;
+  const pend=new Map(), outs=new Map();
+  allReal.forEach(n=>{ pend.set(n,0); outs.set(n,[]); });
+  const machEdges=allEdges.filter(e=>!e.seed);
+  const seedEdges=allEdges.filter(e=>e.seed);
+  /* ⚠️ 种子边也要计入 pend（否则根节点 pend 被种子边的 -1 减成负数，
+     `===0` 的就绪过滤会把根挡在队列外 → 整张图永远停在 build 期旧值 —— 首跑实测踩中） */
+  allEdges.forEach(e=>{ pend.set(e.to,(pend.get(e.to)||0)+1); });
+  machEdges.forEach(e=>{ if(e.from&&outs.get(e.from)) outs.get(e.from).push(e); });
+  seedEdges.forEach(e=>{ e.demand=r3(e.perMin); pend.set(e.to,(pend.get(e.to)||0)-1); });
+  const q=allReal.filter(n=>(pend.get(n)||0)<=0);
+  const done=new Set();
+  while(q.length){
+    const n=q.shift();
+    if(done.has(n)) continue; done.add(n);
+    const D=allEdges.reduce((s,e)=>s+((e.to===n&&e.demand!=null)?e.demand:0),0);
+    n.demand=r3(D);
+    if(n.external || !n.recipeId){
+      /* ⭐⭐ 2026-09-22 全库扫描抓到的计算 bug：外部输入节点（链深到顶按 external 处理的，
+         如清水链顶的息壤/赫铜溶液）perMachine=0、machineId=null，落到下面的
+         ceil(demand/1) 会凭空算出 demand 台「空气机器」（息壤 10/分 → 10 台），
+         混进 res.machines 后 LawPlan 里 byBp(null) 静默丢、msg 还按虚数报「机器 37 台」。
+         这类节点本来就没有机器：demand 照记（原料需求口径读它），台数恒 0。
+         单目标路径不走 RexplodeFinal（external 本来就 machines=0），所以 668 项回归没炸过 —— 多目标(⑥-2)专属坑。 */
+      n.machines=0; n.actualOut=0;
+    }else{
+      n.machines=Math.max(1, Math.ceil(n.demand/(n.perMachine||1)));
+      n.actualOut=r3(n.machines*n.perMachine);
+      if(n.actualOut>r3(n.demand)+1e-6) warns.push(n.name+'：按整台算，实际产出 '+n.actualOut+'/分，比需要的 '+n.demand+'/分 多 '+r3(n.actualOut-n.demand));
+    }
+    (outs.get(n)||[]).forEach(e=>{
+      e.demand=r3(n.actualOut*(e.cnt/e.oc));
+      if(e.ghost){
+        e.ghost.demand=e.demand;
+        /* sharedTo 记在**共享节点**（e.to）头上：谁在用它、各用多少 —— 报告的「共用中间料」段读它 */
+        if(e.ghost.pname){ const t=e.to; t.sharedTo=t.sharedTo||{};
+          t.sharedTo[e.ghost.pname]=r3((t.sharedTo[e.ghost.pname]||0)+e.demand); }
+      }
+      const t=e.to; pend.set(t,(pend.get(t)||0)-1); if((pend.get(t)||0)===0) q.push(t);
+    });
+  }
+  /* 原料/绕回子节点的需求跟着最终 actualOut 刷新（载体 need 不变：启动塞料按配方算） */
+  softEdges.forEach(se=>{ if(se.kind!=='carrier') se.node.demand=r3(se.p.actualOut*(se.cnt/se.oc)); });
+  /* 层级：最长路松弛 —— 共享节点必须沉到它最深的消费者下面，线才都往上走 */
+  const dep=new Map(); allReal.forEach(n=>dep.set(n,0));
+  let changed=true, guard=0;
+  while(changed && guard++<2000){
+    changed=false;
+    machEdges.forEach(e=>{
+      if(!e.from) return;
+      const nd=dep.get(e.from)+1;
+      if(nd>dep.get(e.to)){ dep.set(e.to, nd); changed=true; }
+    });
+  }
+  allReal.forEach(n=>{ n.depth=dep.get(n); });
+  /* 幽灵边镜像最终值（depLines 估算 / 报告要读） */
+  allEdges.forEach(e=>{ if(e.ghost){ e.ghost.machines=e.to.machines; e.ghost.actualOut=e.to.actualOut; e.ghost.depth=e.to.depth; } });
+}
+
+/* ---------- 摆位：按深度分层 ----------
+   机器一律 rot=0 → 进料口在**下边**(z=D-1)、出料口在**上边**(z=0)，物料自下而上。
+   depth 越小越接近成品 → 放在**上面**（y 小）；depth 大 = 原料侧 → 放在下面。
+   层与层之间留 RW_CORR 行空行当走线通道（管线只在这段里横穿，不压机器）。 */
+/* 树节点 → 稳定 key（⑤-1 局部锁定用它把画布上的机器对回配方树节点）。
+   ⚠️ 不能存节点引用：撤销快照是 JSON.stringify(objs)，带引用会成环、直接抛错。 */
+function Rpkey(n){ return n.depth+'|'+n.itemId+'|'+n.recipeId+'|'+n.machineId; }
+/* 方案打分（口径与 LawRun 内的一致：连通依赖数 > 堵 > 手动连 > 总线长；
+   ⚠️ ⑤-3 起「手动连」权重 = 400，必须压过线长差 —— 见 LawRun 里的口径说明）——抽出来给「重排其余」复用 */
+function LawPick(rt){
+  const loads=rt.loads||[];
+  const ok=loads.filter(x=>x.state!=='none'&&x.state!=='jam').length;
+  const manual=rt.warns.filter(w=>w.indexOf('手动连')>=0).length;
+  const jam=loads.filter(x=>x.state==='jam').length;
+  return {ok:ok, manual:manual, jam:jam, belts:rt.belts.length,
+    v:ok*1000 - jam*500 - manual*400 - rt.belts.length};
+}
+const RW_GAP_X=4, RW_CORR=5, RW_MARGIN=1;
+/* ⭐ v99「按层级换行」收尾：层内折行的行间通道（2026-09-22）。
+   旧行为：折行行距直接复用层间通道 corr（自适应最高 14）—— 但那是给「跨层走线主干道」
+   的高度，层内行与行之间本不需要这么宽。实测（探针）：超限大链（28 炉，80 画布）
+   corr 打满 14 时三层折行总高 153 > 79，第一梯队 8 组候选全「放不下」。
+   层间 corr 一格不动（走线主通道的高度是 30/分 9 条连不上换来的）。
+   v99 行距 = h + rgCap：rgCap 缺省 = corr —— **不爆的工况与旧行为逐格一致**（零回归风险，
+   赤铜块@10 / 液化息壤@10 的 wide 扩搜组都靠宽行距拿低手动连，压行距会退化，探针抓过）；
+   爆（over）才 -2 递归降级，下限 RW_ROWGAP=3。探针定标：24/28 炉超限链降到 3 后摆下
+   （手动连 1~2 条、零堵塞），成功 msg 仍点名超限 —— 「报警不拦截」口径的延伸。 */
+const RW_ROWGAP=3;
+/* ⭐ 路线图 ③「两档方案 + 按分择优」：紧凑档（间 2 / 通道 3 / 按列对齐）在小产线明显更优，
+   但大产线会让汇流器找位退化（实测 copper_jar@30 分数 63→7）。
+   所以两档都摆一遍，按「连通段数 > 手动连数 > 总线长」择优 —— 谁分高用谁。 */
+const RW_GAP_X_T=2, RW_CORR_T=3;
+function LawPlan(res, size, corr, opts){
+  opts=opts||{};
+  corr=corr||RW_CORR;
+  const gapX=opts.gapX||RW_GAP_X;
+  const doAlign=opts.align===true;   /* 默认不对齐（旧行为）；紧凑档显式开 */
+  /* ⭐ ⑤-1「局部锁定」（2026-09-22）：opts.fixed = 已固定的机器外接框 [{x,y,w,d}]。
+     布局时把它们当**障碍物**（不重排、只避让）——新机器撞上就让行往下走。
+     只在 down 模式生效（那套 rows 逐行占位天然支持绕障）；
+     ⚠️ fixed 为空时**一行都不多跑**，保证老的布局行为逐字节不变（520 条回归靠这个）。 */
+  const FX=opts.fixed||[];
+  /* v99：折行行间通道 —— 缺省 = corr（旧行为），纵向爆时由函数尾递归降级（见函数尾） */
+  const rgCap=(opts.rowGap!==undefined)?opts.rowGap:corr;
+  const md={};
+  res.machines.forEach(n=>{ (md[n.depth]=md[n.depth]||[]).push(n); });
+  const depths=Object.keys(md).map(Number).sort((a,b)=>a-b);
+  const objs=[], bands=[];
+  let cy=RW_MARGIN, rowH=0, x=RW_MARGIN;
+  /* g 缺省 = 层间换行，用层间通道 corr；层内折行显式传 rgCap（行间通道，v99） */
+  const newRow=(g)=>{ cy+=rowH+(g===undefined?corr:g); x=RW_MARGIN; rowH=0; };
+  /* ⭐ 路线图 ③「按列对齐」（2026-09-21）：逐层排布时，深层机器按「消费它产出的下游机器
+     的 x 中心均值」排序 —— 喂同一下游的机器聚到那台机器正下方，走线从"绕"变"直上直下"。
+     depth 从小到大 = 从成品到原料，消费者一定先排好。同 itemId 排序键相同 → 天然相邻。 */
+  const xCenter={};   /* itemId -> 该组机器的 x 中心 */
+  const xStart={};    /* itemId -> 该组机器的 x 起点（down 模式对齐下游用） */
+  const cons={};      /* itemId(原料) -> [itemId(下游成品)] 去重 */
+  res.machines.forEach(p=>{ (p.children||[]).forEach(c=>{
+    if(!c.recipeId) return;
+    const arr=(cons[c.itemId]=cons[c.itemId]||[]);
+    if(arr.indexOf(p.itemId)<0) arr.push(p.itemId);
+  }); });
+  const alignKey=n=>{
+    const cs=cons[n.itemId];
+    if(!cs||!cs.length) return 1e9;
+    let sum=0, hit=0;
+    cs.forEach(id=>{ if(xCenter[id]!==undefined){ sum+=xCenter[id]; hit++; } });
+    return hit?sum/hit:1e9;
+  };
+  const order={};
+  depths.forEach(d=>{
+    const y0=cy;
+    if(doAlign && d>0) md[d].sort((a,b)=>alignKey(a)-alignKey(b) || (a.machineId<b.machineId?-1:1));
+    /* ⭐ 路线图 ③ 二梯队「局部交换」：允许指定层内两台机器互换位置（排序后交换），
+       搜索框架用它做「相邻交换」重铺——分数更高就留。 */
+    if(opts.swap && opts.swap.depth===d){
+      const arr=md[d], si=opts.swap.i, sj=opts.swap.j;
+      if(si<arr.length&&sj<arr.length){ const t=arr[si]; arr[si]=arr[sj]; arr[sj]=t; }
+    }
+    order[d]=md[d].slice();
+    /* ⭐⭐ 路线图 ③ 最后一块「层内主动换行」（down 模式，2026-09-22）：
+       上游比下游宽时（如 12 台块机 vs 6 台罐机），按「消费它的下游机器」分组，
+       组的 x 起点**对齐其下游机器**；与该行已有内容冲突就下沉一行 —— 自动交错分行，
+       消灭「右半边机器下方没有下游、只能远程接线」的几何问题。 */
+    /* 有固定件时 d=0 层也要走这条（成品层同样得绕开锁定的机器） */
+    if(opts.mode==='down' && (d>0 || FX.length)){
+      const rows=[];              /* 已占：{y, h, x1, x2}（y..y+h-1 全高，v100：跨组行距错相防重叠） */
+      /* ⑤-1：固定件按行铺进 rows —— 后面每台机器落位时自然避开它们 */
+      if(FX.length) FX.forEach(r=>{ rows.push({y:r.y, h:r.d, x1:r.x, x2:r.x+r.w}); });
+      let maxBottom=cy;
+      md[d].forEach(n=>{
+        const b=byBp(n.machineId); if(!b) return;
+        const fp=Lfp(b), w=fp[0]||1, h=fp[1]||1;
+        const dstId=(cons[n.itemId]||[])[0];
+        const wantX=(dstId!=null&&xStart[dstId]!=null)?xStart[dstId]:RW_MARGIN;
+        /* ⭐③ 收尾「按层级换行」（2026-09-22）：组内机器从 wantX 等距横排，**到右墙折行**
+           （回到 wantX、行下移继续摆）—— 旧行为是 break 直接丢机器：赤铜耐压罐@30 实摆 18/30
+           台、报告零警告（丢的机器连手动连都不算，产能悄悄不达标）。冲突失败同理换行重试
+           （组内基线行下移），4 次仍放不下才放弃该台。 */
+        let col=0, baseRow=0, misses=0;
+        for(let k2=0;k2<n.machines;k2++){
+          let wx=wantX+col*(w+gapX);
+          if(wx+w>size-RW_MARGIN){ col=0; baseRow++; wx=wantX; }   /* 折行：回组起点、行下移 */
+          let py=null;
+          for(let row=baseRow;row<48;row++){
+            /* v99：组内行距用 rgCap —— 旧值 h+corr（最高 14）是纵向溢出根因：
+               28 台炉折 4 行 × 19 = 76 格，单层就吃掉大半个画布（探针实测）。 */
+            const y=cy+row*(h+rgCap);
+            let clash=false;
+            for(let ri=0;ri<rows.length;ri++){
+              const r=rows[ri];
+              /* v100：y 向区间相交判定（旧 r.y===y 只查起点行，跨组行距错相时盲区漏判
+                 —— 分离芯@70 实锤：炉(h3,行距9)摆 62..64，提纯机(h5,行距11)算出 y=64≠62
+                 误判空闲摆下，y=64 行重叠。区间相交 + x 向带 gap = 完备 AABB。 */
+              if(y<r.y+r.h && y+h>r.y && !(wx+w+gapX<=r.x1 || wx>=r.x2+gapX)){ clash=true; break; }
+            }
+            if(!clash){ py=y; rows.push({y:y, h:h, x1:wx, x2:wx+w}); break; }
+          }
+          if(py===null){ if(++misses>4) continue; col=0; baseRow+=2; k2--; continue; }
+          col++;
+          objs.push({node:n, b:b, x:wx, y:py, w:w, d:h, k:k2});
+          if(py+h>maxBottom) maxBottom=py+h;
+        }
+        xStart[n.itemId]=wantX;
+        /* xCenter 保持旧口径（组起点中心 wantX+w/2）：它喂的是深层的 alignKey 排序，
+           每行都锚定 wantX，参考点就是组起点 —— 改均值会改变不折行工况的排序（赤铜块@10 退化实测）。 */
+        xCenter[n.itemId]=wantX+w/2;
+      });
+      bands.push({depth:d, y0:cy, y1:maxBottom});
+      cy=maxBottom+corr; rowH=0; x=RW_MARGIN;
+      return;
+    }
+    md[d].forEach(n=>{
+      const b=byBp(n.machineId); if(!b) return;
+      const fp=Lfp(b), w=fp[0]||1, h=fp[1]||1;
+      const x0=x;
+      for(let k=0;k<n.machines;k++){
+        if(x+w>size-RW_MARGIN) newRow(rgCap);   /* 层内折行：行间走 rgCap，层间换行仍走 corr */
+        objs.push({node:n, b:b, x:x, y:cy, w:w, d:h, k:k});
+        x+=w+gapX; if(h>rowH) rowH=h;
+      }
+      xCenter[n.itemId]=(x0+(x-gapX)+w)/2;
+      xStart[n.itemId]=x0;
+    });
+    bands.push({depth:d, y0:y0, y1:cy+rowH});
+    newRow();
+  });
+  const over=objs.filter(o=>o.y+o.d>size-RW_MARGIN);
+  /* ⭐ v99 行间降级：折行行距从 min(corr, RW_ROWGAP_HI) 起步（小链走线与旧行为一致），
+     纵向爆就 -2 递归降级，下限 RW_ROWGAP。LawPlan 是纯函数，重摆无副作用；
+     LawPlan 便宜（毫秒级摆格子），贵的是 RwRoute —— 降级只发生在爆掉的候选上，不白跑。 */
+  if(over.length && rgCap>RW_ROWGAP){
+    const o2=Object.assign({}, opts, {rowGap: Math.max(RW_ROWGAP, rgCap-2)});
+    return LawPlan(res, size, corr, o2);
+  }
+  return {objs:objs, bands:bands, height:cy, over:over, order:order, rowGap:rgCap};
+}
+/* ---------- 连线：格内 L 形走线（先竖后横 或 先横后竖），全程避开已有东西 ----------
+   起点 = 上游出料口朝外那格（机器上边再上一格）；终点 = 下游进料口朝外那格（机器下边再下一格）。
+   只做 1 个拐弯；两条候选路径都撞就记 warn，不硬塞（v1 不做绕线寻优）。 */
+function RwRotTo(a,b){ return LrotFrom([a.x,a.y],[b.x,b.y]); }
+/* ---------- 汇流器 / 分流器的方向（配置表 rotation.y 解出来的，见 §四）----------
+   汇流器 log_converger：3 进（下 / 左 / 右）→ 1 出（上）
+   分流器 log_splitter：1 进（下）→ 3 出（上 / 左 / 右）
+   画布方向：x 右、y 下 → 「下」= (0,+1)、「上」= (0,-1)、「左」= (-1,0)、「右」= (+1,0)。
+   ⚠️ 物料自下而上：上游机器在下面、下游在上面，所以汇流器放在**两者之间的通道里**正好
+      「从下面收料、往上面出料」。 */
+const RW_MERGE_ID='log_converger', RW_MERGE_FANIN=3;
+/* ⚠️ 只有在「能省下足够多条线」时才值得上汇流器：
+   每个汇流器要多两段走线（进它、出它），少并几条的话失败点反而变多。
+   实测 4 台并成 2 条（省 2 条）不如直接连；12 台并成 6 条（省 6 条）才明显划算。 */
+const RW_MERGE_MIN_SAVE=4;
+function RwRoute(placed, res, size, corr, extraBusy){
+  const busy={};      /* 已被占的格：机器 + 已铺的线 + 汇流器 */
+  placed.forEach(o=>{ for(let j=0;j<o.d;j++) for(let i=0;i<o.w;i++) busy[(o.x+i)+','+(o.y+j)]=1; });
+  /* ⭐ ⑤-1「重排其余」用：把**不归排布器管的散件**（手摆的机器 / 手拉的线）也算障碍，
+     新线不会从它们身上压过去。不传就是老行为，一行都不多跑。 */
+  if(extraBusy) extraBusy.forEach(o=>{ for(let j=0;j<o.d;j++) for(let i=0;i<o.w;i++) busy[(o.x+i)+','+(o.y+j)]=1; });
+  const belts=[], warns=[], links=[];
+  const byNode={};
+  placed.forEach(o=>{ (byNode[o.node.itemId]=byNode[o.node.itemId]||[]).push(o); });
+  const used={};
+  const uidOf=o=>o.x+','+o.y;
+  const K=(x,y)=>x+','+y;
+  const outOf=p=>({x:p.gx+(p.dir==='l'?-1:p.dir==='r'?1:0),
+                   y:p.gy+(p.dir==='u'?-1:p.dir==='d'?1:0)});
+  const free=pt=>pt.x>=0&&pt.y>=0&&pt.x<size&&pt.y<size&&!busy[K(pt.x,pt.y)];
+
+  const deps=[];
+  res.machines.forEach(parent=>{ (parent.children||[]).forEach(child=>{
+    if(child.recipeId) deps.push([parent,child]);
+  }); });
+  deps.sort((a,b)=>(RwFluid(b[1].phase)?1:0)-(RwFluid(a[1].phase)?1:0));
+  /* 记账：每对依赖实际铺成了几条成品线（阶段二里累加）—— 用来判「堵不堵」。
+     key 是树上的 child 节点对象，必须用 Map（普通对象会把对象键压成 '[object Object]'）。 */
+  const linked=new Map();
+  /* ⭐ ⑤-2（2026-09-22）：汇流/分流器的**实际摆放数**与**被丢掉的线数**。
+     以前分流器只摆一个、第 4 台下游起既不接线也不报告（静默丢）—— 现在两个分支都逐条点数，
+     `dropN` 不为零就必须在报告里点名，测试也守着这条。 */
+  let spN=0, mgN=0, dropN=0;
+
+  /* ========== 阶段一：连什么 —— 挑端口 / 定汇流分组 / 预留端点 ========== */
+  const reserved={};
+  const jobs=[];          /* 段：{s,t,isP,parent,child}` */
+  deps.forEach(pair=>{
+    const parent=pair[0], child=pair[1];
+    const ps=placed.filter(o=>o.node===parent);
+    if(!ps.length) return;
+    const cs=byNode[child.itemId]||[];
+    if(!cs.length) return;
+    const isP=RwFluid(child.phase);
+    const N=cs.length, M=ps.length;
+    const cntPorts=(b,kind)=>((b.ports||[]).filter(p=>p.kind===kind&&(!!p.isPipe)===isP).length);
+    const outCap=cntPorts(cs[0].b,'output'), inCap=cntPorts(ps[0].b,'input');
+    /* 载具上限：一条线最多扛多少 → 干线数 T = max(下游台数, 总流量/上限)
+       —— 下游每台至少要有一条自己的线，所以 T 不能小于 M。 */
+    const cap=isP?RW_PIPE:RW_BELT;
+    /* 这条依赖「至少要几条并行线」—— 由载具上限决定（传送带 30/分、管道 120/分）。
+       ⚠️ 2026-09-21 补（路线图 ②a）：以前这里只算出来**提醒一句**，线还是只连一条
+       → 高产能段实际会堵。现在 np 直接抬到 linesNeed，**真并联**铺出来。 */
+    const linesNeed=RwLines(child.demand, isP);
+    /* ⚠️ 这两个数**必须声明在块外**：下面的 `else if(outNeed>…)` 要用。
+       曾经写成 `if(!useMerge){ const outNeed=…; }` —— 测试全绿（沙箱把 const 换成 var 掩盖了块级作用域），
+       真机一跑 LawRun 就 `outNeed is not defined`，**整个排布器点不动**（2026-09-22 真机复现）。
+       现在测试里加了「原始代码（const/let 版）冒烟」这道门禁守着。 */
+    const outNeed=Math.ceil(M/N), inNeed=Math.ceil(N/M);
+    const T0=Math.max(M, linesNeed, Math.ceil(child.demand/(cap||1)));
+    /* ⭐⭐ ⑤-3（2026-09-22）汇流器判定两处修正（都是实测踩出来的）：
+       ① **fanin = 3**：把 N 条并成 T 条要求 T ≥ ceil(N/3)。原来 T 只按「下游台数 / 载具上限」算 ——
+          于是「8 台上游、2 台下游、需求只要 2 条线」时 T=2 < ceil(8/3)=3 → 判"并不了" → 直接连 8 条，
+          而下游 2 台加起来只有 6 个管口 → **4 条线根本插不进**，只能手动连（实测 液化息壤@10）。
+          现在只要并线，就把 T 抬到 ceil(N/3)（多出的干线无害：下游多接一条而已），并用 M×inCap 兜上限。
+       ② **下游口不够时，并线不是"划不划算"而是"必须"**：inNeed > inCap 说明不并就插不进，
+          这时即便只省 1 条也要并（原来死守 RW_MERGE_MIN_SAVE = 4，判"不值当" → 直接连 → 一半的线连不上）。 */
+    const mustMerge=(inNeed>inCap);
+    /* ⚠️ T 的抬升**只在"必须并"时才做**：可选并线时把 T 硬抬到 ceil(N/3) 会让本来不必并的链去并，
+       实测「实验铜骨骼@10」（inNeed 4 ≤ inCap 6，并线只是"省 6 条"）因此从全连通倒退成 2 条手动连。
+       可选场景仍守老口径（T0 本身要够分出 ceil(N/3) 组才值得并）。 */
+    const Tmerge=mustMerge?Math.max(T0, Math.ceil(N/RW_MERGE_FANIN)):T0;
+    const mergeSaves=N-Tmerge;
+    const canMerge=(N>Tmerge && mergeSaves>0
+      && (mustMerge || (mergeSaves>=RW_MERGE_MIN_SAVE && T0>=Math.ceil(N/RW_MERGE_FANIN)))
+      && Tmerge<=M*Math.max(1,inCap));
+    const useMerge=canMerge;
+    const T=useMerge?Tmerge:T0;
+    const np=useMerge?Math.max(T,linesNeed):Math.max(N,M,linesNeed);
+    if(N>1||M>1) warns.push(parent.name+' ← '+child.name+'：上游 '+N+' 台 / 下游 '+M+' 台，'
+      +(useMerge?('用 '+(N-T)+' 个汇流器并成 '+T+' 条干线'):('直接连 '+np+' 条')));
+    if(!useMerge){
+      /* ⚠️ 口径（⑤-2 修正）：分流器 1 进 3 出 —— 要喂 outNeed 台下游，需要的是 **ceil(outNeed/3) 个分流器**
+         （每个只占上游 1 个出料口），不是「缺几个出料口」。原来按 outNeed-outCap 报，实测量级也不对。 */
+      if(outNeed>outCap) warns.push(parent.name+' ← '+child.name+'：上游每台要 '+outNeed+' 个'+(isP?'管道':'传送带')+'出料口，但只有 '+outCap+' 个 → 需要 '+Math.ceil(outNeed/3)+' 个**分流器**（1 进 3 出，每个占上游 1 个出料口）');
+      if(inNeed>inCap) warns.push(parent.name+' ← '+child.name+'：下游每台要 '+inNeed+' 个'+(isP?'管道':'传送带')+'进料口，但只有 '+inCap+' 个 → 需要 '+(inNeed-inCap)+' 个**汇流器**');
+    }
+    const portCands=(o,kind)=>{
+      const b=o.b, fp=Lfp(b), out=[];
+      (b.ports||[]).filter(p=>p.kind===kind && (!!p.isPipe)===isP).forEach(p=>{
+        const q=LportXY(p,o.rot,fp[0],fp[1]);
+        if(q.x<0||q.x>=o.w||q.z<0||q.z>=o.d) return;
+        const key=uidOf(o)+kind+p.index+(isP?'P':'B');
+        if(used[key]) return;
+        out.push({key:key, gx:o.x+q.x, gy:o.y+q.z, dir:LportDir(q,o.w,o.d)});
+      });
+      return out;
+    };
+    /* 下游每台机器挑进料口：**按需要挑够几个**（inNeed = 上游台数/下游台数）。
+       ⚠️ 只挑一个的话，多条线会挤同一个口 —— 第 2 条就撞上"端点已预留"而失败（实测 4 条只连 2 条）。
+       ⚠️ 2026-09-21 补：真并联后线数可能**多于台数**（np > N），进料口也要按 np 分摊。 */
+    const inNeedN=Math.ceil(Math.max(N,np)/M);
+    const dstPick=ps.map(o=>{
+      const ics=portCands(o,'input').filter(c=>{
+        const t=outOf(c); return !busy[K(t.x,t.y)] && !reserved[K(t.x,t.y)];
+      });
+      return ics.slice(0, inNeedN).map(c=>{ used[c.key]=1; return {o:o, p:c}; });
+    });
+    if(useMerge){
+      /* 把 N 台上游分成 T 组（每组 ≤3，好用一个汇流器并掉），第 g 组喂 dstPick[g%M] */
+      /* ⭐ 路线图 ③「就近分组」（2026-09-21）：上游机器与下游汇流点都按 x 排序后，
+         组 g 取离第 g 个汇流点最近的 sz 台 —— 消灭"右半边机器横跨 20 格去够左边汇流器"的长干线
+         （实测 copper_jar@30 的 6 条失败干线全部来自树序切组的远组）。 */
+      /* cs 的元素就是 placed 实体（自带 x/w），直接取中心 —— 别再反查 node */
+      const csX=o=>o.x+o.w/2;
+      const csSorted=cs.slice().sort((a,b)=>csX(a)-csX(b));
+      const dstOrder=ps.slice().sort((a,b)=>(a.x+a.w/2)-(b.x+b.w/2));
+      const taken=new Array(csSorted.length).fill(false);
+      const base=Math.floor(N/T), rem=N%T, groups=[];
+      for(let g=0;g<T;g++){
+        const sz=base+(g<rem?1:0);
+        const dO=dstOrder[g%dstOrder.length];
+        const dx0=dO?(dO.x+dO.w/2):0;
+        const idx=csSorted.map((n,i)=>i).filter(i=>!taken[i])
+          .sort((a,b)=>Math.abs(csX(csSorted[a])-dx0)-Math.abs(csX(csSorted[b])-dx0))
+          .slice(0,sz);
+        idx.forEach(i=>taken[i]=true);
+        groups.push(idx.map(i=>csSorted[i]));
+      }
+      groups.forEach((grp,g)=>{
+        const dst=dstPick[g%M]&&dstPick[g%M][0];
+        if(!dst){ warns.push(parent.name+' ← '+child.name+'：下游进料口都占着，第 '+(g+1)+' 组请手动连'); return; }
+        const tPt=outOf(dst.p);
+        if(grp.length<2){
+          /* 单台一组：直接连 */
+          const src=grp[0], ocs=portCands(src,'output');
+          const pick=ocs.filter(c=>free(outOf(c)))[0];
+          if(!pick){ warns.push(parent.name+' ← '+child.name+'：端口/端点被占了，请手动连'); return; }
+          used[pick.key]=1;
+          reserved[K(outOf(pick).x,outOf(pick).y)]=1; reserved[K(tPt.x,tPt.y)]=1;
+          jobs.push({s:outOf(pick), t:tPt, isP:isP, parent:parent, child:child});
+          return;
+        }
+        /* 多台一组：在「下游机器正下方的通道」里找个空位放汇流器 */
+        const cell=RwFindMerge(size, dst.o, grp.length, busy, corr);
+        if(!cell){ warns.push(parent.name+' ← '+child.name+'：通道里放不下汇流器，这 '+(grp.length)+' 台请手动并线'); 
+          /* 退化：直接连（能连几条算几条） */
+          grp.forEach(src=>{
+            const ocs=portCands(src,'output'), pick=ocs.filter(c=>free(outOf(c)))[0];
+            if(!pick||!free(tPt)) return;
+            used[pick.key]=1; reserved[K(outOf(pick).x,outOf(pick).y)]=1; reserved[K(tPt.x,tPt.y)]=1;
+            jobs.push({s:outOf(pick), t:tPt, isP:isP, parent:parent, child:child});
+          });
+          return;
+        }
+        busy[K(cell.x,cell.y)]=1;
+        belts.push({x:cell.x, y:cell.y, rot:0, isPipe:isP, logiId:RW_MERGE_ID, merge:true});
+        mgN++;
+        const ins=[{x:cell.x,y:cell.y+1},{x:cell.x-1,y:cell.y},{x:cell.x+1,y:cell.y}];
+        const outs={x:cell.x, y:cell.y-1};
+        reserved[K(outs.x,outs.y)]=1;
+        const d0=dropN;
+        grp.forEach((src,gi)=>{
+          const ip=ins[gi%ins.length];
+          if(busy[K(ip.x,ip.y)]||reserved[K(ip.x,ip.y)]){ dropN++; return; }   /* ⑤-2：不再静默丢 */
+          const ocs=portCands(src,'output'), pick=ocs.filter(c=>free(outOf(c)))[0];
+          if(!pick){ dropN++; return; }
+          used[pick.key]=1;
+          reserved[K(outOf(pick).x,outOf(pick).y)]=1; reserved[K(ip.x,ip.y)]=1;
+          jobs.push({s:outOf(pick), t:ip, isP:isP, parent:parent, child:child, intoMerge:true});
+        });
+        reserved[K(tPt.x,tPt.y)]=1;
+        jobs.push({s:outs, t:tPt, isP:isP, parent:parent, child:child, fromMerge:true, mergeCell:cell});
+        if(dropN-d0) warns.push(parent.name+' ← '+child.name+'：有 '+(dropN-d0)+' 台上游并进汇流器的线没连上（端口/通道被占），请手动连');
+      });
+    }else if(outNeed>outCap && M>N){
+      /* ---------- 自动摆分流器（2026-09-21 补 · ⑤-2 扩容 2026-09-22）----------
+         用在「上游出料口不够、一台要喂多台下游」：把一台上游的线经**分流器（1 进 3 出）**分给下游。
+         摆放与汇流器对称：**汇流器在下游机器下方收料，分流器在上游机器上方放料**。
+         ⚠️ ⑤-2 实测抓到的坑：一台分流器只有 **3 个出料格**（上/左/右），旧版**只摆一个** ——
+            第 4 台下游起既不接线、也不进 warn（**静默丢**）。实测「工业爆炸物@5」1 台粉碎机要喂 5 台下游，
+            只连上 3 台，而报告里写着「手动连 0 条」，看着像全连上了。
+         现在：**每 3 台下游摆一个分流器**（并列，每个各从上游的一个空闲出料口取料，1 台机器有 3 个出料口
+            就够喂 3 组）；摆不下 / 出料口不够 → `dropN` 计数并**逐条点名**，绝不静默丢。 */
+      const FT=3;                       /* 分流器 1 进 3 出 */
+      const dS=dropN;                   /* 本对依赖里被丢掉的线数（出口按增量报） */
+      warns.push(parent.name+' ← '+child.name+'：上游每台只有 '+outCap+' 个'+(isP?'管道':'传送带')
+        +'出料口，但要喂 '+outNeed+' 台下游 → 自动摆**分流器**（⚠️ 1 进 3 出是 round-robin 轮询均分，不是按需分配——下游速率差异大时实际吞吐受轮询节奏约束）');
+      cs.forEach((src,si)=>{
+        const targets=[];
+        for(let k=0;k<outNeed;k++){
+          const arr=dstPick[(si*outNeed+k)%M];
+          if(arr&&arr[0]&&targets.indexOf(arr[0])<0) targets.push(arr[0]);
+        }
+        if(!targets.length) return;
+        if(targets.length===1){
+          const ocs=portCands(src,'output'), pick=ocs.filter(c=>free(outOf(c)))[0];
+          if(!pick){ dropN++; return; }
+          used[pick.key]=1;
+          reserved[K(outOf(pick).x,outOf(pick).y)]=1;
+          reserved[K(outOf(targets[0].p).x,outOf(targets[0].p).y)]=1;
+          jobs.push({s:outOf(pick), t:outOf(targets[0].p), isP:isP, parent:parent, child:child});
+          return;
+        }
+        /* 每 3 台下游一个分流器 —— 一个不够就并排摆第二个 */
+        for(let g=0; g<targets.length; g+=FT){
+          const grp=targets.slice(g,g+FT);
+          const cell=RwFindSplit(size, src, busy, corr);
+          if(!cell){ dropN+=grp.length; continue; }
+          const inCell={x:cell.x, y:cell.y+1};
+          if(busy[K(inCell.x,inCell.y)]||reserved[K(inCell.x,inCell.y)]){ dropN+=grp.length; continue; }
+          /* 先挑上游出料口：挑不到就别留一个孤零零的分流器 */
+          const ocs=portCands(src,'output'), pick=ocs.filter(c=>free(outOf(c)))[0];
+          if(!pick){ dropN+=grp.length; continue; }
+          busy[K(cell.x,cell.y)]=1;
+          belts.push({x:cell.x, y:cell.y, rot:0, isPipe:isP, logiId:'log_splitter', split:true});
+          spN++;
+          const outCells=[{x:cell.x,y:cell.y-1},{x:cell.x-1,y:cell.y},{x:cell.x+1,y:cell.y}];
+          used[pick.key]=1; reserved[K(outOf(pick).x,outOf(pick).y)]=1; reserved[K(inCell.x,inCell.y)]=1;
+          jobs.push({s:outOf(pick), t:inCell, isP:isP, parent:parent, child:child, intoSplit:true});
+          grp.forEach((d,ti)=>{
+            const oc=outCells[ti%outCells.length];
+            if(busy[K(oc.x,oc.y)]||reserved[K(oc.x,oc.y)]){ dropN++; return; }
+            reserved[K(oc.x,oc.y)]=1; reserved[K(outOf(d.p).x,outOf(d.p).y)]=1;
+            jobs.push({s:oc, t:outOf(d.p), isP:isP, parent:parent, child:child, fromSplit:true});
+          });
+        }
+      });
+      if(dropN-dS) warns.push(parent.name+' ← '+child.name+'：**还有 '+(dropN-dS)+' 台下游没连上**'
+        +'（分流器摆不下 / 上游出料口不够）—— 请手动连，或把上游机器多做几台');
+    }else{
+      for(let i=0;i<np;i++){
+        const dst=dstPick[i%M] && dstPick[i%M][Math.floor(i/M)%dstPick[i%M].length];
+        if(!dst){ warns.push(parent.name+' ← '+child.name+'：第 '+(i+1)+' 条的下游进料口占着，请手动连'); continue; }
+        const src=cs[i%N], ocs=portCands(src,'output');
+        const pick=ocs.filter(c=>free(outOf(c)))[0];
+        if(!pick){ warns.push(parent.name+' ← '+child.name+'：第 '+(i+1)+' 条的端口/端点被占了，请手动连'); continue; }
+        used[pick.key]=1;
+        reserved[K(outOf(pick).x,outOf(pick).y)]=1; reserved[K(outOf(dst.p).x,outOf(dst.p).y)]=1;
+        jobs.push({s:outOf(pick), t:outOf(dst.p), isP:isP, parent:parent, child:child});
+      }
+    }
+  });
+
+  /* ========== 阶段二：统一走线（不许穿过别人的端点格） ==========
+     ⭐ 路线图 ③「由短到长铺」：短段先占近路，长段后铺绕远 —— 总线长更短。 */
+  jobs.sort((a2,b2)=>((a2.isP?0:1)-(b2.isP?0:1))                 /* 流体（管道）优先：被带子截断就没路可绕 */
+                    ||((Math.abs(a2.s.x-a2.t.x)+Math.abs(a2.s.y-a2.t.y))
+                      -(Math.abs(b2.s.x-b2.t.x)+Math.abs(b2.s.y-b2.t.y))));
+  const axis={};   /* 已铺线格的轴向（'h' 横 / 'v' 竖）—— 桥接穿越的判定依据 */
+  jobs.forEach(j=>{
+    const s=j.s, t=j.t;
+    const mine=k=>k===K(s.x,s.y)||k===K(t.x,t.y);
+    const block=(x,y)=>!!reserved[K(x,y)]&&!mine(K(x,y));
+    const path=RwPath(s, t, busy, size, block, axis);
+    if(!path){ warns.push(j.parent.name+' ← '+j.child.name+'：走线过不去（端口/走线都被占了），这一段请手动连'
+      +'（'+s.x+','+s.y+' → '+t.x+','+t.y+'）'); return; }
+    path.forEach((c,k)=>{
+      const kk=K(c.x,c.y);
+      const isBr=!!axis[kk];
+      const nx=path[k+1]||t;
+      const myAx=(nx.x-c.x!==0)?'h':'v';
+      if(!axis[kk]) axis[kk]=myAx;
+      busy[kk]=1;
+      if(isBr){
+        /* ⭐ 桥格：原线保留，上面叠物流桥 / 管道桥；桥格对后续寻路关闭（一格一桥） */
+        delete axis[kk];
+        belts.push({x:c.x, y:c.y, rot:RwRotTo(c,nx), isPipe:j.isP,
+          logiId:(j.isP?'log_pipe_connector':'log_connector'), bridge:true});
+      }else{
+        belts.push({x:c.x, y:c.y, rot:RwRotTo(c,nx), isPipe:j.isP});
+      }
+    });
+    /* 汇流器 / 分流器那几条只算一次成品线，别重复计数 */
+    if(!j.intoMerge && !j.intoSplit){
+      linked.set(j.child, (linked.get(j.child)||0)+1);
+      links.push({item:j.child.name, perMin:j.child.demand, from:j.child.machineName,
+        to:j.parent.machineName, isPipe:j.isP, cells:path.length, lines:RwLines(j.child.demand, j.isP),
+        viaMerge:!!j.fromMerge, viaSplit:!!j.fromSplit});
+    }
+  });
+  /* ---------- 吞吐体检（路线图 ②a）：每条依赖「要几条线 / 实际连了几条 / 单线负荷」----------
+     判定口径：单线负荷 = 需求 ÷ 实际线数。
+       > 载具上限（带 30/分 · 管 120/分）→ **会堵**（这条线上料过不去，机器会饿）
+       ≥ 90% 上限 → **紧**（没余量，需求再加一点就堵）
+       否则 → 通畅。 */
+  const loads=deps.map(pair=>{
+    const parent=pair[0], child=pair[1];
+    const isP=RwFluid(child.phase), cap=isP?RW_PIPE:RW_BELT;
+    const n=linked.get(child)||0;
+    const per=n?(Math.round(child.demand/n*1000)/1000):0;
+    return {item:child.name, from:child.machineName, to:parent.machineName, isPipe:isP,
+      demand:child.demand, lines:n, need:RwLines(child.demand,isP), perLine:per, cap:cap,
+      state:(!n?'none':(per>cap+1e-6?'jam':(per>cap*0.9?'tight':'ok')))};
+  });
+  /* stats（⑤-2）：汇流/分流器实际摆了几个、有几条线被丢下 —— 报告与回归测试都看这几个数 */
+  return {belts:belts, warns:warns, links:links, loads:loads,
+          stats:{split:spN, merge:mgN, dropped:dropN}};
+}
+function RwFindSplit(size, src, busy, corr){
+  const K=(x,y)=>x+','+y;
+  const need=[[0,0],[0,1],[-1,0],[1,0],[0,-1]];   /* 本体 + 下进料 + 左/右出料 + 上出料 */
+  const y1=src.y-1, y0=Math.max(1, y1-(corr||5));
+  for(let y=y1;y>=y0;y--){
+    for(let dx=0;dx<size;dx++){
+      for(const sx of (dx===0?[0,-1,1]:[dx,-dx])){
+        const x=src.x+sx;
+        if(x<1||x>=size-1) continue;
+        let ok=true;
+        for(const n of need){ if(busy[K(x+n[0],y+n[1])]){ ok=false; break; } }
+        if(ok) return {x:x, y:y};
+      }
+    }
+  }
+  return null;
+}
+/* 在下游机器正下方的通道里找一个能放汇流器的空位（它下面收料、往上面出料） */
+function RwFindMerge(size, dst, fanin, busy, corr){
+  const K=(x,y)=>x+','+y;
+  const need=[[0,0],[0,1],[-1,0],[1,0],[0,-1]];   /* 本体 + 下/左/右进料口 + 上出料口 */
+  const y0=dst.y+dst.d, y1=Math.min(size-1, y0+(corr||5));
+  for(let y=y0;y<=y1;y++){
+    for(let dx=0;dx<size;dx++){
+      for(const sx of (dx===0?[0,-1,1]:[dx,-dx])){
+        const x=dst.x+sx;
+        if(x<1||x>=size-1) continue;
+        let ok=true;
+        for(const n of need){ if(busy[K(x+n[0],y+n[1])]){ ok=false; break; } }
+        if(ok && y>=1) return {x:x, y:y};
+      }
+    }
+  }
+  return null;
+}
+function RwLines(perMin, isPipe){ return (!perMin||perMin<=0)?0:Math.ceil(perMin/(isPipe?RW_PIPE:RW_BELT)); }
+function RwProbe(s, t, busy, size, reserved){
+  const K=(x,y)=>x+','+y;
+  const mine=k=>k===K(s.x,s.y)||k===K(t.x,t.y);
+  return RwPath(s, t, busy, size, (x,y)=>!!reserved[K(x,y)]&&!mine(K(x,y)));
+}
+function RwPath(s, t, busy, size, block, axis){
+  /* ⭐ 路线图 ③「桥接器」（2026-09-21，参照 IndustrialPlanner 的 Connector 规则）：
+     已铺线格不再一律是墙 —— 允许「正交直穿」：我方走向与被穿线的轴向正交、且穿过时不转弯，
+     该格铺**物流桥 / 管道桥**（cost +4，比绕远路便宜时自动启用）。同向重叠依然禁止（会互相顶）。
+     状态含 onBridge：桥上只能直行、且下一格必须落回空地 —— 一格桥只跨一条线。 */
+  const K=(x,y)=>x+','+y;
+  const axOf=(x,y)=>(axis&&axis[K(x,y)])||null;
+  const blocked=(x,y)=>!!busy[K(x,y)]||(block?!!block(x,y):false);
+  const ok=(x,y)=>x>=0&&y>=0&&x<size&&y<size&&!blocked(x,y);
+  if(s.x===t.x&&s.y===t.y) return [s];
+  if(!ok(t.x,t.y)) return null;
+  const dirs=[[0,-1],[0,1],[-1,0],[1,0]];
+  const TURN=2, BRIDGE=4;
+  const key=(x,y,d,b)=>x+','+y+','+d+','+b;
+  const dist={}, prev={};
+  const heap=[], hpush=n=>{ heap.push(n); let i=heap.length-1;
+    while(i>0){ const p=(i-1)>>1; if(heap[p].c<=heap[i].c) break;
+      const tmp=heap[p]; heap[p]=heap[i]; heap[i]=tmp; i=p; } };
+  const hpop=()=>{ const top=heap[0], last=heap.pop();
+    if(heap.length){ heap[0]=last; let i=0;
+      for(;;){ const l=i*2+1, r=l+1; let m=i;
+        if(l<heap.length&&heap[l].c<heap[m].c) m=l;
+        if(r<heap.length&&heap[r].c<heap[m].c) m=r;
+        if(m===i) break; const tmp=heap[m]; heap[m]=heap[i]; heap[i]=tmp; i=m; } }
+    return top; };
+  dist[key(s.x,s.y,-1,0)]=0;
+  hpush({c:0,x:s.x,y:s.y,d:-1,b:0});
+  let hitD=null, hitB=0;
+  while(heap.length){
+    const cur=hpop();
+    const ck=key(cur.x,cur.y,cur.d,cur.b);
+    if(dist[ck]!==undefined && dist[ck]<cur.c-1e-9) continue;
+    if(cur.x===t.x&&cur.y===t.y){ hitD=cur.d; hitB=cur.b; break; }
+    for(let i=0;i<4;i++){
+      const nx=cur.x+dirs[i][0], ny=cur.y+dirs[i][1];
+      if(nx<0||ny<0||nx>=size||ny>=size) continue;
+      let nb=0, step;
+      if(ok(nx,ny)){
+        step=1+((cur.d>=0&&i!==cur.d)?TURN:0);
+      }else if(axis && !block(nx,ny) && !cur.b){
+        const a=axOf(nx,ny);
+        const cross=(a==='h'&&i<=1)||(a==='v'&&i>=2);
+        if(!cross) continue;
+        step=1+((cur.d>=0&&i!==cur.d)?TURN:0)+BRIDGE; nb=1;
+      } else continue;
+      const nc=cur.c+step+(i===cur.d?0:0.0001);
+      const k2=key(nx,ny,i,nb);
+      if(dist[k2]!==undefined && dist[k2]<=nc) continue;
+      dist[k2]=nc; prev[k2]=ck;
+      hpush({c:nc,x:nx,y:ny,d:i,b:nb});
+    }
+  }
+  if(hitD===null) return null;
+  const out=[]; let ck=key(t.x,t.y,hitD,hitB);
+  while(ck){ const p=ck.split(','); out.push({x:+p[0], y:+p[1]}); ck=prev[ck]; }
+  out.reverse();
+  return out;
+}
+/* ---------- 一键跑完整条闭环（会清空画布，可撤销）---------- */
+function LawRun(targetId, perMin){
+  const L=Linit();
+  if(!targetId){ L.msg='先选一个目标物品'; render(); return; }
+  perMin=+perMin||0;
+  if(perMin<=0){ L.msg='目标速率要大于 0'; render(); return; }
+  L.tgt=targetId; L.rate=perMin;
+  /* ⭐⑥-1 跨地区收货（博士 2026-09-22：「只用从四号谷地向武陵超库存传输」）
+     做法是**两趟展开**：第一趟按老口径展开，拿到它认出来的「原料」清单；
+     第二趟把其中**能被跨地区传输**的（FactoryItemTable.transferDomainIds 非空，243 件）
+     挑出**一种**标成「收货」（一条路线一次只能传一种 —— 见下面单选注释），其余回退本地自产
+     —— 这样「哪些算原料」由配方树自己决定，我不用另立一份口径、也不会漏。
+     收货只改变「原材料从哪来」，机器台数与配方一字不动 → 老的口径与评分全都不受影响。 */
+  /* ⭐⑥-2 多目标（2026-09-22）：工具栏「＋ 目标」加的额外目标（L.mt）与主目标合成一图展开 ——
+     共享的中间料只建一套，路由层按幽灵边逐条连线 / 分流。
+     ⚠️ mt 为空时 ex=null，两次 Rexplode 的参数与老路径一字不差（601 项回归依赖）。 */
+  const mt=(L.mt||[]).filter(x=>x&&x.id);
+  if(mt.some(x=>!(+x.rate>0))){ L.msg='「＋ 目标」里还有没填速率的行（速率要大于 0）'; render(); return; }
+  const ex=mt.length?{seeds:[{itemId:targetId, perMin:perMin}].concat(
+    mt.map(x=>({itemId:x.id, perMin:+x.rate||0})))}:null;
+  const opt0={selfLoop:!!L.selfLoop}, opt1={selfLoop:!!L.selfLoop, shipFromName:LshipFromName()};
+  if(ex){ opt0.seeds=ex.seeds; opt1.seeds=ex.seeds; }
+  const res0=Rexplode(targetId, perMin, opt0);
+  /* ⭐⑥-1 单选（2026-09-22 博士指出 + 三源核实）：一条传输路线**一次只能传一种物品** ——
+     协议管理里 Edit → 选一种物品 → 启动；换物品 = 停止重设、计时重置回 1 小时（GameRant/GameWith/Game8 一致）。
+     所以「能传的自动全收」只在链里恰有 1 种可传原料时成立；≥2 种时必须**挑一种**走传输，
+     其余回退**本地自产**（产线照建）。默认挑「需求最大的那一种」（最值得省的产能），报告里可换选。 */
+  let shipList=[];
+  if(L.shipIn && res0){
+    /* ⭐v81：候选计算收口到 LshipPanel（链上全物品都能选、原料叶优先排前；报告与面板共用同一份状态）。
+       ⚠️ 老坑备忘：res.raw 是**物品 id 串数组**不是节点对象（2026-09-22 踩过：当对象用 → eff=undefined → 收货清单空）。 */
+    LshipPanel(res0);
+    if(L.shipPick) shipList=[L.shipPick];
+  } else if(!L.shipIn){ L.shipCands=[]; }
+  opt1.shipInList=shipList;
+  const res=Rexplode(targetId, perMin, opt1);
+  if(!res.machines.length){ L.msg='「'+res.targetName+'」没有机器配方，排不了产线'; render(); return; }
+  if(res.totalMachines>RW_MAX_MACHINES){
+    L.msg='这条链展开要 '+res.totalMachines+' 台机器（超过上限 '+RW_MAX_MACHINES+'），先不生成 —— '
+      +'多半是把野外采集的料也自己做了。把速率调小，或换一个更靠上游的目标物品试试'
+      +(res.externals.length?('；这条链里已按外部输入处理的：'+res.externals.map(RwItemName).join('、')):'');
+    render(); return;
+  }
+  /* 层间通道高度**按并联线数自适应**：固定 5 行在产能高的时候会被线挤死（实测 30/分 有 9 条连不上）。
+     线越多 → 通道越高。上限 14 行，免得画布塞不下。
+     ⚠️ 2026-09-21 补：线数口径要跟 RwRoute 的真并联一致（那里 np 会抬到 RwLines(demand)）。 */
+  const depLines=res.machines.reduce((s,n)=>s+(n.children||[]).reduce((t,c)=>
+    t+(c.recipeId?Math.max(c.machines||1, n.machines||1, RwLines(c.demand, RwFluid(c.phase))):0),0),0);
+  /* ⭐⭐ 路线图 ③ 二梯队「参数搜索 + 局部交换」（2026-09-21）：
+     第一梯队证实"启发式一步到位"不可靠（紧凑档在大产线灾难性劣化），所以直接上搜索：
+     ① 参数网格：间 {4,3,2} × 按列对齐 {关,开} × 通道基础 {5,3} = 12 组，全部摆+铺+打分；
+     ② 失败驱动的局部交换：最优组若还有「手动连」，对它的每层相邻机器对做交换重铺
+        （同 itemId 的不换——换同料机器没意义），分数更高就留，最多试 24 对；
+     ③ 择优口径不变：连通段 > 手动连 > 总线长。大产线（>15 台）砍掉交换、网格减半控时长。 */
+  /* ⭐⭐ ⑤-3（2026-09-22）打分口径修正：**「手动连」的权重从 100 提到 400**。
+     实测（实验铜骨骼@10）：全连通的方案（间8/通道13/down，手动连 0、线 753 格）反而**输给**
+     还有 2 条手动连的紧凑方案（线 454 格）—— 因为 2×100 的罚分盖不过 300 格线长差。
+     这是口径反了：**少一条线是玩家得动手补的功能缺陷，多铺些格子只是效率问题**。
+     改权重后"能全连通"压过"线短"，线长只在同等连通度之间做区分。 */
+  const pickScore=(pl,rt)=>{
+    const loads=rt.loads||[];
+    const ok=loads.filter(x=>x.state!=='none'&&x.state!=='jam').length;
+    const manual=rt.warns.filter(w=>w.indexOf('手动连')>=0).length;
+    const jam=loads.filter(x=>x.state==='jam').length;
+    return {ok:ok, manual:manual, jam:jam, belts:rt.belts.length,
+      v:ok*1000 - jam*500 - manual*400 - rt.belts.length};
+  };
+  const small=res.totalMachines<=15;
+  const cands=[];
+  /* 宽度不匹配检测：某层台数 > 其下游层台数 × 1.3 → 加「层内主动换行」候选（down 模式） */
+  const cntByDepth={};
+  res.machines.forEach(n=>{ cntByDepth[n.depth]=(cntByDepth[n.depth]||0)+(n.machines||0); });
+  const dks=Object.keys(cntByDepth).map(Number).sort((a,b)=>a-b);
+  let wide=false;
+  for(let wi=1;wi<dks.length;wi++){
+    if(cntByDepth[dks[wi]] > (cntByDepth[dks[wi-1]]||0)*1.6){ wide=true; break; }
+  }
+  (small?[4,3,2]:[4,3,2]).forEach(gx=>{
+    (small?[false,true]:[false,true]).forEach(al=>{
+      (small?[5,3]:[Math.min(5, depLines)]).forEach(cb=>{
+        cands.push({gapX:gx, align:al, corrBase:cb, swap:null});
+      });
+    });
+  });
+  /* down 候选收窄：只 gapX 4/2 各一组（大产线单组 ~300ms，控制总时长） */
+  if(wide){
+    const cbD=small?5:Math.min(5, depLines);
+    [4,2].forEach(gx=>{ cands.push({gapX:gx, align:false, corrBase:cbD, swap:null, mode:'down'}); });
+    if(small) cands.push({gapX:3, align:false, corrBase:cbD, swap:null, mode:'down'});
+  }
+  let best=null, tried=0, overAll=true;
+  cands.forEach(c=>{
+    const corr=Math.max(c.corrBase, Math.min(14, Math.ceil(depLines/2)+2));
+    const pl=LawPlan(res, L.size, corr, {gapX:c.gapX, align:c.align, mode:c.mode});
+    if(pl.over.length) return;
+    overAll=false;
+    const rt=RwRoute(pl.objs, res, L.size, corr);
+    const sc=pickScore(pl, rt);
+    tried++;
+    if(!best || sc.v>best.sc.v) best={c:c, sc:sc, plan:pl, route:rt, corr:corr};
+  });
+  if(overAll || !best){
+    /* ⑥-4：拒绝生成时也要点名限摆 —— 天有洪炉 >12 台的链单层宽超任何画布（12×(5+间) ≈ 108 列），
+       实际上「超限」几乎必然伴随「放不下」；只报放不下玩家会以为是布局器菜，其实是游戏限摆。 */
+    const limW=RwPlaceLimitWarn(res);
+    L.msg='画布 '+L.size+'×'+L.size+' 放不下这条产线（试了 '+cands.length+' 组参数都越界），先把画布调大或把目标速率调小'
+        +(limW.length?('；⚠ '+limW.join('；')):''); render(); return;
+  }
+  /* ⭐⭐ ⑤-3（2026-09-22）失败驱动的「宽间距扩搜」：
+     实测 壤晶废液@10 / 清水@10 / 赤铜块@10 / 实验铜骨骼@10 的手动连，**只要把机器间距从 2~4 拉到 8 就全清零** ——
+     间距大了，机器之间那条竖缝才够几条线并排走。宽间距会让小产线的总线长变长（线长在评分里是次要项），
+     所以**只在最优方案还有手动连时才补跑这几组**：平时一分钱不花，失败时才多花 1~2 秒。 */
+  const corrAuto=Math.min(14, Math.ceil(depLines/2)+2);
+  let wideTried=0;
+  if(best.sc.manual>0){
+    const wideC=[];
+    [4,6,8].forEach(gx=>{
+      [corrAuto+2, Math.min(20, corrAuto+6)].forEach(cb=>{
+        wideC.push({gapX:gx, align:false, corrBase:cb, swap:null, mode:'down'});
+      });
+    });
+    wideC.push({gapX:8, align:false, corrBase:corrAuto, swap:null});
+    wideC.forEach(c=>{
+      const corr=Math.max(c.corrBase, corrAuto);
+      const pl=LawPlan(res, L.size, corr, {gapX:c.gapX, align:c.align, mode:c.mode});
+      if(pl.over.length) return;
+      const rt=RwRoute(pl.objs, res, L.size, corr);
+      const sc=pickScore(pl, rt);
+      tried++; wideTried++;
+      if(sc.v>best.sc.v) best={c:c, sc:sc, plan:pl, route:rt, corr:corr};
+    });
+  }
+  /* 失败驱动的局部交换 */
+  let swaps=0;
+  if(small && best.sc.manual>0 && best.plan.order){
+    Object.keys(best.plan.order).forEach(d=>{
+      const arr=best.plan.order[d];
+      for(let i2=0;i2+1<arr.length && swaps<24;i2++){
+        if(arr[i2].itemId===arr[i2+1].itemId) continue;
+        const c2={gapX:best.c.gapX, align:best.c.align, corrBase:best.c.corrBase,
+                  swap:{depth:+d, i:i2, j:i2+1}};
+        const corr2=Math.max(c2.corrBase, Math.min(14, Math.ceil(depLines/2)+2));
+        const pl2=LawPlan(res, L.size, corr2, {gapX:c2.gapX, align:c2.align, swap:c2.swap, mode:c2.mode});
+        if(pl2.over.length) continue;
+        const rt2=RwRoute(pl2.objs, res, L.size, corr2);
+        const sc2=pickScore(pl2, rt2);
+        tried++; swaps++;
+        if(sc2.v>best.sc.v) best={c:c2, sc:sc2, plan:pl2, route:rt2, corr:corr2};
+      }
+    });
+  }
+  /* 失败驱动爬升：最优组仍有手动连时，通道加高 2 行再铺一遍（通道挤是常见失败因） */
+  if(best.sc.manual>0){
+    const corrUp=Math.min(14, best.corr+2);
+    if(corrUp>best.corr){
+      const plUp=LawPlan(res, L.size, corrUp, {gapX:best.c.gapX, align:best.c.align, swap:best.c.swap, mode:best.c.mode});
+      if(!plUp.over.length){
+        const rtUp=RwRoute(plUp.objs, res, L.size, corrUp);
+        const scUp=pickScore(plUp, rtUp);
+        tried++;
+        if(scUp.v>best.sc.v){ best={c:{gapX:best.c.gapX, align:best.c.align, corrBase:corrUp, swap:best.c.swap}, sc:scUp, plan:plUp, route:rtUp, corr:corrUp}; }
+      }
+    }
+  }
+  const plan=best.plan, route=best.route, corr=best.corr;
+  const st0=route && route.stats;
+  const pickNote='参数搜索 '+tried+' 组'+(wideTried?('（含宽间距扩搜 '+wideTried+' 组）'):'')+(swaps?('（含相邻交换 '+swaps+' 次）'):'')
+    +' —— 用了 间'+best.c.gapX+'/通道'+corr+(best.c.mode==='down'?'/分层对齐':'/对齐'+(best.c.align?'开':'关'))
+    +'（连通 '+best.sc.ok+' 段 · 手动连 '+best.sc.manual+' · 线 '+best.sc.belts+' 格'
+    +(st0&&(st0.merge||st0.split)?(' · 汇流 '+st0.merge+' / 分流 '+st0.split):'')+'）';
+  const rt=route;
+  Lpush();
+  L.objs=[]; L.sel=[]; L.pick=null;
+  plan.objs.forEach(o=>{
+    const obj=Lmk(o.b, o.x, o.y, 0);
+    obj.r=o.node.recipeId;                 /* 复用上一轮的「设施选配方」：格子上会标产出物品 */
+    obj.prod=o.node.name;                  /* 产物名按**树节点**给 —— 拆解机的 outcomes[0] 是罐子，但它在产惰气 */
+    obj.planRole='machine';
+    obj.pkey=Rpkey(o.node);                /* ⑤-1：记住来自哪个树节点，「重排其余」按它对回台数 */
+    L.objs.push(obj);
+  });
+  rt.belts.forEach(bl=>{
+    /* bl.logiId 有值说明这是排布器自动摆的**汇流器 / 分流器**，不是普通带子 */
+    const pb=byBp(bl.logiId || (bl.isPipe?'log_pipe_01':'grid_belt_01'));
+    if(!pb) return;
+    const obj=Lmk(pb, bl.x, bl.y, bl.rot);
+    obj.planRole='link';
+    if(bl.merge) obj.planRole='merge';
+    if(bl.split) obj.planRole='split';
+    L.objs.push(obj);
+  });
+  L.plan={res:res, plan:plan, route:rt, rawNeed:rawNeedOf(res)};
+  const limWarns=RwPlaceLimitWarn(res);   /* ⑥-4：建筑专属限摆（天有洪炉 ≤12 台）—— 报警不拦截 */
+  L.msg='产线已生成：'+(res.targets?res.targets.map(t=>t.name+' '+t.perMin+'/分').join(' ＋ ')
+    :res.targetName+' '+perMin+'/分')+' —— 机器 '+res.totalMachines+' 台 + 管线 '+rt.belts.length+' 格'
+        +(pickNote?('；'+pickNote):'')
+        +(limWarns.length?('；⚠ '+limWarns.join('；')):'')
+        +(rt.warns.length?('；'+rt.warns.length+' 条提醒见下方'):'');
+  render();
+}
+/* 原料需求汇总（排布器的报告、评价函数都要用，抽出来免得两处口径不一致） */
+function rawNeedOf(res){
+  const m={};
+  (res.nodes||[]).forEach(n=>{ if(n.raw) m[n.itemId]=(m[n.itemId]||0)+(n.demand||0); });
+  return m;
+}
+/* 清掉上次生成的产线（只清 planRole 标记过的） */
+function LawClear(){
+  const L=Linit();
+  const n=L.objs.filter(o=>o.planRole).length;
+  if(!n){ L.msg='画布上没有排布器生成的产线'; render(); return; }
+  Lpush();
+  L.objs=L.objs.filter(o=>!o.planRole); L.sel=[]; L.plan=null;
+  L.msg='已清掉排布器生成的 '+n+' 个件（可撤销）'; render();
+}
+/* ⭐ ⑤-1「重排其余」（2026-09-22，博士：锁住满意的机器，只重排其余）
+   锁定件原地不动（当固定件 / 障碍），其余机器重新分层摆位并绕开它们，管线整条重铺。
+   ⚠️ 台数口径：把每个树节点的台数**减去已锁台数**再交给 LawPlan，锁定件自己拼回摆放列表 ——
+      机器总数守恒、产量不变。RwRoute 拿的是**原始 res**（依赖与总台数没变，线才连得对）。 */
+function Lreroll(){
+  const L=Linit(), P=L.plan;
+  if(!P||!L.objs.some(o=>o.planRole==='machine')){
+    L.msg='先「生成产线」，再锁定里面满意的机器，然后点这里重排其余'; render(); return;
+  }
+  const locks=L.objs.filter(o=>o.lock&&o.planRole==='machine');
+  if(!locks.length){
+    L.msg='还没有锁定的机器 —— 选中满意的几台点「锁定选中」（或按 L），重排时它们的原位就不动';
+    render(); return;
+  }
+  const lockN={};
+  locks.forEach(o=>{ if(o.pkey) lockN[o.pkey]=(lockN[o.pkey]||0)+1; });
+  const nodeOf={};
+  P.res.machines.forEach(n=>{ nodeOf[Rpkey(n)]=n; });
+  const res2=Object.assign({}, P.res, {machines:P.res.machines.map(n=>{
+    const left=Math.max(0,(n.machines||0)-(lockN[Rpkey(n)]||0));
+    return left===(n.machines||0)?n:Object.assign({}, n, {machines:left});
+  })});
+  /* 不归排布器管的散件（手摆的机器 / 手拉的线）：留着不动，同时当障碍 —— 免得新东西压上去 */
+  const loose=L.objs.filter(o=>!o.planRole);
+  const FXR=locks.map(o=>({x:o.x,y:o.y,w:o.w,d:o.d})).concat(loose.map(o=>({x:o.x,y:o.y,w:o.w,d:o.d})));
+  const fixedItems=locks.map(o=>{
+    const b=byBp(o.id);
+    const nd=(o.pkey&&nodeOf[o.pkey])||null;
+    return {node:nd||{itemId:'',name:o.prod||'',phase:'固态',depth:9,recipeId:o.r||null,machineId:o.id,machines:1,children:[]},
+            b:b, x:o.x, y:o.y, w:o.w, d:o.d, k:0};
+  });
+  const depLines=P.res.machines.reduce((s,n)=>s+(n.children||[]).reduce((t,c)=>
+    t+(c.recipeId?Math.max(c.machines||1, n.machines||1, RwLines(c.demand, RwFluid(c.phase))):0),0),0);
+  const autoCorr=Math.min(14, Math.ceil(depLines/2)+2);
+  const cands=[];
+  [4,2,3].forEach(gx=>{ const cb=Math.max(5, autoCorr); cands.push([gx, cb, 'down']); });
+  cands.push([4, Math.min(14, autoCorr+2), 'down']);   /* 通道再加高一档（通道挤是常见失败因） */
+  let best=null, tried=0, overN=0;
+  cands.forEach(c=>{
+    const pl=LawPlan(res2, L.size, c[1], {gapX:c[0], align:false, mode:'down', fixed:FXR});
+    if(pl.over.length){ overN++; return; }
+    const all=fixedItems.concat(pl.objs);
+    const rt=RwRoute(all, P.res, L.size, c[1], loose);
+    const sc=LawPick(rt);
+    tried++;
+    if(!best||sc.v>best.sc.v) best={c:c, plan:pl, all:all, route:rt, sc:sc};
+  });
+  /* ⭐ ⑤-3：与 LawRun 同口径的「失败驱动宽间距扩搜」（只在还有手动连时才补跑） */
+  let wideTried=0;
+  if(best && best.sc.manual>0){
+    const wideC=[[6, autoCorr], [8, autoCorr], [8, Math.min(20, autoCorr+4)], [6, Math.min(20, autoCorr+4)]];
+    wideC.forEach(c=>{
+      const pl=LawPlan(res2, L.size, c[1], {gapX:c[0], align:false, mode:'down', fixed:FXR});
+      if(pl.over.length){ overN++; return; }
+      const all=fixedItems.concat(pl.objs);
+      const rt=RwRoute(all, P.res, L.size, c[1], loose);
+      const sc=LawPick(rt);
+      tried++; wideTried++;
+      if(sc.v>best.sc.v) best={c:c, plan:pl, all:all, route:rt, sc:sc};
+    });
+  }
+  if(!best){
+    L.msg='放不下：锁定件占着的位置腾不开其余机器（试了 '+cands.length+' 组'+(overN?('，其中 '+overN+' 组直接越界'):'')
+      +'）—— 解锁几台、或把画布调大一点再试'; render(); return;
+  }
+  const newM=best.plan.objs.length;
+  Lpush();
+  const keep=locks.slice();
+  best.plan.objs.forEach(o=>{
+    const obj=Lmk(o.b, o.x, o.y, 0);
+    obj.r=o.node.recipeId; obj.prod=o.node.name; obj.planRole='machine'; obj.pkey=Rpkey(o.node);
+    keep.push(obj);
+  });
+  best.route.belts.forEach(bl=>{
+    const pb=byBp(bl.logiId || (bl.isPipe?'log_pipe_01':'grid_belt_01'));
+    if(!pb) return;
+    const obj=Lmk(pb, bl.x, bl.y, bl.rot);
+    obj.planRole='link';
+    if(bl.merge) obj.planRole='merge';
+    if(bl.split) obj.planRole='split';
+    keep.push(obj);
+  });
+  L.objs=loose.concat(keep);
+  L.sel=locks.map(o=>o.uid);
+  /* 评价函数看的是「整套布局」→ 把锁定件 + 新摆件合并后的那份交给它 */
+  L.plan={res:P.res, plan:{objs:best.all, bands:best.plan.bands, height:best.plan.height, over:[], order:{}},
+          route:best.route, rawNeed:P.rawNeed};
+  const stR=best.route.stats;
+  L.msg='重排完成：锁定 '+locks.length+' 台（位置不动）· 重摆 '+newM+' 台 · 管线 '+best.route.belts.length+' 格 —— '
+    +'间'+best.c[0]+'/通道'+best.c[1]+'（连通 '+best.sc.ok+' 段 · 手动连 '+best.sc.manual+' · 试了 '+tried+' 组'
+    +(wideTried?('，含宽间距扩搜 '+wideTried+' 组'):'')
+    +(stR&&(stR.merge||stR.split)?(' · 汇流 '+stR.merge+' / 分流 '+stR.split):'')+'）'
+    +(loose.length?('；画布上另有 '+loose.length+' 个手摆件留在原地，已被当障碍避开'):'')
+    +(best.route.warns.length?('；'+best.route.warns.length+' 条提醒见下方'):'');
+  render();
+}
+/* 目标物品 / 速率的选择 —— 不进撤销栈，也不重渲染速率框（重渲染会让输入框失焦） */
+function Ltgt(v){ const L=Linit(); L.tgt=v; L.msg='排产目标改为「'+RwItemName(v)+'」';
+  /* ⭐v82（博士截图：换了目标，选货网格还挂着旧链的蓝铁矿/蓝铁块）：候选是按目标链算的，
+     换目标必须重算。LshipPanel 里「旧选中不在新候选里就回退默认原料叶」会顺手把 shipPick 纠正过来；
+     链没换过（新旧目标共用一条链）时重算结果一致，多跑一趟 Rexplode 无感。 */
+  if(L.shipIn) LshipPanel(null);
+  render(); }
+function Lrate(v){ const L=Linit(); L.rate=Math.max(1, +v||1); }
+/* ⭐⑥-2 多目标（2026-09-22）：「＋ 目标」行 —— 多个目标共享的中间料只建一套再分流 */
+function LmtAdd(){ const L=Linit(); if(!L.mt) L.mt=[];
+  if(L.mt.length>=3){ L.msg='额外目标最多 3 行（加主目标一共 4 条链），再多报告看不过来'; render(); return; }
+  L.mt.push({id:'', rate:10}); render(); }
+function LmtDel(i){ const L=Linit(); if(L.mt&&L.mt[i]!=null) L.mt.splice(i,1); render(); }
+function LmtTgt(i,v){ const L=Linit(); if(L.mt&&L.mt[i]) L.mt[i].id=v; render(); }
+function LmtRate(i,v){ const L=Linit(); if(L.mt&&L.mt[i]) L.mt[i].rate=Math.max(0,+v||0); }
+/* 「闭环自持」开关：只有回收路线的料（惰气那种）是「自己循环 + 给启动料」还是「按外部输入」 */
+function LselfLoop(){
+  const L=Linit();
+  L.selfLoop=!L.selfLoop;
+  L.msg=L.selfLoop
+    ? '闭环自持：开 —— 环里的料（如惰气）会自己循环，报告里会写清「在哪台机器先塞什么」'
+    : '闭环自持：关 —— 环里的料按「外部输入」处理（链更短、更好摆）';
+  render();
+}
+/* ⭐⑥-1「跨地区收货」（2026-09-22，博士：只用四号谷地 → 武陵超库存传输）
+   开了之后：这条链里的**原料**能由别的地区传过来的，就不在本地建产线，按「收货」处理。
+   判定 = 「这个料能不能被超库存传输」（FactoryItemTable.transferDomainIds 非空）——
+   出发地（四号谷地）那边可传「本地区集成工业可生产的任意一种物品」，
+   而能传的物品清单是全库打通的（243 件，两地区通用）。
+   ⭐ 单选修正（2026-09-22 博士指出 + 三源核实）：一条路线**一次只能传一种物品** ——
+   链里可传原料 ≥2 种时，只挑一种走传输（默认需求最大的），其余回退本地自产。 */
+/* ⭐⭐ v81（博士：「我要在布局试摆里选怎么还是看不到啊，怎么就能选源矿和蓝铁矿，其他一堆东西都能传啊」）
+   两处产品级修正：
+   ① 候选不再限定原料叶 —— 链上**任何**能被传输的物品都能选（含半成品/中间件）。
+      引擎本来就支持：shipIn 物品在 Rexplode 里被剔除出 made → pick 返回 null → 落 raw 并标 shipIn
+      （见展开器 2426-2431），选中半成品 = 它的整棵上游子树不用建。排除目标本身（含 ＋ 目标）——
+      传目标等于整条链消失，没有意义。
+   ② 开关打开**立刻**能选 —— 之前选货网格只在报告里（要先点「生成产线」），博士在布局试摆开开关
+      什么都看不到。现在 LshipIn 开时若无产线，只做**轻量展开**算候选（Rexplode 一趟，毫秒级，
+      不摆机器、不动画布），选货条直接显示在产线面板开关下方；选好再点「生成产线」即可。
+      有产线时开/关照旧整条重算（v80 的开关即重算语义不变）。 */
+function LshipPanel(res0){
+  const L=Linit();
+  if(!L.shipIn){ L.shipCands=[]; L.shipDmap=null; L.shipRawSet=null; L.shipChain=null; return; }
+  if(!res0){
+    if(!(L.tgt && (+L.rate>0))){ L.shipCands=[]; L.shipDmap=null; L.shipRawSet=null; L.shipChain=null; return; }
+    res0=Rexplode(L.tgt, +L.rate, {selfLoop:!!L.selfLoop});
+  }
+  /* 需求与原料叶判定都取**收货前**的第一趟口径 —— 不管选中谁，卡片上的数字永远稳定不跳 */
+  const dmap={}, rawSet={}, chainSet={};
+  (res0.nodes||[]).forEach(n=>{
+    dmap[n.itemId]=Math.max(dmap[n.itemId]||0, n.demand||0);
+    if(n.raw) rawSet[n.itemId]=1;
+    chainSet[n.itemId]=1;
+  });
+  const tgtSet={}; tgtSet[L.tgt]=1;
+  (L.mt||[]).forEach(x=>{ if(x&&x.id) tgtSet[x.id]=1; });
+  /* ⭐v82（博士：「怎么还是只有两种，我要所有能传的东西，不行上网查」）：
+     Game8 / GameWith 三源核实 —— 游戏里协议管理的候选 = **出发地（四号谷地）集成工业能产出的全部物品**
+     （解锁过就行、仓库里有没有都行；只能传出发地能产的，武陵特产的西岚矿就不行）。
+     所以候选 = 链上可传（这条链用得上的，排前面）∪ 全库「有机器配方且能送到」的物品（RwMade ∩ RwCanReceive）。
+     链上的野外原料叶（源矿/蓝铁矿——矿机产出也算地区产能，游戏里能传但它们没有机器配方）单独补进来。
+     排序：链缺的原料(0) → 链上的半成品(1) → 其他可传物品(2)；前两组按需求降序，第三组按名称。
+     第三组在网格里收进**折叠区**（162 件全平铺会把面板撑爆），带搜索框。 */
+  const seen={}; const uniq=[];
+  const add=iid=>{ if(iid && !seen[iid] && !tgtSet[iid]){ seen[iid]=1; uniq.push(iid); } };
+  Object.keys(dmap).forEach(iid=>{ if(RwCanReceive(iid)) add(iid); });
+  Object.keys(RwMade(LshipFromName())).forEach(iid=>{ if(RwCanReceive(iid)) add(iid); });
+  const grp=iid=> rawSet[iid]?0:(chainSet[iid]?1:2);
+  const cands=uniq.sort((a,b)=>(grp(a)-grp(b))
+    || (grp(a)===2 ? RwItemName(a).localeCompare(RwItemName(b),'zh-Hans-CN') : ((dmap[b]||0)-(dmap[a]||0))));
+  L.shipCands=cands; L.shipDmap=dmap; L.shipRawSet=rawSet; L.shipChain=chainSet;
+  /* 默认挑需求最大的**原料叶**（v79 口径：最值得省的产能）；换过选且仍有效就尊重已选 */
+  if(cands.length){ if(cands.indexOf(L.shipPick)<0) L.shipPick=cands[0]; }
+  else L.shipPick='';
+}
+/* 选货网格的**共享渲染**：报告「跨地区收货」段与产线面板的收货选货条都调它，保证两处长一个样。
+   withTitle=true（面板用）恒带标题 —— 面板里没有报告那层上下文；
+   withTitle=false（报告用）维持 v80 行为：单候选只出一张选中卡、≥2 候选才带标题。
+   ⭐v82：链上候选平铺在前，全库可传物品收进折叠区（details + 搜索框 + 滚动容器）
+   —— 游戏里就是一份可传物品长列表，全平铺会把面板撑爆。
+   ⭐v88（博士，二次澄清：「点开跨区域传输时我就看见这个下拉表就行」）：**平铺区取消**——
+   链上原料/半成品不再单独立在外面，全部收进「全部可传物品」折叠下拉（链上的排最前）；
+   summary 常显当前选中，收起时也知道选了谁。 */
+function LpickGridHtml(withTitle){
+  const L=Linit();
+  const _cs=L.shipCands||[];
+  if(!L.shipIn || !_cs.length) return '';
+  const _RC={1:'#9AA0A6',2:'#5BA85A',3:'#3D7EBB',4:'#8E5BB8',5:'#D0931F',6:'#C0392B'};
+  /* r1 是 Rreport 闭包里的局部工具，顶层函数够不着 —— 这里自己来一份（同精度：一位小数） */
+  const _r1=x=>Math.round(x*10)/10;
+  const _dm=L.shipDmap||{};
+  const _raw=L.shipRawSet||{};
+  const _chain=L.shipChain||{};
+  const _card=c=>{
+    const _v=RshipVal(c), _r=(DB.items[c]||{}).rarity||1, _isRaw=!!_raw[c], _inChain=!!_chain[c];
+    /* ⭐v89（博士：「瓶罐里装的什么我看不到」）：构建期已按灌装/拆解配方反推出 content 字段
+       （"装：水蒸气（气态）"/"空容器（可灌装）"），选货卡上显示——同名瓶罐变体一眼可分。 */
+    const _ct=(DB.items[c]||{}).content;
+    return `<button type="button" class="lo-pickcard${(L.shipPick===c)?' on':''}" style="border-left-color:${(_RC[_r]||_RC[1])}" onclick="LshipPick('${c}')">`
+      +`<span class="lo-pickck">✓</span><span class="lo-picknm">${esc(RwItemName(c))}</span>`
+      +`<span class="lo-pickmeta">${_ct?`<b style="color:#B26A00">${esc(_ct)}</b> · `:''}${_inChain?(_isRaw?'':'<b style="color:#185FA5">半成品</b> · ')+'需要 <b>'+_r1(_dm[c]||0)+'</b>/分 · ':'单位价值 <b>'+_v.value+'</b> · '}`
+      +(_v.perBatch!=null?`每小时可传 <b>${_v.perHour}</b> 个${(_v.hours!=1?`（每批 ${_v.perBatch} 个 · ${_v.hours} 小时/批）`:'（整批到货）')}`:'填传输总值后给每小时可传数')
+      +`</span></button>`;
+  };
+  const _grp=iid=> _raw[iid]?0:(_chain[iid]?1:2);
+  /* 折叠区 = 全部可传物品（_cs 已按 链缺原料(0) → 链上半成品(1) → 其他(2) 排好，链上的自然在最前） */
+  const _all=_cs;
+  /* 标题：面板用恒带；报告用按总数判（>1 才带，单候选免标题） */
+  const _title=withTitle
+    ? `<span><b style="color:#185FA5">走传输的是哪种</b>（<b>一条路线一次只能传一种</b>） <span class="lo-tag">点卡片切换</span></span>`
+    : (_all.length>1?`<span><b style="color:#185FA5">走传输的是哪种</b>（<b>一条路线一次只能传一种</b>；游戏里换物品 = 停止重设、计时重置回 1 小时） <span class="lo-tag">点卡片切换</span></span>`:'');
+  const _pickNm=L.shipPick?('｜当前选：<b style="color:#185FA5">'+esc(RwItemName(L.shipPick))+'</b>'):'';
+  const _fold=`
+        <details class="lo-pickfold" style="margin-top:4px">
+          <summary style="cursor:pointer;font-size:12px;color:var(--ink2)">全部可传物品（${_all.length} 件 —— 出发地能产且能送到的都在这，链缺的原料排最前）${_pickNm} 点开搜索选择</summary>
+          <div style="margin:4px 0"><input class="lo-num" style="width:200px" type="text" placeholder="搜物品名…" oninput="LpickFilter(this.value)"></div>
+          <div class="lo-pickgrid lo-pickscroll">${_all.map(_card).join('')}</div>
+        </details>`;
+  return `<div class="c-sub" style="margin-top:6px;display:block">${_title}${_fold}
+        <span style="font-size:11.5px;color:var(--ink3)">${withTitle?'排在最前的是这条链缺的<b>原料</b>，往后的<b>半成品</b>也能传 —— 传它，它上游就全都不用建了。':'没选中的回退<b>本地自产</b>（产线照建、矿机照配）；选了这条链用不上的东西就只进仓库'}</span></div>`;
+}
+/* v82：折叠区搜索 —— 直接过滤卡片 display，不重渲染（input 高频触发） */
+function LpickFilter(q){
+  q=(q||'').trim();
+  const els=document.querySelectorAll('.lo-pickscroll .lo-pickcard');
+  for(let i=0;i<els.length;i++){
+    const t=els[i].textContent||'';
+    els[i].style.display = (!q || t.indexOf(q)>=0) ? '' : 'none';
+  }
+}
+function LshipIn(){
+  const L=Linit();
+  L.shipIn=!L.shipIn;
+  // 满级口径（博士 2026-09-22：只要超库存传输、按满级状态）—— 开关打开时若传输总值还空着，自动预填满级 1500（仍可手改）
+  if(L.shipIn && !(+L.tv>0)) L.tv=1500;
+  /* ⭐v80（博士发来游戏截图揪出）：关掉开关要**清掉单选状态**——shipCands/shipPick 留着的话，
+     报告还挂着旧收货版的选择网格，看着像没关掉。v81 连 shipDmap/shipRawSet 一起清。 */
+  if(!L.shipIn){ L.shipCands=[]; L.shipPick=''; L.shipDmap=null; L.shipRawSet=null; L.shipChain=null; }
+  L.msg=L.shipIn
+    ? '跨地区收货：开 —— 游戏口径（Game8/GameWith 核实）：出发地「'+LshipFromName()+'」能产的全部物品都能传，解锁过产能就行、仓库有没有无所谓；这条链缺的原料和半成品排在最前面，全量可传清单收在折叠区里可搜索；选中谁，本地就不建谁和它的上游；方向「从/到」可在下面换，选货条在开关下面，选好再点「生成产线」；传输总值已按满级预填 1500（可在报告里改）'
+    : '跨地区收货：关 —— 原料一律按野外采集 / 本地自产处理';
+  /* ⭐v80：开关即重算 —— 之前只 render()，画布和报告还是**旧 plan**（收货段纹丝不动），
+     要手动再点「生成产线」开关才真的生效，用起来就像个假开关。有 plan 时直接重跑，与 LshipPick 同款。
+     ⭐v81（博士：「我要在布局试摆里选怎么还是看不到啊」）：**还没有产线时**也立刻能选 ——
+     轻量展开算候选（不摆机器、不动画布），选货条显示在产线面板开关下方，选好再生成。 */
+  if(L.plan && L.tgt && (+L.rate>0)){ LawRun(L.tgt, L.rate); }
+  else if(L.shipIn){
+    LshipPanel(null); render();
+    /* 开关点完网格要自己送到眼前 —— sticky 导航会盖住顶部，用 block:'center'。
+       requestAnimationFrame 在测试沙箱 / 老 webview 里没有 → 同步回退（行为一致，只是不等一帧）。 */
+    var _raf=(typeof requestAnimationFrame==='function')?requestAnimationFrame:function(f){ f(); };
+    _raf(function(){ const el=document.querySelector('.lo-pickgrid');
+      if(el && el.scrollIntoView) el.scrollIntoView({block:'center'}); });
+  }
+  else { render(); }
+}
+/* ⑥-1 换选「走传输的是哪一种」：游戏里换物品 = 停止重设、计时重置回 1 小时（报告里有提醒），
+   这里重跑一遍把另一种回退本地自产。
+   ⭐v81：加 plan 守卫 —— 面板选货条让「还没生成产线」也能先选（博士：选好再生成），
+   此时点卡片只换选 + 刷新选货条，**不**悄悄把产线生成出来（那会覆盖博士手摆的画布）。
+   有产线时照旧整条重算（v79/v80 语义不变）。 */
+function LshipPick(v){
+  const L=Linit();
+  L.shipPick=v;
+  if(L.plan && L.tgt && (+L.rate>0)) LawRun(L.tgt, L.rate);
+  else render();
+}
+/* 跨地区收货（⑥-1）：单件物品的「一批能装多少 / 供货速率」反推
+   · 每批数量上限 = 传输总值 ÷ 单位物品价值（文案 1845235994830423548）
+   · 传输总值：配置表里**没有**每档的具体数值（DomainDataTable 的建设等级效果只有
+     bandwidth / battleBuildingLimit / travelPoleLimit / isMineOutputUp）——
+     所以只能用博士从界面上读到的数反推；没填就按档位未知、只用数值口径说明。
+   · 间隔：FactoryConst.domainTransportIntervalTime = 3600（客户端常量，单位以游戏内为准）。 */
+const RW_TRANSFER_INTERVAL_S = 3600;
+function RshipVal(itemId, tvOverride, hoursOverride){
+  const L=(typeof Linit==='function')?Linit():{};
+  const value=((DB.items||{})[itemId]||{}).value;
+  const tv=+((tvOverride!=null?tvOverride:L.tv)||0);
+  const hours=+((hoursOverride!=null?hoursOverride:L.tvHours)||(RW_TRANSFER_INTERVAL_S/3600))||1;
+  const perBatch=tv&&value?Math.floor(tv/value):null;
+  return {value:(value==null?null:value), tv:(tv||null), hours:Math.round(hours*10)/10,
+          perBatch:perBatch,
+          perHour:(perBatch!=null?(Math.round(perBatch/hours*10)/10):null),
+          perMin:(perBatch!=null?(Math.round(perBatch/hours/60*10)/10):null)};
+/*  ⚠️ perMin 里的 /60 不能丢：hours 是「每批间隔小时数」，perMin 要的是「个/分」——
+     3000 个/批、1 小时一批 = 50 个/分。少了这一刀就是虚高 60 倍，
+     「比需求低要标红」的警告会永不触发（真机回归抓出来的）。
+     ⭐v90（博士：「每小时一次性传多少，不是每分钟传多少」）：显示层一律用 perHour 主显
+     （perBatch/hours，无 /60）——到货是整批一小时的节奏，不是流式速率；perMin 只留作
+     与「个/分」计的产线需求做喂不饱判定的内部换算，不再上卡。 */
+}
+/* 传输总值输入（博士从协议管理界面读到的实际值）——不进撤销栈 */
+function Ltv(v){ const L=Linit(); L.tv=Math.max(0, +v||0); render(); }
+function LtvH(v){ const L=Linit(); L.tvHours=Math.max(0.1, +v||1); render(); }
+/* ⭐⑥-3「从/到」方向下拉（2026-09-22 博士）：地区清单动态读 DB.bases.domains ——
+   以后新地区（domain_3…）开放，这里自动多出选项，不用改代码。面板与报告两处共用。 */
+function LshipDirHtml(){
+  const opts=sel=>Ldomains().map(d=>`<option value="${esc(d.id)}"${d.id===sel?' selected':''}>${esc(d.name)}</option>`).join('');
+  return `<div class="lo-bar" style="margin:4px 0 0"><span>收货方向：</span>`
+    +`<span>从</span><select class="lo-sel" onchange="LshipDirV('from',this.value)">`+opts(LshipFromId())+`</select>`
+    +`<span>到</span><select class="lo-sel" onchange="LshipDirV('to',this.value)">`+opts(LshipToId())+`</select>`
+    +`<span class="lo-tag">出发地能产的才能传 · 每方向每批只传一种</span></div>`;
+}
+/* ========== ⭐⑥-3 跨基地选点（2026-09-22 博士拍板：v1 建议器；两地对称互传）==========
+   问题：N 个目标（主 + ＋目标，≤4）放哪个地区的基地「更省」。
+   数据依据（全部在库，不造数）：
+     · 矿脉按地区（mining_power.ores.beds.mapMax）：紫晶只在谷地(240)、赤铜只在武陵(510)、
+       蓝铁谷地富(1080 vs 120)、源矿两边都有(560/540)
+     · 机器地区限定（buildings.domainNames）：天有洪炉等 9 座武陵限定 → 相关链谷地建不了（硬否决）
+     · 跨地区传输（rule_domain_transfer）：每方向每批只传 1 种、上限 = 传输总值 ÷ 单价（满级 1500）、
+       间隔 1h；两地对称 —— 每个方向各是独立一条协议
+   口径①（地区合计，2026-09-22 博士定）：同地区多目标要同一种收货物 → 喂不饱判定按
+     「地区合计需求」对每批可到货量反推，不是各基地各算各的（区内基地共享一个地区仓库）
+   口径②（取货段）：地区仓库取货口（unloader_1「仓库取货口」3×1×3）→ 各基地产线要建模；
+     占格与单边路数有数据（slotRule：(边长-1)÷3 向下取整 → 谷地 23/13 实测、武陵 26/16 推算），
+     单口吞吐无单列数据 → 明说不能算，不造数。
+   ⚠️ v1 只出建议不摆画布：现有单链公式（台数/收货反推/摆位）不受粒度影响，一行不用改。 */
+function RxlTargets(){
+  const L=Linit(); const t=[];
+  if(L.tgt && +L.rate>0) t.push({id:L.tgt, rate:+L.rate});
+  (L.mt||[]).forEach(x=>{ if(x && x.id && +x.rate>0) t.push({id:x.id, rate:+x.rate}); });
+  return t;
+}
+function RxlBMap(){
+  if(RxlBMap._c) return RxlBMap._c;
+  const m={}; (DB.buildings||[]).forEach(b=>{ m[b.id]=b; });
+  RxlBMap._c=m; return m;
+}
+/* 矿类原料叶在某地区的满采上限（/分）。非矿 → null（矿点数据只覆盖 ores.beds 里那几样） */
+function RxlOreCap(itemId, regionName){
+  const beds=((DB.mining_power||{}).ores||{}).beds||[];
+  const b=beds.filter(x=>x.itemId===itemId)[0];
+  if(!b) return null;
+  const mm=b.mapMax||{};
+  return {name:b.ore, cap:(mm[regionName]==null?0:mm[regionName])};
+}
+/* 单片基地单边取货口路数上限：bases.json slotRule 公式 = (边长-1)÷3 向下取整。
+   谷地 70→23 / 40→13 是社区实测，武陵 80→26 / 50→16 由同一条公式推算（页面按「推算」标注）。 */
+function RxlSlots(side){ return Math.floor(((side||0)-1)/3); }
+/* 单目标 × 地区 适配分析（收货前展开；regionName='' = 不限地区）。带缓存。 */
+function RxlAnalyze(iid, perMin, regionName){
+  RxlAnalyze._c=RxlAnalyze._c||{};
+  const key=iid+'@'+perMin+'@'+(regionName||'');
+  if(RxlAnalyze._c[key]) return RxlAnalyze._c[key];
+  const bmap=RxlBMap();
+  const res=Rexplode(iid, perMin, {region:regionName});
+  const out={id:iid, name:RwItemName(iid), rate:perMin, region:(regionName||''),
+    totalMachines:res.totalMachines||0, blocked:[], ores:{}, recvNeed:{}, other:[],
+    manual:[], area:0, areaEst:0, nodeSet:{}, ok:true};
+  (res.machines||[]).forEach(n=>{
+    out.nodeSet[n.itemId]=1;
+    const b=bmap[n.machineId];
+    if(!b) return;
+    out.area+=(b.gridArea||0)*(n.machines||1);
+    if(regionName && !b.isUniversal && (b.domainNames||[]).indexOf(regionName)<0)
+      out.blocked.push('「'+b.name+'」是'+(b.domainNames||[]).join('/')+'限定 —— '+(regionName||'当地')+'建不了');
+  });
+  /* 占地估算：机器格数 × 2.2（通道/间距系数，按 v63~v66 实测产线量级校准）—— 报告里明标「估算」 */
+  out.areaEst=Math.round(out.area*2.2);
+  (res.nodes||[]).forEach(n=>{
+    if(!n.raw) return;
+    /* external（外部供给）不再一刀切跳过：可跨地区传且**对面能产**的 → 记进收货候选
+       （如罐@谷地要的息壤液 80/分 —— 天有洪炉武陵限定，谷地只能靠收货）；
+       不可传的（野外交付这类）选点不管 */
+    if(n.external && !RwCanReceive(n.itemId)){
+      /* 不可传的外部供给（息壤液这类：聚合池/拆解自筹，本工具没建模其产线）→ 不算矿缺口、
+         也不算收货候选（根本传不过来），但**要点名** —— 不然报告会漏说一大块原料 */
+      const ex=out.manual.filter(x=>x.itemId===n.itemId)[0];
+      if(ex) ex.demand+=(n.demand||0);
+      else out.manual.push({itemId:n.itemId, name:RwItemName(n.itemId), demand:(n.demand||0)});
+      return;
+    }
+    const oc=RxlOreCap(n.itemId, regionName);
+    if(oc){
+      const o=out.ores[n.itemId]||(out.ores[n.itemId]={name:oc.name, need:0, cap:oc.cap});
+      o.need+=(n.demand||0);
+    }else{
+      /* 非矿原料叶：另一地区能产且可传 → 收货候选（如谷地建的链要息壤）；
+         谁都产不了（清水这类野外交付）→ other，选点不管 */
+      let other=false;
+      if(RwCanReceive(n.itemId)){
+        const doms=Ldomains();
+        for(let k=0;k<doms.length;k++){
+          if(doms[k].name===regionName) continue;
+          if((RwMade(doms[k].name)[n.itemId]||[]).length){ other=true; break; }
+        }
+      }
+      if(other) out.recvNeed[n.itemId]=(out.recvNeed[n.itemId]||0)+(n.demand||0);
+      else out.other.push(n.itemId);
+    }
+  });
+  if(!out.totalMachines)
+    out.blocked.push('这个物品在'+(regionName||'当地')+'没有机器配方（可能只有另一地区能产）');
+  out.ok=out.blocked.length===0;
+  RxlAnalyze._c[key]=out;
+  return out;
+}
+/* 一片地区的收货压力（口径①在这里算）：把落到该地区各目标的缺口并起来，
+   同方向（都从对面地区收）只能传一种 → 种数 >1 记冲突；恰 1 种 → 合计需求对每批可到货量反推 */
+function RxlRegionShip(targets, assign, regionName){
+  const doms=Ldomains(); const otherName='';
+  let other=null;
+  doms.forEach(d=>{ if(d.name!==regionName && (!other)) other=d.name; });
+  /* ⚠️ 两地区现状下 other 取对面；未来 >2 地区时这里要升级成「按方向逐条算」 */
+  const items={};
+  targets.forEach((t,ix)=>{
+    if(assign[ix]!==regionName) return;
+    const a=RxlAnalyze(t.id, t.rate, regionName);
+    Object.keys(a.ores||{}).forEach(k=>{
+      const o=a.ores[k];
+      if(o.need>o.cap) items[k]=(items[k]||0)+(o.need-o.cap);
+    });
+    Object.keys(a.recvNeed||{}).forEach(k=>{ items[k]=(items[k]||0)+a.recvNeed[k]; });
+  });
+  const tv=(+Linit().tv>0)?+Linit().tv:1500;
+  const hours=(+Linit().tvHours>0)?+Linit().tvHours:1;
+  const keys=Object.keys(items);
+  const rows=keys.map(k=>{
+    const value=(DB.items[k]&&DB.items[k].value)!=null?DB.items[k].value:null;
+    const perBatch=(value&&value>0)?Math.floor(tv/value):null;
+    const perMin=(perBatch!=null)?Math.round(perBatch/hours/60*10)/10:null;
+    const perHour=(perBatch!=null)?Math.round(perBatch/hours*10)/10:null;
+    return {itemId:k, name:RwItemName(k), need:Math.round(items[k]*10)/10, value:value,
+      perBatch:perBatch, perMin:perMin, perHour:perHour, hours:Math.round(hours*10)/10,
+      starved:(perMin!=null && items[k]>perMin)};
+  });
+  return {otherName:other||'对面地区', items:items, rows:rows,
+    conflict:Math.max(0, keys.length-1)};
+}
+/* N 目标 × 2 活跃地区（从/到下拉里那两个）穷举分配，按成本择优。
+   成本（全部可解释，报告逐行给理由）：硬否决 > 同方向多种收货物冲突 > 口径①喂不饱 >
+   分开两地的目标对重复建共享料 > 矿缺口量。 */
+function RxlBest(targets){
+  const regions=[LshipFromName(), LshipToName()];
+  const an={};
+  const A=(t, r)=>{ const k=t.id+'@'+t.rate+'@'+r; if(!an[k]) an[k]=RxlAnalyze(t.id, t.rate, r); return an[k]; };
+  const N=targets.length, combos=[];
+  for(let m=0;m<(1<<N);m++){
+    const assign=[]; for(let i=0;i<N;i++) assign.push((m>>i)&1 ? regions[1] : regions[0]);
+    let invalid=null, cost=0, notes=[];
+    for(let i=0;i<N;i++){
+      const a=A(targets[i], assign[i]);
+      if(!a.ok){ invalid=targets[i].name+' 不能放 '+assign[i]+'（'+a.blocked[0]+'）'; break; }
+    }
+    if(invalid){ combos.push({assign:assign, invalid:invalid, cost:Infinity}); continue; }
+    /* 1) 每片地区的收货压力（口径① + 同方向单种） */
+    let conflicts=0, starved=0;
+    regions.forEach(r=>{
+      const s=RxlRegionShip(targets, assign, r);
+      conflicts+=s.conflict;
+      s.rows.forEach(x=>{ if(x.starved) starved++; });
+    });
+    /* 2) 分开两地的目标对：共享的中间料要各建一套（同区放 v76 只建一套） */
+    let dup=0, dupNames=[];
+    for(let i=0;i<N;i++) for(let j=i+1;j<N;j++){
+      if(assign[i]===assign[j]) continue;
+      const ai=A(targets[i], assign[i]), aj=A(targets[j], assign[j]);
+      const shared=Object.keys(ai.nodeSet).filter(k=>aj.nodeSet[k]);
+      dup+=shared.length;
+      if(shared.length) dupNames.push(targets[i].name+'×'+targets[j].name+'：'+shared.map(RwItemName).join('、'));
+    }
+    /* 3) 矿缺口量（要靠传输补的原料 /分 合计） */
+    let gap=0;
+    regions.forEach(r=>{
+      const s=RxlRegionShip(targets, assign, r);
+      Object.keys(s.items).forEach(k=>{ gap+=s.items[k]; });
+    });
+    cost=conflicts*1000 + starved*300 + dup*10 + Math.round(gap);
+    combos.push({assign:assign, cost:cost, conflicts:conflicts, starved:starved,
+      dup:dup, dupNames:dupNames, gap:Math.round(gap*10)/10, invalid:null});
+  }
+  combos.sort((a,b)=>a.cost-b.cost);
+  return {regions:regions, combos:combos, best:combos[0]};
+}
+/* 面板「选点建议」开关（v1：只出建议，不摆画布） */
+function LpickToggle(){ const L=Linit(); L.pickShow=!L.pickShow; render(); }
+/* 单目标 × 单地区的一行对比文案（RxlHtml 用） */
+function RxlRowHtml(t, r, picked){
+  const a=RxlAnalyze(t.id, t.rate, r);
+  const mark=picked?'<b style="color:#185FA5">✔ 推荐</b>':'';
+  let body='';
+  if(!a.ok){
+    body=a.blocked.map(x=>'<div class="c-sub" style="margin-top:1px"><span style="color:'+RW_COL.bad+'">✗ '+esc(x)+'</span></div>').join('');
+  }else{
+    const ores=Object.keys(a.ores).map(k=>{
+      const o=a.ores[k];
+      const cap=(o.cap>0? o.cap+'/分' : '<b>没有矿点</b>');
+      const fit=o.need<=o.cap
+        ? '本地够（上限 '+cap+'）'
+        : '缺 '+Math.round((o.need-o.cap)*10)/10+'/分（上限 '+cap+'）→ 要收货';
+      return '<span>· '+esc(o.name)+' 需 '+Math.round(o.need*10)/10+'/分：'+fit+'</span>';
+    }).join('');
+    const recv=Object.keys(a.recvNeed).map(k=>'<span>· '+esc(RwItemName(k))+' 需 '+Math.round(a.recvNeed[k]*10)/10+'/分：当地不能产 → 走收货</span>').join('');
+    const manual=(a.manual||[]).map(m=>'<span>· '+esc(m.name)+' 需 '+Math.round(m.demand*10)/10+'/分：<b style="color:'+RW_COL.warn+'">不能跨地区传输</b> —— 产线未建模（聚合池/拆解自筹），要放这里就得本地想办法</span>').join('');
+    const other=(a.other||[]).length?'<span>· 野外交付：'+esc(a.other.map(RwItemName).join('、'))+'</span>':'';
+    /* 落位档位：占地估算 vs 该地区各基地可用格（数据：bases.json maxBases[].area.usableCells） */
+    const bases=(DB.bases.maxBases||[]).filter(x=>x.domainName===r&&(x.area&&x.area.usableCells));
+    bases.sort((x,y)=>x.area.usableCells-y.area.usableCells);
+    const fitB=bases.filter(x=>x.area.usableCells>=a.areaEst)[0];
+    const tier=fitB
+      ? '建议「'+esc(fitB.zoneName)+'·'+esc(fitB.role)+'」（可用 '+fitB.area.usableCells+' 格）'
+      : '超出该地区最大基地可用格（'+(bases.length?bases[bases.length-1].area.usableCells:'-')+'）→ 要拆分或两地分摊';
+    body='<div class="c-sub" style="margin-top:1px"><span>'+(ores||'<span>· 矿类原料：无</span>')+'</span></div>'
+      +(recv?'<div class="c-sub" style="margin-top:1px"><span>'+recv+'</span></div>':'')
+      +(manual?'<div class="c-sub" style="margin-top:1px"><span>'+manual+'</span></div>':'')
+      +(other?'<div class="c-sub" style="margin-top:1px"><span>'+other+'</span></div>':'')
+      +'<div class="c-sub" style="margin-top:1px"><span>· 机器 <b>'+a.totalMachines+'</b> 台 · 占地约 <b>'+a.areaEst+'</b> 格（机器格数×2.2 估算，非实测）→ '+tier+'</span></div>';
+  }
+  return '<div class="c-sub" style="margin-top:3px"><span><b>'+esc(a.name)+'</b> @'+t.rate+'/分 放<b>'+esc(r)+'</b> '+mark+'</span></div>'+body;
+}
+/* 选点建议整段渲染（报告与面板共用；不依赖已生成的产线 —— 轻量展开，毫秒级） */
+function RxlHtml(){
+  const ts=RxlTargets();
+  const W=RW_COL.warn, B=RW_COL.bad;
+  if(!ts.length) return '<div class="c-sub" style="margin-top:6px"><span class="c-id">跨基地选点（⑥-3）：先选目标物品（或用「＋ 目标」加几个），这里才给得出「哪个成品放哪片基地更省」的建议。</span></div>';
+  const best=RxlBest(ts);
+  const b=best.best;
+  let head='';
+  if(!b || b.cost===Infinity){
+    head='<div class="c-sub" style="margin-top:2px"><span style="color:'+B+'">所有分配组合都不可行 —— 每个目标的硬否决理由：</span></div>'
+      +ts.map(t=>'<div class="c-sub" style="margin-top:1px"><span>· <b>'+esc(RwItemName(t.id))+'</b>：'
+        +best.regions.map(r=>{
+          const a=RxlAnalyze(t.id,t.rate,r);
+          return esc(r)+'：'+(a.ok?'可行':a.blocked.join('；'));
+        }).join('　')+'</span></div>').join('');
+  }else{
+    head='<div class="c-sub" style="margin-top:2px"><span>推荐分配（'+(1<<ts.length)+' 种组合穷举，成本口径：硬否决 &gt; 同方向多种收货物 &gt; 口径①喂不饱 &gt; 分两地重复建共享料 &gt; 矿缺口量）：'
+      +ts.map((t,ix)=>'<b>'+esc(RwItemName(t.id))+'</b> → <b style="color:#185FA5">'+esc(b.assign[ix])+'</b>').join(' · ')
+      +'</span></div>'
+      +(b.conflicts?'<div class="c-sub" style="margin-top:1px"><span style="color:'+W+'">⚠ 有 '+b.conflicts+' 处「同一方向要收多种料」—— 每方向每批只能传一种，多出的要本地自产或改分配</span></div>':'')
+      +(b.dupNames&&b.dupNames.length?'<div class="c-sub" style="margin-top:1px"><span style="color:'+W+'">⚠ 分开两地的目标对要重复建的共享料：'+esc(b.dupNames.join('；'))+'</span></div>':'');
+  }
+  const cmp=ts.map(t=>best.regions.map(r=>RxlRowHtml(t, r, b&&b.assign&&b.assign[ts.indexOf(t)]===r)).join('')).join('');
+  /* 口径①：地区合计收货压力（同区多基地收同一种料 → 按地区合计反推，不是各基地各算各的） */
+  const ship=(b&&b.assign)?best.regions.map(r=>{
+    const s=RxlRegionShip(ts, b.assign, r);
+    if(!s.rows.length) return '<div class="c-sub" style="margin-top:2px"><span>· <b>'+esc(r)+'</b>：无需跨地区收货（矿与原料本地都够）</span></div>';
+    return '<div class="c-sub" style="margin-top:2px"><span>· <b>'+esc(r)+'</b>（从 '+esc(s.otherName)+' 收）：'
+      +s.rows.map(x=>'<b>'+esc(x.name)+'</b> 合计需 <b>'+x.need+'</b>/分 · 单价 '+x.value
+        +(x.perBatch!=null?(' · 每小时可传 <b>'+x.perHour+'</b> 个（每批 '+x.perBatch+' 个 · '+x.hours+' 小时/批）'
+          +(x.starved?('　<b style="color:'+B+'">喂不饱 —— 地区合计需求超过一条传输线的供货速率，得本地自产一部分</b>'):('　✅ 够'))):'　<span class="c-id">传输总值没填/单价缺失，不给数字</span>')).join('；')
+      +'</span></div>';
+  }).join(''):'';
+  const shipSeg='<div class="c-sub" style="margin-top:4px"><span><b style="color:#185FA5">口径① · 地区合计收货压力</b> —— 同地区多基地收同一种料，按<b>地区合计需求</b>反推（区内基地共用一个地区仓库）</span></div>'+ship;
+  /* 口径②：地区仓库取货口 → 各基地产线（占格/路数有数据；吞吐无单列数据 → 明说，不造数） */
+  const doms=Ldomains();
+  const pick=(b&&b.assign)?best.regions.map(r=>{
+    const dom=doms.filter(d=>d.name===r)[0];
+    const used=ts.filter((t,ix)=>b.assign[ix]===r).map(t=>esc(RwItemName(t.id))).join('、');
+    const bases=(DB.bases.maxBases||[]).filter(x=>x.domainName===r&&(x.area&&x.area.side));
+    const measured=(r==='四号谷地');
+    return '<div class="c-sub" style="margin-top:2px"><span>· <b>'+esc((dom&&dom.storageName)||r+'仓库')+'</b> 供：'+(used||'（无目标落在此地）')+'</span></div>'
+      +'<div class="c-sub" style="margin-top:1px"><span>　'+bases.map(x=>'· '+esc(x.zoneName)+'（'+esc(x.role)+' '+x.area.side+'×'+x.area.side+'）单边取货口 ≤ <b>'+RxlSlots(x.area.side)+'</b> 路'+(measured?'（实测）':'（按公式 (边长-1)÷3 推算）')).join('　')+'</span></div>';
+  }).join(''):'';
+  const pickSeg='<div class="c-sub" style="margin-top:4px"><span><b style="color:#185FA5">口径② · 地区仓库取货口 → 各基地</b> —— 取货口「仓库取货口」占地 <b>3×1×3</b>，贴仓库存取线放</span></div>'
+    +pick
+    +'<div class="c-sub" style="margin-top:1px"><span class="c-id">⚠ 单口/整线的取货<b>吞吐配置表里没有单列数据</b> —— 这里只给占格与路数上限，喂不喂得动产线要实测，本工具不编数字。画布内产线照旧摆，「仓库 → 取货口 → 产线」这一段不在画布里。</span></div>';
+  return '<div class="c-sub" style="margin-top:8px"><span><b style="color:#185FA5">跨基地选点（⑥-3）—— 哪个成品放哪片基地更省</b> <span class="lo-tag">两地联动：同时只在至多两个地区运行</span></span></div>'
+    +head+'<div style="margin-top:4px">'+cmp+'</div>'+shipSeg+pickSeg
+    +'<div class="c-sub" style="margin-top:2px"><span class="c-id">v1 只出建议不摆画布：按建议切到对应基地、逐条点「生成产线」即可（现有单链公式不受影响）。</span></div>';
+}
+/* 可排产的物品清单（有机器配方的），按名字排 */
+function RwTargets(){
+  const m=RwMade(), out=[];
+  Object.keys(m).forEach(id=>{
+    if(!(DB.items||{})[id]) return;
+    const r=m[id][0];
+    out.push({id:id, name:RwItemName(id), machine:r.machineName, ways:m[id].length});
+  });
+  out.sort((a,b)=>a.name<b.name?-1:a.name>b.name?1:0);
+  return out;
+}
+/* ========== 电力 与 野外开采（2026-09-21）==========
+   用电：FactoryBuildingTable.powerConsume —— **配置表字段，可直接陈述**。
+   ⚠️ 每台热能池发多少电 **配置表里没有**（建筑表只有 needPower / powerConsume，没有发电量），
+      教学文案也只定性说「热能池利用源矿或电池提供电能」「电池的发电效率高于源矿」。
+      → 所以这里**只报用电**，发电/存电只能实测。见 DB.mining_power.power 里的 evidence（文案原文可复核）。
+   开采：FactoryMinerTable.msPerRound → 20/分；FactoryFluidPumpInTable → 60/分。同样是**基础速率**，
+      矿脉纯度加成属运行时，配置表没有。 */
+function Rpower(objs){
+  const list=objs||Linit().objs;
+  const byCat={};
+  let total=0, n=0;
+  list.forEach(o=>{
+    const b=byBp(o.id); if(!b) return;
+    const pc=+b.powerConsume||0;
+    if(pc>0){ total+=pc; n++; byCat[b.categoryName]=(byCat[b.categoryName]||0)+pc; }
+  });
+  return {total:total, devices:n, byCat:byCat};
+}
+/* 这个原料能不能野外采到、基础速率多少（能就报出来，不能就返回 null）
+   ⚠️ 2026-09-21 修正：**必须查 DB.mining_power.gather（7 座采集建筑的全集）**，
+      不能只看 miners（那只有矿机表里的 3 台）—— 会漏掉 **水驱矿机（采赤铜矿）**、
+      气体收集泵（采惰气）、二型耐酸水泵。博士当场指出过这个漏项。
+   ⚠️ 水驱矿机等 3 台**配置表里没有开采速率字段**，perMin 会是 null —— 这时要如实说"速率配置表无"。 */
+function RmineRate(itemId){
+  const mp=DB.mining_power||{};
+  const list=(mp.gather&&mp.gather.length)?mp.gather:(mp.miners||[]);
+  for(let i=0;i<list.length;i++){
+    const m=list[i];
+    const hit=(m.mineable||[]).filter(x=>x.itemId===itemId)[0];
+    if(hit) return {kind:m.kind, name:m.name, perMin:m.perMin, rateKnown:!!m.rateKnown};
+  }
+  /* 没有精确对应时：按 desc 文案兜底 —— ⚠️ **只认「开采〈X〉」这句话里的名字**。
+     不能整句 indexOf：水驱矿机的 desc 里还有「可使用**清水**完成自供能」，那是它的**燃料**不是产物，
+     整句匹配会把清水错判成"水驱矿机开采的"（2026-09-21 实测踩到）。 */
+  const nm=RwItemName(itemId);
+  for(let i=0;i<list.length;i++){
+    const m=list[i];
+    const mt=String(m.desc||'').match(/开采([^，。；]+?)(?:等多|等|的)/);
+    if(mt && mt[1].indexOf(nm)>=0 && m.kind!=='抽水 / 抽液'){
+      return {kind:m.kind, name:m.name, perMin:m.perMin, rateKnown:!!m.rateKnown, byDesc:true};
+    }
+  }
+  /* 兜底：流体原料 → 找一台**速率已知**的泵（pump_1 水泵 60/分）；气体优先气体收集泵 */
+  const pumps=mp.pumps||[];
+  const ph=RwPhaseOf(itemId);
+  if(ph && ph!=='固态'){
+    const gp=pumps.filter(x=>x.rateKnown)[0] || pumps[0];
+    if(gp) return {kind:gp.kind, name:gp.name, perMin:gp.perMin, rateKnown:!!gp.rateKnown, fluid:true};
+  }
+  return null;
+}
+/* ========== 第 1 层：约束硬校验（2026-09-21）==========
+   ① 协议容量 —— 配置表 ✅（bandwidth 累加 vs 建造区上限，上限在 bases.json 的 caps）
+   ② 发电 —— 用电是配置表 ✅；**发电量是社区数值**。
+      博士 2026-09-21 定：**谷地用谷地电池、武陵用武陵电池**；一台热能池发电功率 = 燃料功率值。
+   ③ 野外采集上限 —— 矿点属关卡场景数据（配置表无），用社区矿脉数 × 每脉点数 × 纯度速率算**区间**。 */
+function Rbandwidth(objs){
+  const L=Linit();
+  let use=0;
+  (objs||L.objs).forEach(o=>{ const b=byBp(o.id); if(b) use+=(+b.bandwidth||0); });
+  const row=(((DB.bases||{}).maxBases)||[]).filter(r=>r.levelId===L.base)[0];
+  const cap=(row&&row.caps)?row.caps.bandwidth:null;
+  return {use:use, cap:cap, over:(cap!=null&&use>cap), zone:row?row.zoneName:null};
+}
+function Rtheories(usePower, regionName){
+  const mp=DB.mining_power||{}, gen=(mp.power||{}).generation||{};
+  const base=+(gen.baseOutput||200);
+  const byReg=(mp.power||{}).fuelByRegion||{};
+  const fuels=byReg[regionName]||byReg['通用']||[];
+  const gap=Math.max(0, (+usePower||0)-base);
+  return {base:base, gap:gap, fuels:fuels.map(f=>({item:f.item, power:f.power, count: gap>0?Math.ceil(gap/f.power):0}))};
+}
+/* 矿石满采上限（按矿种）。三种数据形态要分开对待：
+     · 矿脉类（源矿 / 紫晶矿 / 蓝铁矿）：可放矿机数 = 矿脉数 × 每脉 2~6 点 → 给区间
+     · 矿源点类（赤铜矿）：**点数就是可放矿机台数**，不乘每脉点数；另有游戏内「理论最大开采值」
+   ⚠️ 2026-09-21 晚三次核查：上一版把赤铜矿写成「清波寨 8 个点」= 160/分，**把清波寨一个区当成了全图**。
+      实际赤铜矿在**武陵的 5 个区、共 21 个矿源点**（1.1 实测 420/分），
+      1.5 的游戏内理论最大开采值是 **510/分** —— 差额 90 还没定位到区域，照实标出来、不抹平。
+   `dataVersion` / `versionLog` 是**版本接口**：游戏更新只改数据，这里的代码不用动。 */
+/* 矿石满采上限（按矿种）。
+   ⭐ 2026-09-21 第四次核查后，口径**只剩一条**：满采量 = 矿点数 × 20/分（高纯度）。
+      一个矿脉只放 1 台矿机 —— 四号谷地实测 560/240/1080 除以 20 正好是 28/12/54 个矿点，
+      与 TapTap 地图工具的矿脉数逐项相等。（游戏里一个矿脉视觉上有 2~6 个矿石簇，那是外观、不是矿机位；
+      早期按「脉数 × 每脉 2~6 点」算出来的 2320~6960/分**虚高 2~6 倍**。）
+   `theoreticalMax` 是**游戏内**的「理论最大开采值」（博士可核），有它就用它。
+   `mapMax` 是按**大地区**（四号谷地 / 武陵）的最大理论值 —— 博士要核对的那张表。 */
+function RoreCapacity(){
+  const mp=DB.mining_power||{}, ores=mp.ores||{}, per=ores.perNodePerMin||20;
+  return (ores.beds||[]).map(b=>{
+    const pts=b.pointsTotal||0, tm=b.theoreticalMax||null;
+    const max=tm?tm.value:pts*per;
+    return {ore:b.ore, itemId:b.itemId, unit:b.unit||'矿点', isPoint:!!b.unit,
+            points:pts, perNode:per, lo:max, hi:max, fixed:true,
+            theoreticalMax:tm, byMap:b.byMap||{}, mapMax:b.mapMax||{},
+            mapMaxConfidence:b.mapMaxConfidence||{},
+            zones:b.zones||[], zonesSum:b.zonesSum||null, zonesNote:b.zonesNote||'',
+            zonesCover:b.zonesCover||'', zonesCoverAll:!!b.zonesCoverAll,
+            unaccounted:b.unaccounted||null, rig:b.rig||'', since:b.since||'', regions:b.regions||''};
+  });
+}
+/* 数据版本信息（版本接口） */
+function RoreMeta(){
+  const o=(DB.mining_power||{}).ores||{};
+  return {schemaVersion:o.schemaVersion||1, dataVersion:o.dataVersion||DB.meta.gameVersion,
+          gameVersion:DB.meta.gameVersion, builtAt:DB.meta.builtAt,
+          versionLog:o.versionLog||[], purityRule:o.purityRule||{}, notOre:o.notOre||'',
+          capacityHow:o.capacityHow||''};
+}
+/* 某个矿「按小地图」的明细（报告里用） */
+/* 某个矿「按小地图」的明细（报告里用） */
+function RoreZoneRows(c){
+  if(!c.zones.length) return '';
+  const rows=c.zones.map(z=>{
+    const n=(z.points!=null?z.points:z.beds);
+    const pm=z.perMin?('　'+z.perMin+'/分'):('　'+(n*c.perNode)+'/分');
+    const hl=(z.high!=null)?('　<span class="c-id">'+z.high+' 高纯度'+(z.low?(' + '+z.low+' 低纯度'):'')+'</span>'):'';
+    return '　· '+esc(z.zone)+(z.levelId?(' <span class="c-id">'+esc(z.levelId)+'</span>'):'')
+      +'：<b>'+n+'</b> 点'+pm+hl+(z.note?('<br><span class="c-id">　　'+esc(z.note)+'</span>'):'');
+  }).join('<br>');
+  const zs=c.zonesSum||{};
+  const sum='　'+esc(c.zonesCover||'')+'小计 <b>'+(zs.points!=null?zs.points:zs.beds)+'</b> 点'
+    +(zs.perMin?(' = '+zs.perMin+'/分'):'')+(zs.version?('（'+esc(zs.version)+' 实测）'):'');
+  const un=c.unaccounted
+    ? ('<br>　<b style="color:'+RW_COL.warn+'">⚠️ 与 '+esc((c.theoreticalMax||{}).version||'更高版本')
+       +' 的理论值差 <b>'+c.unaccounted.perMin+'/分</b>，还没定位到是哪个区哪几个点</b>'
+       +'<br><span class="c-id">　　'+esc(c.unaccounted.note)+'</span>')
+    : '';
+  return '<div class="c-sub" style="margin-top:2px;padding-left:10px"><span>'
+    +'<b>按小地图</b>：<br>'+rows+'<br>'+sum
+    +(c.zonesNote?('<br><span class="c-id">　'+esc(c.zonesNote)+'</span>'):'')+un+'</span></div>';
+}
+/* ⚙️ 原料侧闭环（路线图 ④）：把「这条产线需要多少原料」推成野外侧的具体动作 ——
+     要几台矿机 · 哪个区的矿点够 · 水驱矿机的供水够不够。
+   ⚠️ 只能算到这一层：**没有矿点逐点坐标**，所以排不了野外段的实际摆放与跨区运输（暗管 ≤300m）——
+      这正是路线图 ④ 里那条「[卡数据] 矿点逐点坐标」。能答的是「够不够、要几台、水够不够」。
+   数据来源：矿点/每点产量 20/分（本页按地区最大值口径）；水驱矿机耗水 20/分·台、水泵 60/分、1 泵最多带 3 台
+   —— 这三条是社区实测，写在 mining_power.gather 的 note 里。 */
+function RrawLoop(P, rawNeed){
+  const caps=RoreCapacity();
+  const WRIG_WATER=20, PUMP_OUT=60, PUMP_MAX_RIG=3;
+  /* ⚠️ ⑥-1：跨地区收货的料**本地不再采**，这一段必须把它摘出去 ——
+     否则报告会同时写着「赤铜矿（跨地区收货）」和「赤铜矿 需 20/分 → 要 1 台矿机」，自相矛盾。 */
+  const shipSet={};
+  (P.res.shipIn||[]).forEach(s=>{ if(s&&s.itemId) shipSet[s.itemId]=1; });
+  const items=(P.res.raw||[]).map(id=>{
+    const c=caps.filter(x=>x.itemId===id)[0];
+    const need=Math.round((rawNeed[id]||0)*10)/10;
+    return {id:id, name:RwItemName(id), need:need, cap:c||null};
+  }).filter(x=>x.need>0 && !shipSet[x.id]);
+  const shipped=(P.res.raw||[]).filter(id=>shipSet[id] && (rawNeed[id]||0)>0);
+  if(!items.length && !shipped.length) return '';
+  const rows=items.map(it=>{
+    const c=it.cap;
+    if(!c) return '· '+esc(it.name)+' 需 <b>'+it.need+'</b>/分　<span class="c-id">本库没有它的矿点数据（多半是野外液体 / 气体节点，或本来就要外部输入）</span>';
+    const rigs=Math.ceil(it.need/c.perNode);
+    const zs=c.zones.slice().sort((a,b)=>((b.points||0)-(a.points||0)));
+    let line='· '+esc(it.name)+' 需 <b>'+it.need+'</b>/分 → 要 <b>'+rigs+'</b> 台矿机'
+      +'（'+c.perNode+'/分·台，'+esc(c.rig||'电驱矿机')+'）';
+    if(c.isPoint){
+      /* ⭐ ④ 里「能做的那一半」：供水与供电的**配比清单**（博士 2026-09-22 给的口径：
+         1 台水泵最多带 3 台水驱矿机满效率）。走线本身做不了（无线回仓、野外不是网格、没有地形数据），
+         但「几台泵 / 怎么分 / 几条管 / 要不要通电」全是纯计算，直接给。 */
+      const water=rigs*WRIG_WATER, pumps=Math.ceil(rigs/PUMP_MAX_RIG);
+      const tail=rigs%PUMP_MAX_RIG;   /* 最后一台泵实际带几台（0 = 正好整除） */
+      line+='<br><span class="c-id">　　· 水驱矿机每台耗水 '+WRIG_WATER+'/分 → 共 <b>'+water+'</b>/分，需 <b>'+pumps
+        +'</b> 台水泵（'+PUMP_OUT+'/分·台）</span>'
+        /* ⚠️ 只有 1 台泵时别写成「前 0 台各带 3 台」（真机跑出来过这行文案） */
+        +'<br><span class="c-id">　　· 分管：<b>1 台水泵最多带 '+PUMP_MAX_RIG+' 台水驱矿机满效率</b>（每台 '+WRIG_WATER
+        +'/分，泵出 '+PUMP_OUT+'/分）—— '+(rigs<=PUMP_MAX_RIG
+          ? ('这 1 台泵带 '+rigs+' 台（还能再带 '+(PUMP_MAX_RIG-rigs)+' 台）')
+          : (tail ? ('前 '+(pumps-1)+' 台各带 '+PUMP_MAX_RIG+' 台、最后一台带 '+tail+' 台')
+                  : (pumps+' 台各带 '+PUMP_MAX_RIG+' 台')))
+        +'；每台泵 '+PUMP_OUT+'/分 &lt; 管道上限 '+RW_PIPE+'/分 → <b>每台泵 1 条管道就够</b>（不用并联）</span>'
+        +'<br><span class="c-id">　　· 供电：<b>水泵要通电</b>（10 电/台 → 共 '+pumps*10
+        +' 电，野外要么把电拉过来、要么就近放供电桩）；<b>水驱矿机靠清水自供能、不耗电</b></span>';
+    }
+    line+='<br><span class="c-id">　　· 可选区（'+esc(c.zonesCover||'')+'）：'+zs.map(z=>esc(z.zone)).join(' / ')+'</span>'
+      +'<br><span class="c-id">　　· 各区点数：'+zs.map(z=>(z.points!=null?z.points:z.beds)+' 点').join(' / ')
+      +'　合计 <b>'+c.points+'</b> 点'+(c.points<rigs
+        ?(' —— <b style="color:'+RW_COL.bad+'">不够，差 '+(rigs-c.points)+' 台</b>'):' —— 够')
+      +(c.points>rigs?('（占 '+Math.round(rigs/Math.max(1,c.points)*100)+'%，还有余量）'):'')+'</span>';
+    return line;
+  }).join('<br>');
+  const shipRow=shipped.length
+    ? '<div class="c-sub" style="margin-top:2px"><span class="c-id">· '+shipped.map(id=>esc(RwItemName(id))).join('、')
+      +' 走的是<b>跨地区收货</b>（见上）—— 本地不摆矿机、不占野外矿点，这一段不给它算配比</span></div>'
+    : '';
+  return '<div class="c-sub" style="margin-top:8px"><span><b>⚙️ 原料侧闭环</b> <span class="lo-tag">路线图 ④</span>'
+    +' —— 原料需求 → 野外摆几台矿机 / 哪个区够 / 水够不够</span></div>'
+    +shipRow
+    +(items.length?('<div class="c-sub" style="margin-top:2px"><span>'+rows+'</span></div>'):'')
+    +'<div class="c-sub" style="margin-top:2px"><span class="c-id">⚠️ <b>只算到「要几台 / 哪个区够 / 水与电够不够」这一层；野外段的实际摆放与走线，本工具不做</b>'
+    +'（博士 2026-09-22 追问「那这样 ④ 还用做吗」，答案：不用按原样做）。两条原因：<br>'
+    +'　　① <b>野外没有需要连的线</b> —— 三种矿机的产物都是<b>无线回传仓库</b>（水驱 / 电驱 / 二型电驱）'
+    +'或<b>缓存区手动取</b>（便携源石矿机），每个矿点独立放一台就完事，没有连线 / 避让 / 优化可言；<br>'
+    +'　　② <b>野外不是网格</b>，配置表里也没有地形与障碍（只有单段线长上限：供电桩 <code>autoConnectLength</code> 30m / 中继器 80m）'
+    +'—— 真实的水管怎么绕、电从哪拉，只能看那一片地形长什么样。<br>'
+    +'　　⇒ 路线图 ④ 的「矿点逐点坐标」「供水管网走线」在本工具里<b>标为不做</b>（不是遗漏）；'
+    +'能做的<b>配比清单</b>（几台泵 / 怎么分 / 几条管 / 要不要通电）已在上面给出。</span></div>';
+}
+/* 全矿种的「按小地图」总览表（页面说明区用） */
+/* 全矿种的「按小地图」总览表：矿点数 + 每点满纯度产量 */
+function oreZoneTable(){
+  const caps=RoreCapacity(), idx={}, order=[];
+  caps.forEach(c=>c.zones.forEach(z=>{
+    if(!idx[z.zone]){ idx[z.zone]={zone:z.zone, levelId:z.levelId, items:{}}; order.push(z.zone); }
+    idx[z.zone].items[c.ore]=(z.points!=null?z.points:z.beds);
+  }));
+  const pref=['枢纽区','谷地通道','阿伯莉采石场','源石研究园','矿脉源区','供能高地',
+              '景玉谷','武陵城','清波寨','首墩','试验园区','藏剑谷','应龙关','北部禁区','雪松林'];
+  order.sort((a,b)=>((pref.indexOf(a)<0?99:pref.indexOf(a))-(pref.indexOf(b)<0?99:pref.indexOf(b))));
+  const ores=caps.map(c=>c.ore);
+  const cell=(z,k)=>{
+    const v=z.items[k];
+    if(v==null) return '<span class="c-id">—</span>';
+    const c=caps.filter(x=>x.ore===k)[0];
+    return '<b>'+v+'</b> 点　<span class="c-id">'+(v*(c?c.perNode:20))+'/分</span>';
+  };
+  return '<table class="lo-tb"><tr><td class="lo-td-h">小地图</td><td class="lo-td-h">区域</td>'
+    +ores.map(o=>'<td class="lo-td-h">'+esc(o)+'<br><span class="c-id">点数 / 满纯度产量</span></td>').join('')+'</tr>'
+    +order.map(zn=>{
+      const z=idx[zn];
+      return '<tr><td class="c-id">'+esc(z.levelId||'—')+'</td><td class="lo-td-h">'+esc(zn)+'</td>'
+        +ores.map(o=>'<td>'+cell(z,o)+'</td>').join('')+'</tr>';
+    }).join('')
+    +'<tr><td class="lo-td-h">合计</td><td class="lo-td-h">—</td>'
+    +caps.map(c=>'<td><b>'+(c.points)+'</b> 点　<span class="c-id">'+(c.hi)+'/分</span></td>').join('')
+    +'</tr></table>';
+}
+/* 每个大地区的最大理论值
+   ✅ 两列都是实测（2026-09-21 闭环）：四号谷地 = NGA 两帖 + 游民星空 + sticweb 四方一致（560/240/1080），
+      除以 20 正好是本表的点数；武陵 = 博士武陵简报截图逐区计数（540/0/120/510），
+      赤铜矿 23 高×20 + 5 低×10 = 510，与游戏内 UI「理论最大开采值」完全一致。 */
+function oreMapMaxTable(){
+  const caps=RoreCapacity(), maps=['四号谷地','武陵'];
+  const head='<tr><td class="lo-td-h">矿种</td>'
+    +maps.map(m=>'<td class="lo-td-h">'+m+'</td>').join('')
+    +'<td class="lo-td-h">全图</td><td class="lo-td-h">可信度</td></tr>';
+  const rows=caps.map(c=>{
+    const parts=maps.map(m=>{
+      const v=(c.mapMax||{})[m];
+      const n=(c.byMap||{})[m];
+      if(v==null) return '<td class="c-id">—</td>';
+      return '<td><b>'+v+'</b>/分'+(n?'　<span class="c-id">'+n+' 点</span>':'')
+        +((c.mapMaxConfidence||{})[m]?('<br><span class="c-id">'+esc(c.mapMaxConfidence[m])+'</span>'):'')+'</td>';
+    }).join('');
+    return '<tr><td class="lo-td-h">'+esc(c.ore)+'</td>'+parts
+      +'<td><b>'+c.hi+'</b>/分</td>'
+      +'<td class="c-id">'+(c.unaccounted?('<b style="color:'+RW_COL.warn+'">1.5 理论值 '+c.theoreticalMax.value
+        +'，与按区差 '+c.unaccounted.perMin+'</b>'):'—')+'</td></tr>';
+  }).join('');
+  return '<table class="lo-tb">'+head+rows+'</table>';
+}
+function RoreCapOf(itemId){ return RoreCapacity().filter(x=>x.itemId===itemId)[0]||null; }
+/* ========== 第 1 层的尾巴（2026-09-21 晚 · 路线图 ②b / ②c）==========
+   路线图 ② 剩的三条，数据来源分开写清：
+     · **防御建筑上限 / 滑索上限** —— **配置表** DB.bases.maxBases[].caps
+       （battleBuildingLimit / travelPoleLimit），跟协议容量同一张表、同一套「按当前建造区取」的口径。
+     · **存电** —— **社区实测**（DB.mining_power.power.generation.storageMax = 100000），配置表里没有这一项。
+   ⚠️ 滑索架（travel_pole_1 / travel_pole_2 / travel_pole_nop_1）现在在 LO_SKIP_IDS 里
+      —— 博士 2026-09-21 要求它不出现在试摆清单里，所以沙盘上一般摆不出滑索，这一项通常是 0。
+      校验照样算：将来把它放回清单、或从别处带进来，这一行会立刻起作用（不写死 0）。 */
+const RW_DEF_CAT='防御设施';
+const RW_TRAVEL_IDS=['travel_pole_1','travel_pole_nop_1','travel_pole_2'];
+function RlimitChecks(objs){
+  const L=Linit();
+  const list=objs||L.objs;
+  const row=(((DB.bases||{}).maxBases)||[]).filter(r=>r.levelId===L.base)[0];
+  const caps=(row&&row.caps)||null;
+  let def=0, trav=0;
+  list.forEach(o=>{
+    const b=byBp(o.id); if(!b) return;
+    if(b.categoryName===RW_DEF_CAT) def++;
+    if(RW_TRAVEL_IDS.indexOf(o.id)>=0) trav++;
+  });
+  const defCap=caps?caps.battleBuildingLimit:null, travCap=caps?caps.travelPoleLimit:null;
+  return {def:def, defCap:defCap, trav:trav, travCap:travCap, zone:row?row.zoneName:null,
+          defOver:(defCap!=null&&def>defCap), travOver:(travCap!=null&&trav>travCap)};
+}
+/* 存电：协议核心自带 baseOutput（200）基础发电，**用电超过它的部分就是靠存电顶**。
+   storageMax 是社区实测上限（10 万）。所以能给一个可算的结论：纯靠存电还能撑多久。
+   ⚠️ 存电是「缓冲」不是「电源」—— 撑的时间只是让你有时间补发电，不能当长期方案。 */
+function Rstorage(usePower){
+  const gen=(((DB.mining_power||{}).power||{}).generation)||{};
+  const base=+(gen.baseOutput||200), cap=+(gen.storageMax||0);
+  const gap=Math.max(0, (+usePower||0)-base);
+  return {base:base, cap:cap, gap:gap,
+          minutes:(gap>0&&cap>0)?(Math.round(cap/gap*10)/10):0,
+          source:'社区实测（非配置表）'};
+}
+/* 画布上摆了几台热能池（发电侧）—— 用来跟「需要几台」对一下 */
+function RstationCount(objs){
+  const list=objs||Linit().objs;
+  return list.filter(o=>{ const b=byBp(o.id); return !!b&&b.id==='power_station_1'; }).length;
+}
+/* ========== 评价函数（路线图 ① · 2026-09-21 晚）==========
+   为什么先做它：**没有分数，「这版比那版好」就是拍脑袋** ——
+   后面的对齐、局部搜索、多方案枚举，全都要靠它择优。
+
+   成本项（各 0~1，越高越好）—— 统一用「理论下界 ÷ 实测」这个比值：
+     紧凑度  行数         下界 = Σ各层最高机器深 + (层数 − 1) × RW_CORR
+     台数效率 设备台数      下界 = Σ 需求 ÷ 单台产能（实数，不含整台凑整）
+     走线效率 物流格数      下界 = Σ 每段「上游机器 ↔ 下游机器」的曼哈顿距离
+     集散效率 汇流/分流器数  下界 = 0（能一个不摆最好）
+     料耗效率 产出富余      下界 = 0（整台凑整躲不掉，越少越好）
+
+   约束罚分（都是硬指标，命中就扣）：
+     超协议容量 −30 · 原料超全图采集上限 −25 · 超防御建筑上限 −15 · 超滑索上限 −10
+     · 走线连不上，每条 −3 · 单线会堵，每条 −3
+
+   ⚠️ 权重是**约定**，不是游戏真理。写成常量就是为了让排序口径固定、可复现、也可以调。
+   ⚠️ 它拿的是**当前画布**（含你手动加的机器）算用电 / 容量 / 上限，不是生成那一刻的快照。 */
+const RW_W={tight:0.20, machines:0.20, wire:0.30, hub:0.15, waste:0.15};
+function Rscore(res, plan, route, rawNeed){
+  const objs=Linit().objs;
+  const clamp=x=>x<0?0:(x>1?1:x);
+  const r2=x=>Math.round(x*100)/100;
+  /* 1. 紧凑度 */
+  const dmax={};
+  (plan.objs||[]).forEach(o=>{ const d=o.node.depth; dmax[d]=Math.max(dmax[d]||0, o.d); });
+  const dks=Object.keys(dmax);
+  const hBest=dks.reduce((s,d)=>s+dmax[d],0)+Math.max(0,dks.length-1)*RW_CORR;
+  const hNow=Math.max(1, plan.height||1);
+  /* 2. 台数效率 */
+  let mNow=0, mBest=0;
+  (res.machines||[]).forEach(n=>{ mNow+=n.machines||0; mBest+=(n.perMachine>0?(n.demand/n.perMachine):0); });
+  /* 3. 走线效率：每段上下游中心的最小曼哈顿距离之和 = 理论最短走线 */
+  const byNode=new Map();
+  (plan.objs||[]).forEach(o=>{ const a=byNode.get(o.node)||[]; a.push(o); byNode.set(o.node,a); });
+  const ctr=o=>({x:o.x+o.w/2, y:o.y+o.d/2});
+  let wBest=0, segs=0;
+  (res.machines||[]).forEach(parent=>(parent.children||[]).forEach(child=>{
+    if(!child.recipeId) return;
+    const us=byNode.get(child)||[], ds=byNode.get(parent)||[];
+    if(!us.length||!ds.length) return;
+    let best=1e9;
+    us.forEach(a=>ds.forEach(b=>{ const p=ctr(a), q=ctr(b);
+      const d=Math.abs(p.x-q.x)+Math.abs(p.y-q.y); if(d<best) best=d; }));
+    if(best<1e9){ wBest+=best; segs++; }
+  }));
+  const wNow=Math.max(0,(route.belts||[]).length);
+  const hubN=(route.belts||[]).filter(b=>b.merge||b.split).length;
+  let demand=0, out=0;
+  (res.machines||[]).forEach(n=>{ demand+=n.demand||0; out+=n.actualOut||0; });
+  /* 4. 约束量（硬指标） */
+  const pw=Rpower(objs), bw=Rbandwidth(objs), th=Rtheories(pw.total, Lregion());
+  const lim=RlimitChecks(objs), st=Rstorage(pw.total);
+  const loads=route.loads||[];
+  const jam=loads.filter(x=>x.state==='jam').length;
+  const tightN=loads.filter(x=>x.state==='tight').length;
+  const broke=(route.warns||[]).filter(x=>x.indexOf('手动连')>=0||x.indexOf('走线过不去')>=0).length;
+  let rawUse=0, oreOver=0;
+  Object.keys(rawNeed||{}).forEach(k=>{
+    rawUse+=(rawNeed[k]||0);
+    const c=RoreCapOf(k);
+    if(c&&rawNeed[k]>c.hi) oreOver+=(rawNeed[k]-c.hi);
+  });
+  const parts=[
+    {k:'紧凑度', w:RW_W.tight, now:hNow, best:r2(hBest), unit:'行', v:clamp(hBest/hNow)},
+    {k:'台数效率', w:RW_W.machines, now:mNow, best:r2(mBest), unit:'台', v:clamp(mBest/Math.max(1,mNow))},
+    {k:'走线效率', w:RW_W.wire, now:wNow, best:r2(wBest), unit:'格', v:clamp(wBest/Math.max(1,wNow))},
+    {k:'集散效率', w:RW_W.hub, now:hubN, best:0, unit:'个', v:clamp(1-hubN/Math.max(1,mNow))},
+    {k:'料耗效率', w:RW_W.waste, now:r2(out-demand), best:0, unit:'/分富余', v:clamp(out>0?(demand/out):1)},
+  ];
+  const pens=[];
+  if(bw.over) pens.push({t:'超协议容量 '+(bw.use-bw.cap), p:30});
+  if(oreOver>0) pens.push({t:'原料超全图采集上限 +'+r2(oreOver)+'/分', p:25});
+  if(lim.defOver) pens.push({t:'防御建筑超上限 '+lim.def+'/'+lim.defCap, p:15});
+  if(lim.travOver) pens.push({t:'滑索超上限 '+lim.trav+'/'+lim.travCap, p:10});
+  if(broke) pens.push({t:'走线连不上 '+broke+' 条', p:3*broke});
+  if(jam) pens.push({t:'单线会堵 '+jam+' 条', p:3*jam});
+  let base=0; parts.forEach(x=>{ base+=x.w*x.v; });
+  const raw100=Math.round(base*100);
+  let pen=0; pens.forEach(x=>{ pen+=x.p; });
+  const score=Math.max(0, raw100-pen);
+  const feasible=!(bw.over||oreOver>0||lim.defOver||lim.travOver);
+  return {
+    score:score, raw:raw100, penalty:pen, feasible:feasible,
+    grade:score>=85?'优':(score>=70?'良':(score>=55?'可用':'待改')),
+    parts:parts, pens:pens,
+    m:{rows:hNow, rowsBest:r2(hBest), machines:mNow, machinesBest:r2(mBest),
+       belts:wNow, beltsBest:r2(wBest), segs:segs, hubs:hubN,
+       cells:(plan.objs||[]).reduce((s,o)=>s+o.w*o.d,0), placed:objs.length,
+       power:pw.total, bwUse:bw.use, bwCap:bw.cap, bwZone:bw.zone,
+       rawUse:r2(rawUse), rawKinds:Object.keys(rawNeed||{}).length,
+       storCap:st.cap, storGap:st.gap, storMin:st.minutes,
+       thBase:th.base, thFuels:th.fuels, thStationNeed:(th.fuels.length?th.fuels[0].count:0),
+       defN:lim.def, defCap:lim.defCap, travN:lim.trav, travCap:lim.travCap,
+       jam:jam, tight:tightN, loads:loads},
+  };
+}
+/* 分数条（只做视觉，颜色跟着分档走；不参与任何判定） */
+function Rbar(v){
+  const p=Math.max(0,Math.min(100,Math.round(v*100)));
+  const col=p>=80?RW_COL.ok:(p>=60?RW_COL.mid:(p>=40?RW_COL.warn:RW_COL.bad));
+  return '<span class="lo-bar-o"><span class="lo-bar-i" style="width:'+p+'%;background:'+col+'"></span></span>';
+}
+const RW_COL={ok:'#2E7D5B', mid:'#186C7D', warn:'#B8860B', bad:'#C0392B'};
+/* 存当前方案（只存分数快照，不存布局 —— 布局要靠画布上的 objs 才还原得出来） */
+function LsavePlan(){
+  const L=Linit(), P=L.plan;
+  if(!P||!L.objs.some(o=>o.planRole)){ L.msg='先生成一条产线，再存方案'; render(); return; }
+  const sc=Rscore(P.res, P.plan, P.route, P.rawNeed||rawNeedOf(P.res));
+  L.plans=L.plans||[];
+  L.plans.push({name:P.res.targetName+' '+P.res.perMin+'/分', sc:sc});
+  while(L.plans.length>5) L.plans.shift();
+  L.msg='已存方案「'+P.res.targetName+' '+P.res.perMin+'/分」（第 '+L.plans.length+' 套，最多留 5 套）—— 改完参数再生成一条，分数会自动并排比';
+  render();
+}
+function LdelPlan(i){ const L=Linit(); (L.plans||[]).splice(i,1); L.msg='已删掉第 '+(i+1)+' 套方案'; render(); }
+function LclearPlans(){ const L=Linit(); const n=(L.plans||[]).length; L.plans=[]; L.msg='已清掉 '+n+' 套存下来的方案'; render(); }
+/* 多方案并排比较（路线图 ① 的后半句）—— 同一套口径列在一起，谁分高一眼看得出 */
+function planCompareHTML(){
+  const L=Linit(), ps=L.plans||[];
+  if(!ps.length) return '';
+  const best=ps.reduce((a,b)=>((b.sc.score>a.sc.score)?b:a), ps[0]);
+  const row=(lbl,fn)=>`<tr><td class="lo-td-h">${lbl}</td>${ps.map(p=>`<td>${fn(p)}</td>`).join('')}</tr>`;
+  return `<div class="lo-cmp">
+    <div class="lo-ph">📊 <b>方案并排比较</b> —— ${ps.length} 套（同一套口径；分高的一列加粗）
+      <button class="lo-reset" onclick="LclearPlans()">清空</button></div>
+    <table class="lo-tb">
+      <tr><td class="lo-td-h">方案</td>${ps.map((p,i)=>`<td>${esc(p.name)}<button class="lo-x" onclick="LdelPlan(${i})" title="删掉这一套">×</button></td>`).join('')}</tr>
+      ${row('总分', p=>`<b class="${p===best?'lo-best':''}">${p.sc.score}</b> / 100 ${p.sc.feasible?'':'<span style="color:'+RW_COL.bad+'">硬伤</span>'}`)}
+      ${row('评价', p=>`<span class="${p===best?'lo-best':''}">${esc(p.sc.grade)}</span>（基础 ${p.sc.raw} − 罚 ${p.sc.penalty}）`)}
+      ${row('行数 / 下界', p=>`${p.sc.m.rows} / ${p.sc.m.rowsBest}`)}
+      ${row('机器台数', p=>`${p.sc.m.machines}（理想 ${p.sc.m.machinesBest}）`)}
+      ${row('物流格数', p=>`${p.sc.m.belts}（下界 ${p.sc.m.beltsBest}）`)}
+      ${row('汇流/分流器', p=>p.sc.m.hubs)}
+      ${row('占用格数', p=>p.sc.m.cells)}
+      ${row('用电', p=>p.sc.m.power)}
+      ${row('协议容量', p=>`${p.sc.m.bwUse}${p.sc.m.bwCap!=null?(' / '+p.sc.m.bwCap):''}${p.sc.m.bwCap!=null&&p.sc.m.bwUse>p.sc.m.bwCap?' <span style="color:'+RW_COL.bad+'">超</span>':''}`)}
+      ${row('原料消耗', p=>`${p.sc.m.rawUse}/分（${p.sc.m.rawKinds} 种）`)}
+      ${row('会堵的段', p=>p.sc.m.jam?('<span style="color:'+RW_COL.bad+'">'+p.sc.m.jam+'</span>'):'0')}
+      ${row('主要扣分', p=>(p.sc.pens.length?esc(p.sc.pens.map(x=>x.t).join('、')):'（无）'))}
+    </table>
+  </div>`;
+}
+/* 产线报告（① 评价函数 + ② 吞吐体检 + 第 1 层约束校验）—— 抽成函数，渲染层只管调用 */
+function Rreport(P, pw, bw, th, lim, st, rawNeed, sc){
+  const r1=x=>Math.round(x*10)/10;
+  const wAll=P.res.warns.concat(P.route.warns);
+  const loads=P.route.loads||[];
+  const jam=loads.filter(x=>x.state==='jam').length;
+  const tight=loads.filter(x=>x.state==='tight').length;
+  const stations=RstationCount(Linit().objs);
+  const lstate={'jam':'<b style="color:'+RW_COL.bad+'">会堵</b>', 'tight':'<b style="color:'+RW_COL.warn+'">紧</b>',
+                'ok':'<b style="color:'+RW_COL.ok+'">通畅</b>', 'none':'<b style="color:'+RW_COL.bad+'">没连上</b>'};
+  return `
+      <div class="c-sub" style="margin-top:6px">
+        <span>${P.res.targets
+          ?('目标 '+P.res.targets.map(t=>'<b>'+esc(t.name)+'</b> '+t.perMin+'/分').join(' ＋ '))
+          :('目标 <b>'+esc(P.res.targetName)+'</b> '+P.res.perMin+'/分')} · 机器 <b>${P.res.totalMachines}</b> 台（${P.res.machines.length} 种）· 管线 <b>${P.route.belts.length}</b> 格 · 占 <b>${P.plan.height}</b> 行</span>
+      </div>
+      ${sc?`
+      <div class="lo-score">
+        <div class="lo-ph">🧮 <b>评价函数</b> <span class="lo-tag">路线图 ① · 2026-09-21</span> —— 这一版布局的分数</div>
+        <div class="lo-scv">
+          <span class="lo-scn">${sc.score}</span><span class="lo-scs">/ 100 · ${esc(sc.grade)}</span>
+          <span class="lo-tag">基础 ${sc.raw} − 罚分 ${sc.penalty}</span>
+          ${sc.feasible?'<span class="lo-tag">约束全过 ✓</span>':('<span class="lo-tag" style="color:'+RW_COL.bad+'">有硬伤</span>')}
+        </div>
+        <table class="lo-tb">
+          <tr><td class="lo-td-h">分项（权重）</td><td class="lo-td-h">实测</td><td class="lo-td-h">理论下界</td><td class="lo-td-h">得分</td></tr>
+          ${sc.parts.map(x=>`<tr><td class="lo-td-h">${x.k}（${Math.round(x.w*100)}%）</td><td>${x.now}${x.unit}</td><td>${x.best}${x.unit}</td><td>${Math.round(x.v*100)}${Rbar(x.v)}</td></tr>`).join('')}
+        </table>
+        ${sc.pens.length?`<div class="c-sub" style="margin-top:4px"><span><b style="color:${RW_COL.bad}">扣分项</b>：${sc.pens.map(x=>esc(x.t)+'（−'+x.p+'）').join(' · ')}</span></div>`
+          :'<div class="c-sub" style="margin-top:4px"><span class="c-id">没有命中任何罚分项。</span></div>'}
+        <div class="c-sub" style="margin-top:2px"><span class="c-id">口径：成本项一律用「理论下界 ÷ 实测」（下界见上表）；权重写成常量 RW_W，可调；用电 / 协议容量 / 上限按<b>当前画布</b>算。</span></div>
+      </div>`:''}
+      <div class="c-sub" style="margin-top:4px"><span><b>原料</b>（基地不摆，从野外采集 / 仓库来）：${P.res.raw.length?P.res.raw.map(x=>{
+        if((P.res.shipIn||[]).some(s=>s.itemId===x)) return esc(RwItemName(x))+'（<b>跨地区收货</b>，见下）';
+        const mr=RmineRate(x);
+        if(!mr) return esc(RwItemName(x));
+        return esc(RwItemName(x))+'（'+esc(mr.name)+(mr.perMin!=null?(mr.perMin+'/分'+(mr.fluid?'，前提是节点抽得到':'')):'：<b>速率配置表里没有</b>')+'）';
+      }).join('、'):'（无）'}</span></div>
+      ${(P.res.shared&&P.res.shared.length)?`
+      <div class="c-sub" style="margin-top:6px"><span><b style="color:#185FA5">共用中间料 —— 只建一套，再分流给各目标</b> <span class="lo-tag">路线图 ⑥-2 · 2026-09-22</span></span></div>
+      ${P.res.shared.map(s=>`
+      <div class="c-sub" style="margin-top:2px"><span>${esc(s.name)}：<b>${s.machines}</b> 台（合并需求 ${s.demand}/分 · 按整台实出 ${s.actualOut}/分）→ ${Object.keys(s.sharedTo).map(k=>esc(k)+' '+Math.round(s.sharedTo[k]*1000)/1000+'/分').join('、')}</span></div>`).join('')}
+      `:''}
+      ${(function(){
+        /* ⭐v104 环境依赖透明化（博士 2026-09-23「气体环境会影响生产，会不会影响最优计算」）：
+           排布器的配方选择按子树代价排序，**天然选中省料的环境版配方**（实测息壤粉链/富集气链全中）——
+           即产线从第一天起就隐式依赖环境，但不摆散布机这些机器在游戏里不工作，方案静默失效。
+           这里扫实际选中的配方把它点名。数据 DB.recipeEnv（build 注入层从 FactoryMachineCraftTable.gasEnv 补）。 */
+        const envDefs={
+          1:{n:'稳定', g:'惰气', c:envColorOf(1)},
+          2:{n:'湿润', g:'水蒸气', c:envColorOf(2)},
+          3:{n:'酸性', g:'酸气', c:envColorOf(3)},
+          4:{n:'息壤', g:'息壤气', c:envColorOf(4)}};
+        const byEnv={};
+        (P.res.nodes||[]).forEach(nd=>{
+          const ge=nd.recipeId&&(DB.recipeEnv||{})[nd.recipeId];
+          if(!ge) return;
+          const d=envDefs[ge]||{n:'环境'+ge, g:'', c:'#B4B2A9'};
+          const key=ge+'|'+nd.recipeId;
+          (byEnv[key]=byEnv[key]||{ge:ge, env:d, recipeId:nd.recipeId, recipe:RbyId(nd.recipeId), machines:0});
+          byEnv[key].machines+=nd.machines;
+        });
+        const rows=Object.keys(byEnv).map(k=>byEnv[k]);
+        if(!rows.length) return '';
+        const uniqEnv=[...new Set(rows.map(r=>r.ge))];
+        return `<div class="c-sub" style="margin-top:6px"><span><b style="color:#1B6E9E">💨 环境依赖 —— 这些机器要摆进气体散布机的环境圈才会开工</b> <span class="lo-tag">v104 · 2026-09-23</span></span></div>
+        ${rows.map(r=>`<div class="c-sub" style="margin-top:2px"><span>· <i style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${r.env.c};border:1px solid ${envEdgeOf(r.ge)};vertical-align:-1px"></i> <b>${esc(r.recipe?(r.recipe.machineName||''):'')}</b> ×<b>${r.machines}</b> 台 —— 配方「${esc(r.recipe?(r.recipe.outcomes||[]).map(x=>x.name).join('+'):'')}」需要 <b>${esc(r.env.n)}环境</b>（通${esc(r.env.g)}，最低 6 单位/分）</span></div>`).join('')}
+        <div class="c-sub" style="margin-top:2px"><span class="c-id">口径：这些配方按「有环境」的<b>省料版</b>算（这是排布器一直以来的最优口径${uniqEnv.indexOf(1)>=0?'，本链涉及稳定环境':''}）—— 机器<b>完全处于</b>散布机 13×13 圈内才生效，一台的圈可罩多台；散布机免电。没摆散布机时这些机器不会开工（提纯机/洪炉可在游戏里换回费料的普通配方顶替，但料与台数会变，报告不再准确）。</span></div>`;
+      })()}
+      ${(Linit().shipIn&&(Linit().shipCands||[]).length)?`
+      <div class="c-sub" style="margin-top:6px"><span><b style="color:#185FA5">跨地区收货 —— 这批料不在本地做，从「${esc(LshipFromName())}」超库存传输过来</b> <span class="lo-tag">路线图 ⑥-1 · 2026-09-22</span></span></div>
+      ${(P.res.shipIn||[]).map(s=>{
+        const v=RshipVal(s.itemId), d=r1(s.demand);
+        const sup=v.perBatch!=null
+          ? (' → 每小时可传 <b>'+v.perHour+'</b> 个（每批 '+v.perBatch+' 个 · '+v.hours+' 小时/批）'
+             // 传输是有速率上限的，所以它也可能喂不饱这条链 —— 这里必须点出来，别让人以为"收货=无限"
+             +(v.perMin!=null&&v.perMin<d?('　<b style="color:'+RW_COL.warn+'">按每小时折算 '+v.perHour+' 个 &lt; 需求 '+Math.round(d*60)+' 个，收货喂不饱这条链 —— 得拉高档位或多配几条别的来源</b>'):''))
+          : '　<span class="c-id">还没填传输总值 → 把下面那个框里的数填上，这里才给得出每小时可传多少（不填就不瞎编数字）</span>';
+        return `<div class="c-sub" style="margin-top:2px"><span>· <b>${esc(s.name)}</b> 需要 <b>${d}</b>/分 · 单位物品价值 <b>${v.value}</b> · 每批间隔 <b>${v.hours}</b> 小时${sup}</span></div>`;
+      }).join('')}
+      ${/* ⭐v82：选中了链外的物品 —— 这条链的收货明细一行都没有，必须讲清楚「货只进仓库、产线不变」，
+             不然博士会以为收货开关没生效。 */
+        (Linit().shipPick && !(P.res.shipIn||[]).some(s=>s.itemId===Linit().shipPick))?`
+      <div class="c-sub" style="margin-top:4px"><span style="color:${RW_COL.warn}">选中的「<b>${esc(RwItemName(Linit().shipPick))}</b>」<b>不在这条产线的链上</b> —— 传过来的货<b>只进仓库</b>，这条链没有任何地方用它（产线与机器都不变）。要它参与生产就改选链上的物品，或把排产目标换成用它做原料的东西。</span></div>`:''}
+      ${/* ⭐⑥-1 v80 起网格替掉原生 select（博士：「像游戏里那样给我个传输物品的选择器」）；v81 收口到共享渲染
+             LpickGridHtml(false)——报告与产线面板的选货条长一个样，候选/需求数字也同源（L.shipCands/L.shipDmap）。 */
+        LpickGridHtml(false)}
+      <div class="c-sub" style="margin-top:2px"><span class="c-id">口径：超库存传输**不扣${esc(LshipFromName())}的库存**（那边只要有产能就永远给得出来），唯一的闸门是每批的<b>传输总值</b> —— 一批<b>只能传一种物品</b>，数量上限 = 传输总值 ÷ 单位物品价值（物品表 <code>value</code>）。每批要等一个传输间隔到货，到货后出发地会再取一次货。</span></div>
+      <div class="c-sub" style="margin-top:2px"><span class="c-id">⚠️ 这里给的是<b>按档位反推</b>的参考值：把你在协议管理界面看到的<b>传输总值</b>填进下面的框，数量与供货速率会按你的实际档位重算。实机档位参考（社区实测，配置表里没有）：谷地建设 <b>11 级 = 1200</b>、<b>12 级满级 = 1500</b> —— 另注意：从 11 级升到 12 级后协议<b>不会自动</b>从「库存传输」切成「超库存传输」，要手动改一次。本工具按<b>满级口径</b>：开收货时自动按 1500 预填（框里可改）。</span></div>
+      ${LshipDirHtml()}
+      <div class="lo-bar" style="margin-top:6px"><span>传输总值（你界面上的数）：</span><input class="lo-num" type="number" min="0" step="1" value="${(Linit().tv)||''}" placeholder="满级 1500（开收货时自动预填）" oninput="Ltv(this.value)"><span>每批间隔（小时）：</span><input class="lo-num" type="number" min="0.1" step="0.1" value="${Linit().tvHours||1}" oninput="LtvH(this.value)"></div>`:''}
+      ${P.res.externals.length?`<div class="c-sub" style="margin-top:4px"><span><b>按「外部输入」处理</b>（${P.res.externals.map(x=>esc(RwItemName(x))).join('、')}）—— 这些自己做的代价太深或只有回收路线，<b>建议外部供应 / 野外采集</b>；要展开就调大上限或换个目标物品</span></div>`:''}
+      ${/* ⭐⑥-3 跨基地选点（2026-09-22）：多个目标放哪片地区更省 —— 报告里常驻一段（不依赖收货开关） */
+        RxlHtml()}
+      ${P.res.seeds.length?`
+      <div class="c-sub" style="margin-top:6px"><span><b style="color:#8A5A2B">启动料 —— 链上有环，先把这些塞进去才转得起来</b></span></div>
+      ${P.res.seeds.map(s=>`<div class="c-sub" style="margin-top:2px"><span>· 在「<b>${esc(s.machineName)}</b>」里先塞 <b>${s.count}</b> 个「<b>${esc(s.name)}</b>」（${esc(s.reason)}）</span></div>`).join('')}`:''}
+      ${P.route.links.length?`
+      <div class="c-sub" style="margin-top:6px"><span><b>已连管线</b> ${P.route.links.length} 条</span></div>
+      ${P.route.links.map(k=>`<div class="c-sub" style="margin-top:2px"><span>· ${esc(k.item)} ${k.perMin}/分：${esc(k.from)} → ${esc(k.to)} · ${k.isPipe?'管道':'传送带'} ${k.cells} 格</span></div>`).join('')}`:''}
+      ${loads.length?`
+      <div class="c-sub" style="margin-top:6px"><span><b>吞吐体检</b> <span class="lo-tag">路线图 ②a · 真并联</span> —— 每条依赖要几条线 / 实际连了几条 / 单线负荷${jam?('　<b style="color:'+RW_COL.bad+'">'+jam+' 段会堵</b>'):''}${tight?('　<b style="color:'+RW_COL.warn+'">'+tight+' 段没余量</b>'):''}</span></div>
+      ${loads.map(k=>`<div class="c-sub" style="margin-top:2px"><span>· ${esc(k.item)} ${k.demand}/分：${esc(k.from)} → ${esc(k.to)} · ${k.isPipe?'管道':'传送带'} <b>${k.lines}</b> 条（上限算下来要 ${k.need} 条）· 单线 <b>${k.perLine}</b>/${k.cap} 个每分 → ${lstate[k.state]||''}</span></div>`).join('')}
+      <div class="c-sub" style="margin-top:2px"><span class="c-id">判定：单线负荷 &gt; 载具上限（带 30/分 · 管 120/分）会堵；≥ 90% 算「紧」（加一点需求就堵）。线数不够时是端口/走线被占了 —— 原因见下面的提醒。</span></div>`:''}
+      ${wAll.length?`<div class="c-sub" style="margin-top:6px"><span><b style="color:${RW_COL.warn}">提醒 ${wAll.length} 条</b></span></div>
+      ${wAll.map(x=>`<div class="c-sub" style="margin-top:2px"><span>· ${esc(x)}</span></div>`).join('')}`:''}
+      <div class="c-sub" style="margin-top:8px"><span><b>⚠️ 约束校验</b>（硬校验；协议容量 · 建造上限 · 用电取配置表，发电量 · 矿点数 · 存电取社区实测）</span></div>
+      <div class="c-sub" style="margin-top:2px"><span>· <b>协议容量</b>：${bw.use}${bw.cap!=null?(' / '+bw.cap+'（'+esc(bw.zone||'')+'满级档）'):'（自由模式没指定基地，没有上限可对）'}${bw.over?' —— <b style="color:'+RW_COL.bad+'">超出 '+(bw.use-bw.cap)+'，得换更大的建造区或拆掉一些</b>':' —— 在限内 ✓'}</span></div>
+      <div class="c-sub" style="margin-top:2px"><span>· <b>发电</b>：这条产线用电 <b>${pw.total}</b> 电；协议核心自带 <b>${th.base}</b> 基础发电${th.gap>0?(' → 缺口 <b>'+th.gap+'</b>，需要热能池：'+th.fuels.map(f=>esc(f.item)+' <b>'+f.count+'</b> 台（'+f.power+'/台）').join(' · ')):' → <b>不用额外发电</b>'}${th.fuels.length?` <span class="c-id">（按地区选燃料：${esc(Lregion()||'通用')}）</span>`:''}${stations?`　<span class="c-id">画布上已摆热能池 ${stations} 台</span>`:''}</span></div>
+      <div class="c-sub" style="margin-top:2px"><span>· <b>存电</b> <span class="lo-tag">路线图 ②c · 已纳入</span>：上限 <b>${st.cap.toLocaleString?st.cap.toLocaleString('en-US'):st.cap}</b>（社区实测）${st.gap>0?('　当前缺口 <b>'+st.gap+'</b> 电 → 纯靠存电能撑 <b>'+st.minutes+'</b> 分钟（约 '+r1(st.minutes/60)+' 小时），撑完设备就停；这是缓冲不是电源，得补发电'):'　当前用电没超基础发电，存电不动 ✓'}</span></div>
+      <div class="c-sub" style="margin-top:2px"><span>· <b>防御建筑上限</b> <span class="lo-tag">路线图 ②b</span>：${lim.defCap!=null?('<b>'+lim.def+'</b> / '+lim.defCap+'（'+esc(lim.zone||'')+'）'+(lim.defOver?' —— <b style="color:'+RW_COL.bad+'">超了 '+(lim.def-lim.defCap)+'</b>':' —— 在限内 ✓')):'（自由模式没指定基地，没有上限可对）'}<span class="c-id">　按分类「防御设施」计</span></span></div>
+      <div class="c-sub" style="margin-top:2px"><span>· <b>滑索上限</b> <span class="lo-tag">路线图 ②b</span>：<b>基地画布里不涉及</b> —— 滑索架只放野外，不摆进基地（博士 2026-09-21 定，所以左栏也不提供）。本建造区的上限是 <b>${lim.travCap!=null?lim.travCap:'—'}</b>（配置表 <code>travelPoleLimit</code>），那个数服务的是**野外滑索架**，不是基地内的产线。<span class="c-id">沙盘上滑索数恒为 0，所以这一项永远显示 0 / 上限 —— 不是没做校验，是本来就不该在基地里数。</span></span></div>
+      <div class="c-sub" style="margin-top:2px"><span>· <b>等级上限（逐档）</b> <span class="lo-tag">配置表 LevelGradeTable</span>：${(()=>{
+        const z=((DB.bases||{}).zoneGrades||{})[Linit().base||''];
+        if(!z) return '<span class="c-id">本建造区不在 LevelGradeTable 里 —— 这张表只覆盖 8 个区（四号谷地 6 + 景玉谷 / 武陵城）；武陵其余 7 个区的上限要看据点发展等级表（DomainDataTable）</span>';
+        const f=z.tiers[0], l=z.tiers[z.tiers.length-1];
+        return esc(z.zoneName||z.levelId)+' 共 <b>'+z.maxGrade+'</b> 档 · 协议容量 '+f.bandwidth+' → <b>'+l.bandwidth+'</b> · 防御建筑 '+f.battleBuildingLimit+' → <b>'+l.battleBuildingLimit+'</b> · 滑索 '+f.travelPoleLimit+' → <b>'+l.travelPoleLimit+'</b>　<span class="c-id">（第 1 档 → 满级第 '+l.grade+' 档；与协议容量那一行同源，都是配置表）</span>';
+      })()}</span></div>
+      <div class="c-sub" style="margin-top:2px"><span>· <b>原料野外上限</b>：${P.res.raw.length?P.res.raw.map(x=>{
+        // 跨地区收货的料**本地不采**，野外那些矿脉的上限对它没有意义 —— 照旧渲染会写出
+        // 「需 X/分，全图上限 a~b」甚至「超出上限，做不到」，那是把传输来的货当本地矿算，会误导。
+        if((P.res.shipIn||[]).some(s=>s.itemId===x)) return esc(RwItemName(x))+'（跨地区收货，<b>本地不采</b>，不计野外上限）';
+        const c=RoreCapOf(x), nd=Math.round((rawNeed[x]||0)*10)/10;
+        if(!c) return esc(RwItemName(x))+' 需 '+nd+'/分（无野外数据）';
+        const cap=c.theoreticalMax
+          ? ('上限 <b>'+c.hi+'/分</b>（'+esc(c.theoreticalMax.version||'')+' 游戏内「理论最大开采值」）')
+          : ('全图上限 <b>'+c.lo+'~'+c.hi+'/分</b>（'+c.beds+' 脉 × 每脉 '+c.nodesPerBed[0]+'~'+c.nodesPerBed[1]+' 点 × '+c.perMin+'/分）');
+        const mk=Object.keys(c.byMap||{});
+        const mapTxt=mk.length?('　按地图：'+mk.map(m=>esc(m)+' '+(c.byMap[m]||0)).join(' / ')+'（数字是矿脉数 / 矿源点数）'):'';
+        return esc(RwItemName(x))+' 需 <b>'+nd+'</b>/分，'+cap
+          +(nd>c.hi?' —— <b style="color:'+RW_COL.bad+'">超出上限，做不到</b>':(nd>c.lo?' —— ⚠️ 高于下限，得把矿点都铺满':' —— 在上限内 ✓'))
+          +'<span class="c-id">'+mapTxt+'</span>';
+      }).join('　·　'):'（无）'}</span></div>
+      ${P.res.raw.map(x=>{ if((P.res.shipIn||[]).some(s=>s.itemId===x)) return ''; const c=RoreCapOf(x); return c?RoreZoneRows(c):''; }).join('')}
+      ${RrawLoop(P, rawNeed)}
+      <div class="c-sub" style="margin-top:2px"><span class="c-id">⚠️ 发电量（源矿 50 / 谷地电池 220·420·1100 / 武陵电池 1600·3200）与矿点数量、存电上限（10 万）**都是社区实测，不是配置表**；纯度按<b>地区最大值</b>（高纯度 20/分）算。协议容量 / 防御建筑上限 / 滑索上限是<b>配置表</b>（bases.json 的 caps）。<br>矿石总量（博士武陵简报截图逐区计数 + 四号谷地 NGA / 游民星空 / sticweb / TapTap 多方实测）：<b>源矿 60 / 紫晶矿 12 / 蓝铁矿 60 / 赤铜矿 28 个矿点</b>（一个矿脉 = 1 台矿机，别乘每脉点数；高纯度 20/分、低纯度 10/分）。<br>按大地区：<b>四号谷地 源矿 560 · 紫晶 240 · 蓝铁 1080</b>（实测，多方一致）、<b>武陵 源矿 540 · 蓝铁 120 · 赤铜 510</b>（博士截图逐区计数，与游戏内 UI 全部一致 —— 闭环）。<br>「稀有矿物」（黯石 / 燎石 / 武陵石 / 协议纹石）是野外<b>手动拾取</b>的调谐石，不是矿脉，不在本表。</span></div>
+      ${planCompareHTML()}
+    `;
+}
+/* ---------- 仓库存取线的放置规则 ----------
+   配置表 I18n 原文：
+     · 源桩 log_hongs_bus_source：「作为仓库存取线的起始点，可以在集成核心区域自由放置。」
+     · 基段 log_hongs_bus：「需要和仓库存取线源桩或其他生效的仓库存取线基段相连。」
+     · 存货口 loader_1 / 取货口 unloader_1：「只能贴靠仓库存取线放置。」
+   「相连」的口径由博士 2026-09-21 游戏内实拍确认：两条边**有接触**就算 —— 可横向并排、
+   可 L 形拐弯、错开一两格也行，不要求整边对齐。游戏里没连上的块会变红并提示
+   「没有与仓库存取线源桩或其他运作中基段相连」。沙盘照做：允许摆，但标红 + 给提示。
+   ⚠️ 别改成「整边对齐」—— 我第一版就是那么理解的，被博士实拍纠正了。 */
+const HONGS_SRC='log_hongs_bus_source', HONGS_BUS='log_hongs_bus', HONGS_PORTS=['loader_1','unloader_1'];
+function LhongsRule(id){
+  if(id===HONGS_SRC) return '起始点，可自由放置';
+  if(id===HONGS_BUS) return '需与源桩或其他基段「边接触」才算相连';
+  if(HONGS_PORTS.indexOf(id)>=0) return '只能贴靠仓库存取线放置';
+  return '';
+}
+/* 两个占地矩形是否「边接触」：共边且这条边上至少有 1 格重叠（只对角相邻不算） */
+function Ltouch(a,b){
+  const adjY=(a.y+a.d===b.y)||(b.y+b.d===a.y);
+  const adjX=(a.x+a.w===b.x)||(b.x+b.w===a.x);
+  if(!adjY&&!adjX) return false;
+  const ovX=Math.min(a.x+a.w,b.x+b.w)-Math.max(a.x,b.x);
+  const ovY=Math.min(a.y+a.d,b.y+b.d)-Math.max(a.y,b.y);
+  return (adjY&&ovX>0)||(adjX&&ovY>0);
+}
+/* 从源桩出发按「边接触」做连通，返回没接上的存取线件：{uid: 提示文案}
+   基段必须能一路接到某个源桩（文案里「生效的基段」= 链上能到源桩的那批）；
+   存货口 / 取货口必须挨着源桩或已生效的基段。 */
+function LhongsBad(objs,preset){
+  const bad={};
+  /* 谷地（preset=true）：存取线由基地自动铺，预设线位置拿不到 → 不判「贴靠」，
+     否则存货口 / 取货口会被全数误标红（看着像坏了）。武陵与自由模式照旧。 */
+  if(preset) return bad;
+  const srcs=objs.filter(o=>o.id===HONGS_SRC);
+  const buses=objs.filter(o=>o.id===HONGS_BUS);
+  const ports=objs.filter(o=>HONGS_PORTS.indexOf(o.id)>=0);
+  if(!buses.length&&!ports.length) return bad;
+  const seen={}, queue=srcs.slice();
+  srcs.forEach(o=>{ seen[o.uid]=1; });
+  while(queue.length){
+    const cur=queue.shift();
+    objs.forEach(o=>{
+      if(seen[o.uid]||o.id!==HONGS_BUS) return;
+      if(Ltouch(cur,o)){ seen[o.uid]=1; queue.push(o); }
+    });
+  }
+  buses.forEach(o=>{ if(!seen[o.uid]) bad[o.uid]='没有与仓库存取线源桩或其他运作中基段相连'; });
+  const good=srcs.concat(buses.filter(o=>seen[o.uid]));
+  ports.forEach(o=>{ if(!good.some(g=>Ltouch(o,g))) bad[o.uid]='必须贴靠仓库存取线放置'; });
+  return bad;
+}
+function loAllowed(b){
+  if(b.isLogi) return true;          /* 物流件（传送带/管道等）默认就列出来 */
+  if(LO_SKIP_IDS.indexOf(b.id)>=0) return false;
+  return LO_KEEP_CATS.indexOf(b.categoryName)>=0 || LO_KEEP_IDS.indexOf(b.id)>=0;
+}
+function renderLayout(){
+  const L=Linit(), CELL=LOCELL;
+  /* 默认只列产线相关的三类 + 核心结构 + 物流件；上方分类下拉选了具体分类时，就只列那一类。
+     拉黑名单（中继器等）两条路都不给。 */
+  /* 免电变体在这里先剔掉，下面的 arr 和分类计数都以它为准 —— 同一座设施只留正常版（博士 2026-09-21）。
+     选了谷地的基地时，再把源桩 / 基段剔掉：谷地这两样由基地自动铺，左栏不给（博士 2026-09-21）。 */
+  const presetBus=LisPresetBus();
+  const all=DB.blueprint.buildings.concat(Llogi().map(LO_LG))
+    .filter(b=>!(LO_HIDE_NOP&&LO_IS_NOP(b)))
+    .filter(b=>!(presetBus&&LO_BUS_IDS.indexOf(b.id)>=0));
+  const arr=f1?all.filter(b=>b.categoryName===f1&&LO_SKIP_IDS.indexOf(b.id)<0):all.filter(loAllowed);
+  const totalCells=L.size*L.size;
+  const used=L.objs.reduce((s,o)=>s+o.w*o.d,0);
+  const pal=arr.map(b=>{
+    const sel=L.pick&&L.pick.id===b.id;
+    const dm=Ldims(b,sel?L.pickRot:0);
+    const tail=b.isLogi
+      ? (b.lgPerMin?b.lgPerMin+' 个/分':esc(b.lgMedium))
+      : (dm.w+'×'+dm.d);
+    const tip=b.isLogi
+      ? ` title="${esc(b.name)} · ${esc(b.lgMedium)} · 吞吐 ${b.lgPerMin} 个/分钟"`
+      : ` title="${esc(b.name)} · ${esc(b.categoryName)} · 占地 ${dm.w}×${dm.d} · 接口 ${b.portCount} 个 · ${b.needPower?'耗电 '+b.powerConsume:'无需通电'} · id: ${esc(b.id)}${LhongsRule(b.id)?' · 放置规则：'+LhongsRule(b.id):''}"`;
+    return `<button class="lo-btn ${sel?'sel':''}" onclick="Lpick('${b.id}')"${tip}>
+      <span style="width:18px;text-align:center;color:${b.isLogi?lgColor(b):catColor(b)};font-weight:700">${loPieceGlyph(b)}</span>
+      <span style="flex:1">${esc(b.name)}</span>
+      <span class="lo-tag">${tail}</span>
+    </button>`;
+  }).join('');
+  const sizeBtns=[40,50,70,80].map(n=>`<button class="lo-size ${L.size===n&&!L.base?'on':''}" onclick="Lsize(${n})" title="自由模式：只设边长，不带地区规则（选过基地的话会退出基地选择）">${n}×${n}</button>`).join('');
+  /* 「基地」下拉 = 两个地区的分界线：选一片基地就设画布边长 + 切该地区的存取线规则
+     （武陵要自己摆、有上限、没接上标红；谷地由基地自动铺、左栏不给源桩/基段、不判贴靠）。
+     博士 2026-09-21：「把武陵和四号谷地分开讨论」。 */
+  const bases=Lbases();
+  const baseSel=`<select class="lo-sel" onchange="LbaseSet(this.value)" title="选一片基地 = 设画布边长 + 切该地区的存取线规则">
+      <option value=""${L.base?'':' selected'}>自由模式（不限地区）</option>
+      ${['四号谷地','武陵'].map(d=>'<optgroup label="'+d+'">'+bases.filter(r=>r.domainName===d)
+        .map(r=>`<option value="${r.levelId}"${L.base===r.levelId?' selected':''}>${esc(r.zoneName)} · ${esc(r.role)} ${r.side}×${r.side}</option>`).join('')
+        +'</optgroup>').join('')}
+    </select>`;
+  const curRow=LbaseRow();
+  const baseTag=curRow
+    ? `<span class="lo-tag">当前：${esc(curRow.domainName)}·${esc(curRow.zoneName)}${presetBus?' · 存取线由基地自动铺':' · 存取线自己摆'}</span>`
+    : `<span class="lo-tag">当前：自由模式（不限地区）</span>`;
+  /* 格子边长档位：14 是原默认值，20 是现在的默认（物流件的流向箭头在 14px 格上只有几像素，看不清） */
+  const cellBtns=[14,20,26,32].map(n=>`<button class="lo-size ${LOCELL===n?'on':''}" onclick="Lcell(${n})">${n}px</button>`).join('');
+  /* 物流件占格索引：给接口做「外侧有没有接上」的判定 */
+  const lgi={};
+  L.objs.forEach(o=>{ const b=byBp(o.id); if(b&&b.isLogi) lgi[o.x+','+o.y]=o; });
+  /* ⭐ 流向表：每个带/管格的「下一格」—— 用来反推每格的进边（弯道渲染要用） */
+  const flowNext={};
+  Object.values(lgi).forEach(o=>{
+    const b=byBp(o.id);
+    if(!b||(b.lgType!=='Belt'&&b.lgType!=='Pipe')) return;
+    const out=(lgPortSides(b,o.rot).out||[])[0];
+    const v={r:[1,0], b:[0,1], l:[-1,0], t:[0,-1]}[out];
+    if(v) flowNext[o.x+','+o.y]=[o.x+v[0], o.y+v[1]];
+  });
+  /* ⭐v107 出料口外格索引：机器某 output 口的外侧格 → {from:带子的进边方向, pipe:是否管道口}。
+     孤格带/管夹在两台对角机器之间时没有带子邻居，flowIn 只查带子会推不出进边
+     （博士图1「还是不行」）—— 现在机器口也算拓扑。from = 口朝向的反侧（机器在那边）。 */
+  const portOut={};
+  const flowIn=(x,y,isPipe)=>{
+    const NB={t:[0,-1], b:[0,1], l:[-1,0], r:[1,0]};
+    for(const d in NB){
+      const nxt=flowNext[(x+NB[d][0])+','+(y+NB[d][1])];
+      if(nxt&&nxt[0]===x&&nxt[1]===y) return d;
+    }
+    for(const d in NB){
+      const po=portOut[(x+NB[d][0])+','+(y+NB[d][1])];
+      if(po&&!!po.pipe===!!isPipe) return po.from;
+    }
+    return null;
+  };
+  /* 接口统计（和下面的逐个渲染同口径：越界的不算、角上取 z 边） */
+  let pAll=0, pOn=0;
+  L.objs.forEach(o=>{
+    const b=byBp(o.id); if(!b||b.isLogi) return;
+    const fp=Lfp(b);
+    (b.ports||[]).forEach(p=>{
+      const q=LportXY(p,o.rot,fp[0],fp[1]);
+      if(q.x<0||q.x>=o.w||q.z<0||q.z>=o.d) return;
+      const dir=LportDir(q,o.w,o.d);
+      const dx=dir==='l'?-1:dir==='r'?1:0, dz=dir==='u'?-1:dir==='d'?1:0;
+      pAll++;
+      /* ⚠️ 两套方向命名在这汇合：LportDir 给 u/d（上下），色条/flowIn 体系用 t/b —— 必须转译，
+         否则 LOGI_OPP['u'] 是 undefined，机器口反推的进边整条丢失（探针 2026-09-23 实锤）。 */
+      if(dir&&p.kind==='output') portOut[(o.x+q.x+dx)+','+(o.y+q.z+dz)]={from:LOGI_OPP[dir==='u'?'t':dir==='d'?'b':dir], pipe:!!p.isPipe};
+      if(dir&&LlogiAt(lgi,o.x+q.x+dx,o.y+q.z+dz,p.isPipe)) pOn++;
+    });
+  });
+  /* 存取线校验：哪些件没接上（画布上标红），以及计数 / 上限 */
+  const badMap=LhongsBad(L.objs,presetBus);
+  const busZones=((DB.bases&&DB.bases.zones)||[]).filter(z=>z.busCap);
+  const curZone=busZones.filter(z=>z.levelId===L.zone)[0]||busZones[0]||null;
+  const hongsCap=curZone?curZone.busCap:null;
+  const nSrc=L.objs.filter(o=>o.id===HONGS_SRC).length;
+  const nBus=L.objs.filter(o=>o.id===HONGS_BUS).length;
+  const nBad=Object.keys(badMap).length;
+  const pw=Rpower(L.objs);      /* ⚡ 用电：配置表 powerConsume 求和 */
+  /* 谷地：把预设存取线画到画布**外缘**（整条在画布框外面 —— 不占格、不挡摆放，只做可视参考） */
+  const presZone=LbusZone();
+  const presetBand=presetBus?LpresetBand(presZone,CELL,L.size):'';
+  /* ⭐v103 环境范围层：每台散布机一块方形 —— 占地外扩 rangeExtend.x（配置表 5 → 13×13）。
+     DOM 顺序放在 cells 之前 = 建筑层之下；pointer-events:none 不挡框选；超界部分裁到画布内。 */
+  const envLayer=L.showGas?L.objs.map(o=>{
+    const b=byBp(o.id);
+    const vp=vaporizerOf(b);
+    if(!vp) return '';
+    const ext=(vp.rangeExtend&&vp.rangeExtend.x)||0;
+    const x1=Math.max(0,o.x-ext), y1=Math.max(0,o.y-ext);
+    const x2=Math.min(L.size,o.x+o.w+ext), y2=Math.min(L.size,o.y+o.d+ext);
+    if(x2<=x1||y2<=y1) return '';
+    const _ge=o.gas||1;
+    return `<div class="lo-env" style="left:${x1*CELL}px;top:${y1*CELL}px;width:${(x2-x1)*CELL}px;height:${(y2-y1)*CELL}px;--envbg:${envColorOf(_ge)};--envline:${envEdgeOf(_ge)};--envop:${envOpOf(_ge)}"></div>`;
+  }).join(''):'';
+  /* ⭐v104 就地选气条（博士：「想要点机器就地选」）：选中散布机时浮在机器正上方 ——
+     色块 = 四种气体（即四种环境，圈色同款），点一下 LgasSet 批量换气；当前气描高亮圈。
+     与环境圈层开关解耦：圈藏了也能换气（换的是对象属性，不是图层）。 */
+  const gasBar=(function(){
+    const vsel=LselObjs().filter(o=>vaporizerOf(byBp(o.id)));
+    if(!vsel.length) return '';
+    const vb=byBp(vsel[0].id);
+    const gs=(vb.vaporizer.gasGroups||[]);
+    if(!gs.length) return '';
+    const cur=vsel[0].gas||1;
+    const same=vsel.every(o=>(o.gas||1)===cur);
+    /* 锚点：选中散布机的包围盒左上角；条放机器上方，贴 0 不出画布顶 */
+    const bx=Math.min.apply(null,vsel.map(o=>o.x))*CELL;
+    const by=Math.max(0,Math.min.apply(null,vsel.map(o=>o.y))*CELL-28);
+    const tip=vsel.length>1?('作用于选中的 '+vsel.length+' 台散布机'):'点色块换通入的气体（圈色跟着变）';
+    return `<div class="lo-gasbar" style="left:${bx}px;top:${by}px" title="${tip}">
+      <b>💨${vsel.length>1?('×'+vsel.length):''}</b>
+      ${gs.map(g=>`<button class="${same&&cur===g.env?'on':''}" style="background:${envColorOf(g.env)};border-color:${envEdgeOf(g.env)}"
+        onclick="LgasSet(${g.env})" title="通入「${esc(g.name)}」→ ${ENV_NAME[g.env]||g.env}环境（最低 ${g.rate} 单位/分 · 官方面板口径）"></button>`).join('')}
+    </div>`;
+  })();
+  /* ⭐v109 协议核心出货清单浮层：点出料口的内部箭头弹出，浮在该口正上方。
+     清单 = 该核心所属域的可出货物品（DB.hubItems 按 domains 过滤），按稀有度降序。 */
+  const dlvPop=(function(){
+    if(!L.dlvPop) return '';
+    const o=L.objs.filter(x=>x.uid===L.dlvPop.uid)[0];
+    if(!o) return '';
+    const b=byBp(o.id); if(!hubIsHub(b)) return '';
+    const dom=hubDomainOf(o), cands=hubCands(dom);
+    const cur=hubPickGet(o,L.dlvPop.idx);
+    const _lo=4, _hi=Math.max(4,L.size*CELL-234);
+    const cx=Math.min(_hi, Math.max(_lo, o.x*CELL+o.w*CELL/2-115));
+    const cy=Math.max(4, o.y*CELL-8);
+    const body=cands.length
+      ? cands.map(it=>`<div class="it ${cur===it.id?'on':''}" onclick="LdlvPick('${o.uid}',${L.dlvPop.idx},'${it.id}')"
+            title="${esc(it.name)} · R${it.rarity}">
+            <span class="rr">${hubStars(it.rarity)}</span><span class="nm">${esc(it.name)}</span>
+            <span class="ck">${cur===it.id?'✓':''}</span></div>`).join('')
+      : '<div class="em">这个方向没有可出货的物品。</div>';
+    return `<div class="lo-dlvpop" style="left:${cx}px;top:${cy}px" onclick="event.stopPropagation()">
+        <div class="hd"><b>出料口 #${L.dlvPop.idx} 出货物品</b>
+          <span class="c-id">${esc(hubDomainName(dom))} · ${cands.length} 件</span>
+          <span class="x" onclick="LdlvClose()" title="关闭">×</span></div>
+        ${cur?`<div class="it on" onclick="LdlvPick('${o.uid}',${L.dlvPop.idx},'${cur}')" title="取消这件出货">
+            <span class="rr"></span><span class="nm">（取消出货）</span><span class="ck"></span></div>`:''}
+        ${body}
+      </div>`;
+  })();
+  const cells=L.objs.map(o=>{
+    const b=byBp(o.id);
+    const px=o.x*CELL, py=o.y*CELL, w=o.w*CELL, d=o.d*CELL;
+    const on=L.sel.indexOf(o.uid)>=0;
+    /* 物流件：1×1，接口方向由 lgSvg 自己画（边上的进/出色条 + 中心功能字形或流向箭头）。
+       不再用「1 格上接口坐标退化」那套说法 —— rotation.y 解出来的是流向，可以逐边画准。 */
+    if(b.isLogi){
+      /* ⭐v106：弯头格 tooltip 的「进」也按真实拓扑（flowIn），与色条/弯道弧同一口径 */
+      const _fin=(b.lgType==='Belt'||b.lgType==='Pipe')?flowIn(o.x,o.y,b.lgMedium==='管道'):null;
+      const ttl=esc(b.name)+' · 走向 '+o.rot+'°（'+LdirName(o.rot)+'） · '+esc(b.lgMedium)
+        +' '+b.lgPerMin+' 个/分钟'
+        +' · 接口：进 '+(_fin?LGNAME[_fin]:lgSideNames(b,o.rot,'in'))+' / 出 '+lgSideNames(b,o.rot,'out');
+      return `<div class="lo-cell ${b.lgMedium==='管道'?'lgp':'lgb'} ${on?'sel':''}${o.lock?' lock':''}" data-uid="${o.uid}"
+          style="left:${px}px;top:${py}px;width:${w-2}px;height:${d-2}px"
+          title="${o.lock?'【已锁定】':''}${ttl}"
+        >${lgSvg(b,o.rot,flowIn(o.x,o.y,b.lgMedium==='管道'))}</div>`;
+    }
+    const fp=Lfp(b);
+    /* 这台设施选了配方吗？选了就把产出物品标在格子上、并给接口分「走 / 不走」 */
+    const rec=o.r?RbyId(o.r):null;
+    const rp=rec?RportSets(rec):null;
+    const prod=o.prod||((rec&&rec.outcomes&&rec.outcomes[0])?rec.outcomes[0].name:'');
+    /* ⭐v103：散布机 tooltip 前缀 —— 通入的气体 + 环境范围（数据 FactoryVaporizerTable） */
+    const vp=vaporizerOf(b);
+    const vpTtl=vp?('【环境圈：'+esc(envGasName(o.gas||1))+' · 环境 '+vaporizerSide(b)[0]+'×'+vaporizerSide(b)[1]+' 格（外扩 '+vaporizerSide(b)[2]+'）】'):'';
+    let ports='';
+    (b.ports||[]).forEach(p=>{
+      const q=LportXY(p,o.rot,fp[0],fp[1]);
+      if(q.x<0||q.x>=o.w||q.z<0||q.z>=o.d) return;
+      /* 标记贴在建筑**内侧**、紧挨自己的边框（不再压格线）——
+         压格线时有一半伸进邻格，邻格一放传送带就互相压字。这里用 padding box 坐标系：
+         内框尺寸 = 占地格数×14 - 5（两侧 1.5px 边框 + 2px 的格间隙），marker 半径 3.5，
+         再留 0.5px 空隙 → 中心距内沿 4px。 */
+      const dir=LportDir(q,o.w,o.d);
+      const dx=dir==='l'?-1:dir==='r'?1:0, dz=dir==='u'?-1:dir==='d'?1:0;
+      const INW=o.w*CELL-5, IND=o.d*CELL-5, E=4;
+      const pcx=dx?(dx>0?INW-E:E):(q.x*CELL+CELL/2-1.5);
+      const pcy=dz?(dz>0?IND-E:E):(q.z*CELL+CELL/2-1.5);
+      const col=p.kind==='input'?'#186C7D':'#C0561F';
+      const lk=!!dir&&LlogiAt(lgi,o.x+q.x+dx,o.y+q.z+dz,p.isPipe);
+      /* 物料流向：进料口从该边的对侧进来，出料口朝该边出去 */
+      const f=dir?(p.kind==='input'?({u:'d',d:'u',l:'r',r:'l'})[dir]:dir):'';
+      /* 按配方标「走 / 不走」：走的是该相态那套口（组级能力，不是一对一，见 recipe_groups.json） */
+      let pu='';
+      if(rp){
+        const arr=p.kind==='input'?(p.isPipe?rp.pipeIn:rp.beltIn):(p.isPipe?rp.pipeOut:rp.beltOut);
+        pu=arr.indexOf(p.index)>=0?'use':'off';
+      }
+      const ttl=esc(b.name)+' · '+(p.kind==='input'?'进料口':'出料口')+' #'+p.index
+        +' · '+esc(p.medium||'')+' · '+(p.isPipe?'圆形口(管道)':'方形口(传送带)')
+        +' · 在'+({u:'上',d:'下',l:'左',r:'右'})[dir]+'边'
+        +' · 物料向'+(f?({u:'上',d:'下',l:'左',r:'右'})[f]:'—')+(p.kind==='input'?'进入':'离开')
+        +' · '+(lk?'外侧已接同类物流件':'外侧还没有接')
+        +(rp?(' · 本配方：'+(pu==='use'?('走这里（'+(p.isPipe?'流体料':'固态料')+'）'):'不走这个口')):'');
+      ports+=`<div class="lo-port ${p.isPipe?'pipe':''} ${lk?'on':''} ${pu}" style="left:${pcx}px;top:${pcy}px;background:${col}" title="${ttl}"></div>`;
+      /* ⭐v109 协议核心出货：出料口格**内侧**再放一个可点的指向箭头 ——
+         口本身只有 7px，面积太小不好点；博士也说「内部空白面积大」，那就把交互放到里面。
+         箭头就在口那一格、朝外指（离边框 11px 处），点它开选货清单；选了货就变绿、旁边标名字。 */
+      if(hubIsHub(b)&&p.kind==='output'){
+        /* ⚠️ 坐标踩坑两版（探针实测，别再回头）：
+           ① 按格中心 + 内推 11px → 9×9 核心在 20px 格下左口格中心才 10px，left=-1；
+           ② 按接口标记的内沿 pcx（左侧恒 =4）+ 内推 11px → left=-7，更糟。
+           根因：左边那一列只有 20px 宽，扣掉边框后没有 22px 的余量可推。
+           → 改成**压在口格中心**、箭头缩到 12px：视觉上是「口 + 朝外箭头」的组合图标，
+             两样都在同一格里，任何格尺寸下都不会溢出。 */
+        const gcx=q.x*CELL+CELL/2, gcy=q.z*CELL+CELL/2;
+        const it=hubPickItem(o,p.index);
+        const px2=gcx+dx*13, py2=gcy+dz*13;
+        ports+=`<div class="lo-dlv${it?' set':''}" style="left:${gcx}px;top:${gcy}px"
+            title="${esc(b.name)} 出料口 #${p.index} —— 点这里选这件货${it?('（当前：'+esc(it.name)+'，再点同类可取消）'):''}"
+            onclick="LdlvOpen('${o.uid}',${p.index})">${LO_DLVARROW[dir]||''}</div>`;
+        if(it) ports+=`<div class="lo-dlvt" style="left:${px2}px;top:${py2}px" title="${esc(it.name)}">${esc(it.name)}</div>`;
+      }
+    });
+    return `<div class="lo-cell ${on?'sel':''}${badMap[o.uid]?' bad':''}${o.lock?' lock':''}" data-uid="${o.uid}" title="${o.lock?'【已锁定】':''}${vpTtl}${esc(badMap[o.uid]||(rec?Rsummary(rec):''))}" style="left:${px}px;top:${py}px;width:${w-2}px;height:${d-2}px">
+        <span class="lo-glyph">${catGlyph(b)}</span>
+        ${prod&&w>=60?`<span class="lo-prod">${esc(prod)}</span>`:''}
+        ${w>=60?`<span class="lo-name">${esc(b.name)}</span>`:''}
+        ${L.showPort?ports:''}
+      </div>`;
+  }).join('');
+  const dm=L.pick?Ldims(L.pick,L.pickRot):null;
+  /* 物流件汇总 + 传送带最长连通段 */
+  const lgs=L.objs.filter(o=>{ const b=byBp(o.id); return !!b&&!!b.isLogi; });
+  const isPipePiece=o=>{ const b=byBp(o.id); return b&&b.lgMedium==='管道'; };
+  const pipeN=lgs.filter(isPipePiece).length, beltN=lgs.length-pipeN;
+  const funcN=lgs.filter(o=>{ const b=byBp(o.id); return b.lgType!=='Belt'&&b.lgType!=='Pipe'; }).length;
+  const longest=(function(){
+    const m={}, seen={};
+    lgs.forEach(o=>{ const b=byBp(o.id); m[o.x+','+o.y]=b.lgMedium; });
+    let best=0;
+    Object.keys(m).forEach(k=>{
+      if(seen[k]) return;
+      const med=m[k]; let n=0; const stack=[k]; seen[k]=1;
+      while(stack.length){
+        const cur=stack.pop(); n++;
+        const pr=cur.split(','), x=+pr[0], y=+pr[1];
+        [[1,0],[-1,0],[0,1],[0,-1]].forEach(dd=>{
+          const kk=(x+dd[0])+','+(y+dd[1]);
+          if(m[kk]===med&&!seen[kk]){ seen[kk]=1; stack.push(kk); }
+        });
+      }
+      if(n>best) best=n;
+    });
+    return best;
+  })();
+  /* 左栏顶部：说清默认列了哪几类、共多少项（数字从数据算，不写死） */
+  const grp=[['生产',['基础加工','组件加工']],['电力',['电力设施']],
+             ['存储物流',['仓储物流','物流辅助']],['核心结构',null],['物流件',['物流件']]];
+  const cnt=g=>(g[1]?all.filter(b=>g[1].indexOf(b.categoryName)>=0)
+                     :all.filter(b=>LO_KEEP_IDS.indexOf(b.id)>=0))
+                    .filter(b=>LO_SKIP_IDS.indexOf(b.id)<0).length;
+  /* 选中的生产设施：左栏顶部给它一个配方下拉（同机种可批量套用）。
+     配方数据来自 DB.machine_recipes（machineId ↔ 建筑 id），产能由 Rrate 现算。 */
+  const rInfo=RselectedInfo();
+  const rRt=(rInfo&&rInfo.recipe)?Rrate(rInfo.recipe):null;
+  const rCarrier=rt=>{
+    if(!rt) return '';
+    const b=Rcarriers(rt.solidIn,false), p=Rcarriers(rt.fluidIn,true);
+    const parts=[];
+    if(b) parts.push('传送带 '+b+' 条（固态 '+rt.solidIn+'/分 ÷ 30）');
+    if(p) parts.push('管道 '+p+' 条（流体 '+rt.fluidIn+'/分 ÷ 120）');
+    return parts.length?parts.join(' · '):'这配方不用外接料';
+  };
+  const recipeBlock=(rInfo&&rInfo.recipes.length)?`
+    <div class="lo-rp">
+      <div class="lo-ph">🧾 配方 · <b>${esc(rInfo.building.name)}</b> — 可选 ${rInfo.recipes.length} 条${rInfo.count>1?' · 会同时改选中的 '+rInfo.count+' 台同机种':''}</div>
+      <select class="lo-sel" onchange="LsetRecipe(this.value)">
+        <option value=""${rInfo.chosen.length?'':' selected'}>— 未指定 —</option>
+        ${rInfo.recipes.map(r=>`<option value="${esc(r.id)}"${rInfo.chosen.indexOf(r.id)>=0?' selected':''}>${esc(r.outcomes.map(x=>x.name).join('+'))} ← ${esc(r.ingredients.map(x=>x.name+(x.count>1?'×'+x.count:'')).join('+'))}</option>`).join('')}
+      </select>
+      ${(rInfo.chosen.length===1&&rRt)?`
+        <div class="c-sub" style="margin-top:6px"><span>${esc(Rsummary(rInfo.recipe))}</span></div>
+        <div class="c-sub" style="margin-top:4px"><span>单台产能 <b>${rRt.out.map(x=>esc(x.name)+' '+x.perMin+'/分').join('、')}</b> · 耗时 ${rRt.seconds} 秒/轮 · ${rRt.roundsPerMin} 轮/分</span></div>
+        <div class="c-sub" style="margin-top:4px"><span>单台进料要：${esc(rCarrier(rRt))}</span></div>
+        <div class="c-sub" style="margin-top:4px"><span class="c-id">接口序号是<b>同类接口内的下标</b>，且只是「这几种料可以走哪几个口」的<b>集合</b>，不是一对一 —— 详见页面说明。</span></div>`:''}
+      ${rInfo.chosen.length>1?`<div class="c-sub" style="margin-top:6px"><span class="c-id">选中的这几台配方不一致（共 ${rInfo.chosen.length} 种）；下拉里选一条会统一改。</span></div>`:''}
+    </div>`:'';
+  /* ⭐v103 左栏气体选择块 → ⭐v104 改为**画布就地选**（博士：「想要点机器就地选」）：
+     选中散布机时浮动条直接出现在机器正上方，左栏这份入口撤掉（双入口语义混乱）。
+     范围/速率的完整说明挪进帮助手册💨区块。 */
+  /* ---------- 产线闭环（排布器 v1）的输入块 + 报告 ---------- */
+  const tgts=RwTargets();
+  const tgtSel=`<select class="lo-sel" onchange="Ltgt(this.value)">
+      ${L.tgt?'':'<option value="">— 选目标物品 —</option>'}
+      ${tgts.map(t=>`<option value="${esc(t.id)}"${L.tgt===t.id?' selected':''}>${esc(t.name)}（${esc(t.machine)}${t.ways>1?' · '+t.ways+' 种做法':''}）</option>`).join('')}
+    </select>`;
+  const P=L.plan;
+  /* ⑤-1 局部锁定：数一下锁了多少件（标题栏 / 按钮上的计数都用同一份） */
+  const lockN=L.objs.filter(o=>o.lock).length;
+  const lockMach=L.objs.filter(o=>o.lock&&o.planRole==='machine').length;
+  const wAll=(P&&L.objs.some(o=>o.planRole))?P.res.warns.concat(P.route.warns):[];
+  /* 第 1 层约束校验要用的量（提前算，报告里用） */
+  const bw=Rbandwidth(L.objs);
+  const th=Rtheories(pw.total, Lregion());
+  const lim=RlimitChecks(L.objs);
+  const st=Rstorage(pw.total);
+  /* 原料需求直接用生成时算好的那份（口径见 rawNeedOf），不在这里重算一遍 */
+  const rawNeed=(P&&P.rawNeed)?P.rawNeed:{};
+  /* 评价函数按**当前画布**算：手动加/删了机器，分数也跟着变 */
+  const sc=(P&&P.plan)?Rscore(P.res, P.plan, P.route, rawNeed):null;
+  const planReport=(P&&L.objs.some(o=>o.planRole))?Rreport(P,pw,bw,th,lim,st,rawNeed,sc):'';
+  const planBlock=`<div class="lo-rp lo-plan">
+      <div class="lo-ph">🏭 <b>产线闭环（排布器 v2）</b> <span class="lo-tag">2026-09-21</span> <span class="lo-tag">评价函数 v1</span> <span class="lo-tag">吞吐体检 v1</span> —— 选目标物品 + 速率，一键展开配方树 · 摆机器 · 连管线 · 打分</div>
+      <div class="lo-bar" style="margin:8px 0 0">
+        <span>目标物品：</span>${tgtSel}
+        <span>速率：</span><input class="lo-num" type="number" min="1" step="1" value="${L.rate||10}" oninput="Lrate(this.value)"><span class="lo-tag">个/分钟</span>
+        <button class="lo-size on" onclick="LawRun(Linit().tgt, Linit().rate)">生成产线</button>
+        <button class="lo-size" onclick="LmtAdd()" title="⑥-2 多目标：再加一个目标物品一起展开 —— 多个目标共享的中间料只建一套，再分流给各条链">＋ 目标</button>
+        <button class="lo-size ${L.selfLoop?'on':''}" onclick="LselfLoop()" title="开：环里的料（惰气那种）自己循环，报告给出「在哪台机器塞什么启动料」；关：那种料按外部输入处理">闭环自持：${L.selfLoop?'开':'关'}</button>
+        <button class="lo-size ${L.shipIn?'on':''}" onclick="LshipIn()" title="开：出发地（方向见下方从/到下拉，默认四号谷地）集成工业能产的全部物品都能传（游戏口径：解锁过产能就行、仓库有没有无所谓）；这条链缺的原料/半成品排在最前，全量可传清单在折叠区里可搜索；选中谁，本地就不建谁和它的上游；关：原料一律按野外采集 / 本地自产">跨地区收货：${L.shipIn?'开':'关'}</button>
+        <button class="lo-size ${L.pickShow?'on':''}" onclick="LpickToggle()" title="⑥-3 跨基地选点：多个目标放哪个地区更省 —— 按矿脉分布/机器限定/收货压力穷举分配，含口径①地区合计收货反推与口径②取货口建模；只出建议不摆画布">选点建议</button>
+        <button class="lo-size ${lockMach?'on':'off'}" onclick="Lreroll()" title="锁定件原地不动，其余机器重新分层摆位并绕开它们（管线会整条重铺）。锁定用工具栏的「锁定选中」">重排其余${lockMach?('（锁 '+lockMach+' 台）'):''}</button>
+        <button class="lo-size" onclick="LawClear()">清掉产线</button>
+        <button class="lo-size" onclick="LsavePlan()" title="把这一版的分数存下来；改个参数再生成一条，两套会自动并排比">存方案比一比</button>
+      </div>
+      ${/* ⭐v81（博士：「我要在布局试摆里选怎么还是看不到啊」）：选货条提到产线面板里 ——
+             开关一开立刻能选（没生成产线也显示，用的是轻量展开的候选），不用先跑报告再往下翻。
+             报告的「跨地区收货」段在展示时面板让位（同一份候选不该出现两个网格，报告那份还带 tv 输入框更全）。 */
+        /* ⭐v82 简化：有产线（L.plan && L.plan.res）时选货网格一律归报告 —— v82 起报告收货段
+           不再要求 P.res.shipIn 非空（链外选中也要给提示和网格），面板条件若只看 shipIn 行数
+           会跟报告同时出网格 → 双份。 */
+        ((L.shipIn && (L.shipCands||[]).length && !(L.plan && L.plan.res)) ? LpickGridHtml(true) : '')}
+        ${/* ⭐⑥-3：收货开着时，方向「从/到」下拉紧跟开关行（博士 2026-09-22：为未来新地区留口） */
+          (L.shipIn ? LshipDirHtml() : '')}
+        ${(L.pickShow ? RxlHtml() : '')}
+      ${(L.mt||[]).map((x,i)=>`
+      <div class="lo-bar" style="margin:4px 0 0">
+        <span>＋目标${i+2}：</span>
+        <select class="lo-sel" onchange="LmtTgt(${i},this.value)">
+          ${x.id?'':'<option value="">— 选目标物品 —</option>'}
+          ${tgts.map(t=>`<option value="${esc(t.id)}"${x.id===t.id?' selected':''}>${esc(t.name)}（${esc(t.machine)}${t.ways>1?' · '+t.ways+' 种做法':''}）</option>`).join('')}
+        </select>
+        <span>速率：</span><input class="lo-num" type="number" min="1" step="1" value="${x.rate||10}" oninput="LmtRate(${i},this.value)"><span class="lo-tag">个/分钟</span>
+        <button class="lo-size" onclick="LmtDel(${i})">✕ 移除</button>
+      </div>`).join('')}
+      ${planReport}
+    </div>`;
+  const palHead=f1
+    ? `<div class="lo-ph">只显示「${esc(f1)}」共 ${arr.length} ${f1==='物流件'?'件':'座'}
+         <button class="lo-reset" onclick="Lonly('')">回到默认清单</button></div>`
+    : `<div class="lo-ph">默认只列 ${grp.map(g=>`<b>${g[0]} ${cnt(g)}</b>`).join(' · ')}，共 ${arr.length} 项。<br>
+         采集（矿机/水泵只能放野外矿点）、防御设施、装饰不列；中继器（含息壤中继器）、洒水机 / 给水器 / 滑索架、便捷存取站 / 留言信标，
+         以及配置表里与正常版同名的<b>免电变体</b>（id 带 <code>_nop_</code>）同样不列 —— 要单独看某一类，用上方分类下拉选。
+         ${presetBus?'<br><b>当前选了四号谷地的基地</b>：谷地的存取线由基地自动铺，所以源桩 / 基段这里不列（要自己摆就切到武陵的基地）。':''}</div>`;
+  const legend=L.showPort?`<div class="lo-legend">
+      <span><i class="inp"></i>进料口</span>
+      <span><i class="outp"></i>出料口</span>
+      <span>■ 方形=传送带口 · ● 圆形=管道口</span>
+      <span>标记画在建筑<b>内侧</b>贴边 → 不会和邻格的传送带/管道压在一起</span>
+      <span><i class="bg"></i>传送带件</span>
+      <span><i class="pg"></i>管道件</span>
+      <span>物流件四边的小色条 = 它的进/出边（青进橙出，半青半橙=双向）</span>
+      <span>接口外圈亮绿 = 外侧那格已放同类物流件</span>
+      <span>选了配方后：该配方要走的接口加一圈<b>深青环</b>，不走的口<b>淡化</b>（组级能力，非一对一）</span>
+      <span>格子上多出的褐色小字 = 这台在<b>产出什么物品</b></span>
+      <span>🔒 双线铁灰 = <b>已锁定</b>（拖不动 / 删不掉 / 转不了）</span>
+    </div>`:'';
+  /* ⭐v103→v104 环境圈图例：四色按游戏 UI 校准（稳定青蓝/湿润白/酸性橙黄/息壤翠绿）；
+     通气 6 单位/分 = 官方面板「最低需求」实锤；机器须**完全**处于圈内才生效（官方文本）。 */
+  const gasLegend=L.showGas?`<div class="lo-legend">
+      <span>💨 半透明色块 = <b>气体散布机环境圈</b>（占地 3×3 外扩 5 → <b>13×13</b>，配置表 <code>FactoryVaporizerTable.rangeExtend</code>）</span>
+      ${(DB.blueprint.envDisplay||[]).map(e=>`<span><i style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${envColorOf(e.id)};border:1px solid ${envEdgeOf(e.id)};vertical-align:-1px"></i> ${esc(envGasName(e.id))} → ${ENV_NAME[e.id]||('环境'+e.id)}环境</span>`).join('')}
+      <span>多台重叠自然加深 · 色块不挡点击 · 圈色按游戏 UI 校准（近似色）</span>
+      <span>机器须<b>完全处于圈内</b>才受影响 · 一台的圈可同时罩多台 · 通气最低 <b>6 单位/分</b>（官方面板）</span>
+    </div>`:'';
+  return `<details class="note lo-help" style="margin-bottom:12px">
+      <summary><b>🖱 布局试摆（占地沙盘 + 接口 + 物流件）</b> —— 操作手册与数据附录 <span class="lo-tag">点开 / 收起</span></summary>
+      <div style="margin-bottom:4px"><span class="lo-tag">接口标记 v3 · 2026-09-21</span> <span class="lo-tag">基地 / 地区分开 v1 · 2026-09-21</span> <span class="lo-tag">谷地预设线 v1 · 2026-09-21</span> <span class="lo-tag">评价函数 v1 · 2026-09-21 晚</span> <span class="lo-tag">约束补齐 v1 · 2026-09-21 晚</span> <span class="lo-tag">局部锁定 v1 · 2026-09-22</span> <span class="lo-tag">分流器多摆 v1 · 2026-09-22</span> <span class="lo-tag">连通率 v1 · 2026-09-22</span></div>
+      <b>选基地就在工具栏最左边的「基地」下拉里</b> —— 8 片基地（四号谷地 4 + 武陵 4），
+      选中会同时设好画布边长、并切到<b>该地区的存取线规则</b>；右边的 40/50/70/80 是<b>自由模式</b>，
+      只设边长、不带地区规则。当前是哪种模式，看下拉右边那枚标签。<br>
+      <b>格子太小、物流件上的流向箭头看不清？</b>工具栏的「格子」可切 <b>14 / 20 / 26 / 32 px</b>，
+      默认 <b>20px</b>（比原来的 14px 大一圈）。物件、图标、网格线一起等比放大，已摆好的东西不会动；
+      放到超出容器宽度时，画布区可以横向滚动。<br>
+      左栏点选建筑 → 画布点击摆放（吸附网格）；<b>单击</b>已放建筑选中、<b>双击</b>移除；
+      在<b>空白处拖拽</b>框选一片，拖动选中项可整体移动。
+      选中后 <code>R</code> 原地转 90°（接口跟着转，能看出进料/出料换边）、<code>Del</code> 删除、
+      <code>Ctrl+D</code> 复制、<code>Ctrl+Z</code> 撤销、<code>Ctrl+Y</code> 重做。<br>
+      <b>🔒 局部锁定</b> <span class="lo-tag">路线图 ⑤-1 · 2026-09-22</span>：选中满意的件 → 工具栏「<b>锁定选中</b>」（或按 <code>L</code>），
+      它会变成<b>双线铁灰 + 右上角小锁</b>：<b>拖不动、删不掉、转不了、也不参与复制</b>，双击同样不会误删。
+      排布器那一栏的「<b>重排其余</b>」把这些锁定的机器当<b>固定件</b>（位置一格不动），
+      其余机器重新分层摆位并<b>绕开</b>它们，管线整条重铺 —— 手调好的那几台再也不怕被下一次生成冲掉。
+      想全放开就点「解锁全部」。<br>
+      <b>物品进出口</b>：进料口青、出料口橙；<b>方形=传送带口，圆形=管道口</b>。
+      标记贴在建筑<b>内侧</b>紧挨边框（不再是压格线跨出去一半）——
+      所以邻格就算放了传送带/管道也不会互相压字；贴边位置本身就说明「口在这条边上」。
+      鼠标悬停能看到是进/出、第几号、哪条边、以及<b>物料往哪边流</b>。
+      接口外圈<b>亮绿</b> = 正对外侧那格已经放了同类物流件（接上了）。<br>
+      <span class="lo-tag">看不到标记的话：先按 Ctrl+F5 强刷一次（旧版本页面没有这层标记）；</span>
+      工具栏的「接口」按钮也能把它整块收起/放回。<br>
+      <b>💨 气体散布机 · 环境圈</b> <span class="lo-tag">v104 · 2026-09-23</span><br>
+      摆下气体散布机后，画布上它周围那块<b>半透明方形</b>就是环境范围 —— 占地 3×3 外扩 5 格 = <b>13×13</b>
+      （配置表 <code>FactoryVaporizerTable.rangeExtend</code>；形状与游戏一致是<b>方形</b>，博士 2026-09-23 实测）。
+      <b>点机器就地换气</b>：单击选中散布机 → 机器正上方浮出四个色块按钮，点一下即换通入的气体（圈色跟着变；
+      框选多台一起换）—— v103 的左栏入口已并入这里。四种气体对应四种环境（游戏「本设备可生成的环境一览」实拍校准）：
+      <b>惰气 → 稳定（青蓝）/ 水蒸气 → 湿润（白）/ 酸气 → 酸性（橙黄）/ 息壤气 → 息壤（翠绿）</b>
+      （GenEnv 来自 <code>FactoryEnvDisplayTable</code>；v103 曾按特效资源名猜色把稳定/湿润对反，v104 按博士截图纠正）。
+      多台的圈重叠会自然加深（湿润的白圈单独加了浓度，浅画布上也能看清）；色块<b>不挡点击 / 框选 / 摆放</b>；
+      工具栏「环境圈」按钮可整层收起（收起不影响换气）。散布机持续吃气：最低 <b>6 单位/分</b>（官方面板「最低需求」口径）·
+      储气上限 30。<br>
+      <b>环境影响生产</b>（v104 起，报告会点名）：机器须<b>完全处于圈内</b>才受影响，一台的圈可同时罩多台；
+      部分配方要在特定环境才生效 —— <b>气态反应炉</b>的气态灼铜（酸性）/ 实验息壤铜气（稳定）整组依赖环境，
+      <b>提纯机</b>省料版（分离芯 2→1）与<b>天有洪炉</b>气液模式（富集碳 2 → 普通碳 1）没环境时游戏里跑不起来，
+      产线报告的「💨 环境依赖」段会列出这些机器与所需气体；配方页这 5 条配方也标了「💨 需 XX 环境」。<br>
+      <b>物流件</b>：左栏「物流件」一栏是配置表里的 10 件 1×1 件 —— 传送带、管道、汇流器、分流器、
+      管道汇流器、管道分流器、物流桥、管道桥、物品准入口、管道准入口。
+      每件在自己的四条边上画出<b>进/出</b>：<b>青条=进、橙条=出</b>，半青半橙=这条边双向。
+      所以 <b>汇流器</b>是「左/下/右进、上出」，<b>分流器</b>是「下进、右/上/左出」，
+      <b>物品准入口</b>是「下进上出」，<b>物流桥</b>四条边都双向；传送带/管道画一个流向箭头。<br>
+      方向来自配置表每个接口的 <code>rotation.y</code>（那是<b>物料流向</b>，进料口在流向的反侧），
+      已用全部 267 个建筑接口回代校验（266 个吻合，唯一例外是 3×1 的仓库存取口 —— 1 格厚时
+      z=0 与 z=D-1 是同一条线，几何退化）。**方位只说画布的上/下/左/右，不声称游戏内的绝对方位。**<br>
+      点选一件后<b>在空白格按住拖动</b>，沿拖拽主轴（横或竖）一次铺满一排；<code>R</code> 换走向。
+      压到建筑或已有物流件的格子会自动跳过。<br>
+      左栏默认只列 <b>生产 / 电力 / 存储物流 / 核心结构 / 物流件</b>，采集、防御、装饰不占位置。
+      下面的计数区会给出物流件件数、传送带最长连通多少格、接口接上了几个，以及存取线的连接情况。<br>
+      <b>仓库存取线</b>（源桩 / 基段 / 存货口 / 取货口）：配置表写明基段「需要和仓库存取线源桩或其他<b>生效的</b>基段相连」，
+      存货口与取货口「只能贴靠仓库存取线放置」。这里照游戏的实际判定来 —— <b>两条边有接触就算相连</b>
+      （可以横向并排、可以 L 形拐弯、错开一两格也行，不要求对齐）；没接上的件会在画布上<b style="color:#C0392B">标红</b>，
+      和游戏里那块变红的预览是一个意思。计数区还能按建造区显示基段 / 源桩的满级上限。<br>
+      <b>两个地区的仓库存取线规则完全不同，沙盘已经分开处理</b>（在「基地」里选一片就会切过去）：<br>
+      · <b>四号谷地</b> —— 存取线由基地升级后<b>自动铺在基地外侧边缘</b>，玩家<b>不用摆</b>。
+      所以选谷地时左栏<b>不给源桩 / 基段</b>，存货口 · 取货口也<b>不判「贴靠」</b>（判不了：预设线的坐标属关卡场景数据，
+      配置表 <code>FactoryBusStructureTable</code> 里那 4 条记录的坐标全是 0）。
+      配置表里谷地的存取线档位也确实没写数量，跟"不用自己摆"对得上。<br>
+      &nbsp;&nbsp;<b>预设线已经画到画布上了</b>：画布<b>外缘</b>那条青色带子（源桩是角上的褐色方块）就是它 ——
+      <b>整条在画布框外面，一格都不占、不挡摆放、也不进撤销栈</b>。
+      摆法照基地面积页那张示意图：枢纽区 = 源桩占左上角 + 上边 / 左边铺满，副基地 = 左上一条边。
+      ⚠️ <b>这是示意图的摆法，不是游戏内实测的绝对方位</b>（真实坐标属关卡场景数据，配置表里全是 0）——
+      要跟游戏里对齐就用「旋转视角」转镜头，将来拿到实测截图 / 坐标再按实测修正。<br>
+      · <b>武陵</b> —— 源桩 + 基段<b>要自己摆</b>，有满级上限（源桩 <b>2</b> / 基段 <b>12</b>·<b>25</b>，按建造区档位解锁），
+      没接上的件<b style="color:#C0392B">标红</b>。这一套只管武陵，别套到谷地头上。<br>
+      <b>生产配方：选中一台生产设施，左栏顶部就会出现配方下拉</b> <span class="lo-tag">配方 v1 · 2026-09-21</span><br>
+      配置表里 <b>317 条机器配方</b>靠 <code>machineId</code> 挂到设施上，<b>18 台生产设施</b>有配方
+      （灌装机 81 条 · 拆解机 75 条 · 精炼炉 28 条 … 数量差别很大，下拉里按 <code>sortId</code> 排）。
+      选一条之后：格子上多出一行<b>褐色小字 = 产出物品</b>，悬停给出完整配方；
+      该配方要走的接口加一圈<b>深青环</b>、不走的口<b>淡化</b>。<br>
+      ⚠️ <b>接口标注是「集合」不是一对一</b>：配置表说的是「这份配方的<b>固态料</b>可以走 0/1/2 号传送带口、
+      <b>流体料</b>走 3 号管道口」—— 能说"走哪几个口"，<b>不能说"1 号料进 1 号口"</b>，
+      因为配方料数和接口数根本对不上（灌装机 7 个进料口、每份配方最多 2 种料）。
+      判据链：<code>FactoryItemTable.phaseType</code>（1 固态 / 2 液态 / 4 气态）→ 固态走传送带口、液态气态走管道口，
+      已用<b>全部 317 条配方</b>回代验证，需要的口 0 例漏声明。<br>
+      另：配置表里有 <b>2 处「组多声明」</b>（天有洪炉两组的流体产出口序号 5 实际不存在）——
+      已记在 <code>recipe_groups.json</code> 的 <code>anomalies</code> 里，属配置表自身的不一致，<b>不是解析错误</b>。<br>
+      <b>产能与配比</b>：选中共 1 条配方时给出单台产能（每分几轮、每种料每分钟多少）与<b>进料要几条带</b>
+      （固态 ÷ 30 个/分、流体 ÷ 120 个/分）。这套换算做成了<b>不碰 DOM 的纯函数</b>
+      （<code>Rrate</code> / <code>Rcarriers</code> / <code>Rplan</code>）—— 博士要的「全基地产线最精简 + 产能最大化」
+      排布器以后直接调它们，不用再重算一遍。<br>
+      <b>产线闭环：选目标物品 + 速率 → 一键展开配方树 · 摆机器 · 连管线</b><br>
+      <b>「闭环自持」开关</b>：有些料**只有回收路线**（惰气只能靠拆解罐子得到，而罐子又要用惰气灌）。
+      关着的时候这种料按「外部输入」处理（链更短、更好摆）；打开就**让它自己循环**，
+      并在报告里写清「**在哪台机器先塞什么、塞几个**」—— 这就是产线怎么启动。<br>
+      <b>多台并联 + 吞吐体检</b> <span class="lo-tag">路线图 ②a · 2026-09-21 晚</span>：一层里上游 / 下游台数不同时，连 <b>max(上游, 下游, 载具上限反推出来的条数)</b> 条 ——
+      保证**每台上游都有出线、每台下游都有进线**，并且线数**不低于单线载具上限算出来的条数**（传送带 30 个/分 · 管道 120 个/分）。
+      报告里逐条给出「要几条 / 实际连了几条 / 单线负荷」，并判 <b>会堵 / 紧 / 通畅</b>（单线负荷 &gt; 上限 = 会堵；≥ 90% = 没有余量）。<br>
+      &nbsp;&nbsp;⚠️ <b>实测结论：按当前配置表，真并联不会触发</b> —— 317 条配方里<b>单台产出最高的是砂叶粉末（粉碎机）15/分</b>，
+      远低于单条传送带的 30/分（管道 120/分更高）。也就是说「一台机器一条线」天然就在上限内，不会堵。
+      所以这一步的价值是：① 报告现在<b>把每条线的实测负荷摆出来</b>（不再只写一句「至少要几条并行」）；
+      ② 数据以后变了（出现单台产能超上限的机器）它会自动多铺线，改数据不用改代码。<br>
+      &nbsp;&nbsp;汇流 / 分流：只要下游进料口够，多台上游各接一条线就是「汇流」，**不需要汇流器**；同理出料口够就不用分流器 ——
+      只有**口不够**（或能省下足够多条线，见 <code>RW_MERGE_MIN_SAVE</code>）时才会<b>自动摆</b>汇流器 / 分流器。<br>
+      &nbsp;&nbsp;<b>分流器按「每 3 台下游一个」并排摆</b> <span class="lo-tag">⑤-2 · 2026-09-22</span>：
+      分流器是 <b>1 进 3 出</b>，所以一台上游要喂 5 台下游就得摆 <b>2 个</b>（各占上游一个出料口）。
+      ⚠️ 旧版<b>只摆一个</b>，第 4 台下游起既不接线也不报警（报告还写着「手动连 0」）—— 现在每一条没连上的线都会
+      <b>逐条点名</b>（「还有 N 台下游没连上」），生成消息里也会报<b>汇流 X / 分流 Y</b> 的实际摆放数。<br>
+      &nbsp;&nbsp;<b>连通率：难例会自动加宽机器间距再搜一轮</b> <span class="lo-tag">⑤-3 · 2026-09-22</span>：
+      宽链的手动连多半是「机器挨太紧、竖缝里塞不下并行线」——所以当最优方案<b>还剩下手动连</b>时，
+      会自动补跑一组<b>宽间距档（间 6 / 8 × 层内换行）</b>，谁分高用谁；<b>一次就全连通的链不会多花这份时间</b>。
+      同时把择优口径改成「<b>手动连的权重压过线长</b>」（少一条线是功能缺陷，多铺几格只是效率问题）—— 实测全库
+      52 个中大型工况里<b>零手动连从 44 个提到 51 个</b>，赤铜耐压罐@30 手动连 0。<br>
+      <b>评价函数：给一套布局打分</b> <span class="lo-tag">路线图 ① · 2026-09-21 晚</span><br>
+      生成产线后立刻给一个 <b>0~100 的分数</b>，五个成本项各自用「<b>理论下界 ÷ 实测</b>」算，再按固定权重合成：
+      <b>紧凑度 20%</b>（行数；下界 = Σ 各层最高机器深 + 层数 × 最小通道）· <b>台数效率 20%</b>（下界 = Σ 需求 ÷ 单台产能）·
+      <b>走线效率 30%</b>（物流格数；下界 = Σ 每段上下游中心的曼哈顿距离）· <b>集散效率 15%</b>（汇流 / 分流器个数，越少越好）·
+      <b>料耗效率 15%</b>（整台凑整带来的产出富余，越少越好）。
+      命中硬约束另扣：超协议容量 −30 · 原料超全图采集上限 −25 · 超防御建筑上限 −15 · 超滑索上限 −10 · 走线连不上或单线会堵每条 −3。<br>
+      <b>「存方案比一比」</b>把当前这版分数存下来（最多 5 套）；换个速率或换个目标再生成一条，报告底部会把它们<b>并排列表比较</b>（分高的一列加粗）——
+      这就是「这版比那版好」的依据。⚠️ 权重是**约定**（写在 <code>RW_W</code> 常量里），不是游戏真理：它的作用只是让排序口径固定、可复现、可调。<br>
+      ⚠️ **仍然做不到的**：走线只做格内 L 形 / BFS 最短路，端口或走线被前面那条线占了的时候仍会连不上几条（报告里逐条点名，不静默丢）；
+      不做全局最优布局搜索（那是路线图 ③ 的局部交换 / 平移搜索）；不做物料排队仿真。<br>
+      <b>⚡ 电力与野外开采（配置表能取到的部分）</b><br>
+      <b>用电</b>：每座建筑的用电取配置表 <code>powerConsume</code>，计数区实时给出「用电 X 电 · 用电设备 N 台」，
+      还按分类拆分。<br>
+      <b>发电规则</b>（教学文案原文，可复核）：<b>热能池</b>是发电设备，「利用<b>源矿</b>或<b>电池</b>提供电能」，
+      <b>电池的发电效率高于源矿</b>；电网有「总发电功率」；<b>用电功率超过发电功率会消耗"存电"</b>（协议核心有存电），
+      存电耗尽设备停转。<br>
+      ⚠️ <b>每台热能池到底发多少电，配置表里没有</b> —— 建筑表只有 <code>needPower</code> / <code>powerConsume</code> 两个字段，
+      <b>没有发电量</b>；文案也只做定性比较。所以发电侧用的是<b>社区数值</b>（报告里会标明出处，要当硬约束用建议游戏里核一下）。<br>
+      <b>存电</b> <span class="lo-tag">路线图 ②c · 2026-09-21 晚</span>：协议核心有存电，<b>社区实测上限 10 万</b>（配置表里没有这一项）。
+      用电超过基础发电（200）的部分就是在吃存电 —— 报告会给出<b>纯靠存电还能撑多少分钟</b>，以及按地区燃料补上这个缺口需要几台热能池。
+      ⚠️ 存电是<b>缓冲不是电源</b>：撑的时间只是留给你补发电的，不能当长期方案。<br>
+      <b>野外开采产量</b>（7 座采集建筑，按建筑表 <code>quickBarType=资源采集</code> 列全）：<br>
+      · 采矿机 —— 便携源石矿机 / 电驱矿机 / 二型电驱矿机 都是 <b>20/分</b>（配置表 <code>msPerRound</code> 3000），
+      可采 <b>源矿 / 紫晶矿 / 蓝铁矿</b>；<br>
+      · <b>水驱矿机</b> —— <b>20/分</b>，可采 <b>赤铜矿</b>（**唯一能采赤铜矿的设备**），
+      靠<b>清水自供能</b>（建筑表里它确实有 1 个管道进料口），<b>不需要通电</b>；每台耗水 <b>20/分</b>，一台水泵能供 <b>3 台</b>；<br>
+      · 水泵 <b>60/分</b>；<b>二型耐酸水泵</b> <b>60/分</b>，抽 <b>沉积酸</b>（强腐蚀液体）；
+      <b>气体收集泵</b> <b>20/分</b>，采 <b>惰气 / 息壤气</b>，无需通电。<br>
+      <b>矿点清单 · 按小地图与纯度</b> <span class="lo-tag">2026-09-21 四次核查</span> <span class="lo-tag">数据版本 ${RoreMeta().dataVersion}</span><br>
+      矿点位置与数量属**关卡场景数据**（配置表 561 张表全量查过：没有矿点实例表，只有
+      <code>int_minerbase_originium/_quartz/_iron</code> 三种矿机基座交互标记，够不着坐标）。
+      下面是社区资料，但**链条是闭合的** —— 官方 FAQ + 社区攻略 + TapTap 地图工具/地图集 + NGA 实测贴互相印证。<br>
+      <b>⭐ 口径（四次核查后只剩一条）</b>：<b>满采量 = 矿点数 × 20/分</b>（高纯度档）—— <b>一个矿脉只放 1 台矿机</b>。
+      证据：四号谷地全开产能 <b>源矿 560 / 紫晶 240 / 蓝铁 1080</b>（NGA 两帖 + 游民星空 + sticweb <b>四方一致</b>），
+      除以 20 正好 = 28 / 12 / 54 个矿点，与 TapTap 地图工具的矿脉数 <b>逐项相等</b>。<br>
+      <b>⚠️ 我前面两次算错就栽在这一步</b>：最早按「脉数 × 每脉 2~6 点」算，把全图源矿算成 2320~6960/分，
+      <b>虚高 2~6 倍</b>（那 2~6 是矿脉上<b>矿石簇的外观数量</b>，不是能放几台矿机）；后来又拿「清波寨一个区」当赤铜矿全图。
+      现在构建期有自检：按区求和、按地图求和、点数×20 三处对不上就当场报错。<br>
+      <b>每个大地区的可采集最大理论值</b>（<span class="lo-tag">等博士核实</span>）：
+      ${oreMapMaxTable()}
+      <div class="c-sub" style="margin-top:4px"><span class="c-id">
+      两列都是<b>实测</b>：四号谷地是 NGA / 游民星空 / sticweb / TapTap 四方一致；武陵是博士 2026-09-21 武陵简报截图逐区计数 —— 赤铜矿 23 高 + 5 低 = <b>510/分</b>、源矿 22 高 + 10 低 = <b>540/分</b>、蓝铁 6 高 = <b>120/分</b>，全部与游戏内 UI「理论最大开采值」一致 —— <b>闭环，无待核项</b>。</span></div>
+      <b>按小地图看矿点（点数 / 满纯度产量）</b>：
+      ${oreZoneTable()}
+      <div class="c-sub" style="margin-top:6px"><span class="c-id">
+      · 单位：源矿 / 紫晶矿 / 蓝铁矿 / 赤铜矿都是<b>矿点</b>（1 个矿点放 1 台矿机）；
+        赤铜矿另有叫法「矿源点」，也是 1 点 1 台水驱矿机。<br>
+      · 赤铜矿的 6 个产区里，清波寨 / 藏剑谷 / 试验园区 / 北部禁区<b>都放不了次级核心</b>，
+        水泵的电要从武陵城或景玉谷拉过去；清波寨偏远那处要用暗管供水，首墩那处矿点与水场有高低差（栖云林地容易漏）。<br>
+      · 现在只有「每个区多少个点」，<b>没有逐点坐标</b> —— 要排野外段还是需要截图或坐标。<br>
+      · 「稀有矿物」（轻/中/重黯石、燎石、武陵石、协议纹石）是野外<b>手动拾取</b>的武器调谐石，不是矿脉；
+        惰气 / 息壤气属<b>气体节点</b>（走气体收集泵）。<br>
+      </span></div>
+      <b>矿点纯度</b>：只有两档 —— 低纯度 <b>6 秒 1 个（10/分）</b>、高纯度 <b>3 秒 1 个（20/分）</b>；
+      出矿速率<b>只由矿点纯度决定，与矿机型号无关</b>（型号只影响耗电）。<br>
+      ⚠️ <b>纯度是按「区」分级解锁的</b>，不是整张大地图一起提：四号谷地的「阿伯莉采石场 / 源石研究园」前面几级就满纯度，
+      「<b>供能高地要到 11 级</b>」才满；武陵「<b>景玉谷 8 级</b>」满纯度。所以同一版本、不同玩家的矿点纯度可能不同 ——
+      本页按博士定的「当前版本地区最大值」口径，<b>一律按高纯度 20/分</b>算。
+      想知道自己那份是哪档，在游戏里点矿机看有没有「采集效率提升」提示。<br>
+      <b>滑索：只放野外，不摆进基地</b>（所以左栏试摆清单里没有滑索架 —— 博士 2026-09-21 定的）。
+      滑索架射程 <b>80m</b>、长距滑索架 <b>110m</b>；建造区的 <code>travelPoleLimit</code>（枢纽区 20 / 谷地通道 10 …）约束的就是野外这一层。<br>
+      ${(()=>{const m=RoreMeta(); return m.versionLog.length?('<b>版本记录</b>（版本接口 <code>dataVersion</code> = '+esc(m.dataVersion)
+        +'，游戏 '+esc(m.gameVersion)+'）：'+m.versionLog.map(v=>'<br>　· <b>'+esc(v.version)+'</b>　'+esc(v.note)).join('')+'<br>'):'';})()}
+      ⚠️ <b>水驱矿机 / 气体收集泵 / 二型耐酸水泵 这三台的速率，配置表里没有字段</b>
+      （它们不在矿机表 / 泵表里）—— 上面这三个数是<b>社区实测</b>，已在数据里标 <code>rateSource</code> 并附来源链接；
+      含水驱矿机的 <b>20/分</b> 是与其它矿机一致 + 「1 泵供 3 台、每台耗水 20/分」两条相互印证的推断。
+      ⚠️ <b>矿脉纯度/矿点品级带来的加成属运行时数值</b>，配置表里没有 —— 所以都是**基础速率**。<br>
+      <b>仍然不做</b>（配置表里没有依据，或本来就要玩家实际操作）：物料排队<b>仿真</b>（只按单线负荷做上限判定，不模拟堵料堆积）、
+      传送带绕线<b>寻优</b>、供电<b>覆盖范围</b>校验（射程属关卡场景数据）。单条传送带上限 110 / 管道 80（配置表单位是「米」），
+      验收时当参考值看；<b>格与米的换算配置表没给</b>（modelHeight/gridHeight 比例在 0.65～1.05 之间浮动，不是常数），
+      所以本页一律按<b>格数</b>计，不做米换算。
+    </details>
+    ${legend}
+    ${gasLegend}
+    ${planBlock}
+    <div class="lo-bar">
+      <span>基地：</span>${baseSel}
+      ${baseTag}
+      <span class="lo-sep"></span>
+      <span>画布尺寸：</span>${sizeBtns}
+      <span class="lo-sep"></span>
+      <span>格子：</span>${cellBtns}
+      <span class="lo-sep"></span>
+      <button class="lo-size" onclick="Lrot()" title="旋转选中的建筑 / 待放置朝向">旋转 90°（R）</button>
+      <button class="lo-size" onclick="LrotView()" title="转镜头：整个画布连网格带已摆的东西一起转 90°，摆放数据不动">旋转视角（${L.viewRot||0}°）</button>
+      <button class="lo-size" onclick="Ldup()">复制选中（Ctrl+D）</button>
+      <button class="lo-size" onclick="Ldel()">删除选中（Del）</button>
+      <span class="lo-sep"></span>
+      <button class="lo-size ${lockN?'on':''}" onclick="LlockSel(true)" title="锁住选中的件：拖不动 / 删不掉 / 转不了，重排时位置不动（快捷键 L）">锁定选中${L.sel.length?('（'+L.sel.length+'）'):''}</button>
+      <button class="lo-size ${lockN?'':'off'}" onclick="LunlockAll()" title="一次解锁画布上所有锁定的件">解锁全部${lockN?('（'+lockN+'）'):''}</button>
+      <span class="lo-sep"></span>
+      <button class="lo-size ${L.showPort?'on':''}" onclick="LtogglePort()">接口 ${L.showPort?'显示中':'已隐藏'}</button>
+      <button class="lo-size ${L.showGas?'on':''}" onclick="LtoggleGas()" title="气体散布机的环境范围层：13×13 方形，圈色 = 通入的气体（数据 FactoryVaporizerTable + FactoryEnvDisplayTable）">环境圈 ${L.showGas?'显示中':'已隐藏'}</button>
+      <span class="lo-sep"></span>
+      <button class="lo-size ${L.undo.length?'':'off'}" onclick="Lundo()">撤销（Ctrl+Z）</button>
+      <button class="lo-size ${L.redo.length?'':'off'}" onclick="Lredo()">重做（Ctrl+Y）</button>
+      <button class="lo-size" onclick="Lclear()">清空</button>
+    </div>
+    <div class="lo-wrap">
+      <div class="lo-pal">${recipeBlock}${palHead}${pal||'<div class="empty">没有匹配的分类</div>'}</div>
+      <div class="lo-stage">
+        <div class="lo-canv" style="padding:${CELL+6}px">
+          <div class="lo-canvas" style="--locell:${CELL}px;width:${L.size*CELL}px;height:${L.size*CELL}px;transform:rotate(${L.viewRot||0}deg)">${presetBand}${envLayer}${cells}${gasBar}${dlvPop}</div>
+        </div>
+        <div class="c-sub" style="margin-top:8px">
+          <span>已放 <b>${L.objs.length}</b> 个 · 占地 <b>${used}</b> 格</span>
+          <span>画布 ${L.size}×${L.size} = <b>${totalCells}</b> 格 · 剩余 <b>${totalCells-used}</b> 格</span>
+          <span>已选 <b>${L.sel.length}</b> 个</span>
+          ${lockN?`<span>🔒 已锁定 <b>${lockN}</b> 个</span>`:''}
+          ${L.pick?`<span>当前选择：<b>${esc(L.pick.name)}</b>（朝向 ${L.pickRot}° / ${LdirName(L.pickRot)}，占地 ${dm.w}×${dm.d}）</span>`:''}
+        </div>
+        <div class="c-sub" style="margin-top:4px">
+          <span>物流件 <b>${lgs.length}</b> 件（传送带 ${beltN} · 管道 ${pipeN} · 汇流/分流/桥/阀 ${funcN}）</span>
+          <span>最长连通段 <b>${longest}</b> 格</span>
+          <span>接口已接 <b>${pOn}</b> / ${pAll}</span>
+        </div>
+        <div class="c-sub" style="margin-top:4px">
+          <span>⚡ <b>用电</b>：<b>${pw.total}</b> 电 · 用电设备 <b>${pw.devices}</b> 台</span>
+          ${Object.keys(pw.byCat).length?`<span class="c-id">${Object.keys(pw.byCat).map(k=>esc(k)+' '+pw.byCat[k]).join(' · ')}</span>`:''}
+        </div>
+        <div class="c-sub" style="margin-top:4px">
+          <span>📶 <b>协议容量</b>：<b>${bw.use}</b>${bw.cap!=null?(' / '+bw.cap):''}${bw.cap==null?'<span class="c-id">（自由模式未指定基地，没有上限可对）</span>':''}${bw.over?' · <b style="color:#C0392B">超了 '+(bw.use-bw.cap)+'</b>':''}</span>
+          <span class="c-id">（每座设备的 <code>bandwidth</code> 累加；上限取该建造区满级档 —— 配置表数据）</span>
+        </div>
+        ${presetBus?`
+        <div class="c-sub" style="margin-top:4px">
+          <span><b>仓库存取线：四号谷地由基地升级自动铺设（预设）</b> —— 源桩 / 基段不用自己摆，左栏也不提供；存货口 · 取货口直接贴预设线放置即可。</span>
+        </div>
+        <div class="c-sub" style="margin-top:4px">
+          <span><b style="color:#7FA8A2">画布外缘那条青色带子就是预设存取线</b>（源桩是角上的褐色方块）。
+          ${presetBand?'已经画出来了':'（当前这片基地没有可画的档位）'} —— 整条画在画布框<b>外面</b>，<b>一格都不占、也不挡摆放</b>。</span>
+        </div>
+        <div class="c-sub" style="margin-top:4px">
+          <span>摆法照基地面积页那张示意图：<b>${(presZone&&(presZone.edges||1)>=2)?'源桩占左上角，与之相连的上边与左边铺满':'左上一条边铺满（副基地没有源桩）'}</b>。
+          具体是哪条边随镜头变，要跟游戏里对齐就用工具栏的「旋转视角」。</span>
+        </div>
+        <div class="c-sub" style="margin-top:4px">
+          <span class="c-id">⚠️ 这是<b>示意图的摆法</b>，不是游戏内实测方位 —— 真实坐标属关卡场景数据（配置表 <code>FactoryBusStructureTable</code> 记录在案但坐标全是 0）。</span>
+          <span>也因此这一模式<b>不判「贴靠」</b>，不会出现红块。</span>
+        </div>`:`
+        <div class="c-sub" style="margin-top:4px">
+          <span>存取线：源桩 <b>${nSrc}</b>${hongsCap?' / '+hongsCap.log_hongs_bus_source:''} · 基段 <b>${nBus}</b>${hongsCap?' / '+hongsCap.log_hongs_bus:''}${nBad?' · <b style="color:#C0392B">未连接 '+nBad+' 件</b>':''}</span>
+          ${busZones.length?`<span>上限按：<select class="lo-sel" onchange="Lzone(this.value)">${busZones.map(z=>`<option value="${z.levelId}"${z.levelId===(curZone?curZone.levelId:'')?' selected':''}>${esc(z.domainName)}·${esc(z.zoneName)}</option>`).join('')}</select>满级档位算（只有武陵要给数量）</span>`:''}
+          ${L.base?'':'<span class="c-id">自由模式未指定基地，这一块按武陵那套算；要精确对照就在上面「基地」里选一片</span>'}
+        </div>
+        ${nBad?`<div class="c-sub" style="margin-top:4px;color:#C0392B"><span>画布上标红的存取线件没接上：基段要挨着源桩（可直接，也可经其他基段传递，横向并排 / L 形都行）；存货口 · 取货口要贴靠存取线</span></div>`:''}`}
+        ${(()=>{ const rp=Rpower(L.objs); return rp.total>0?`
+        <div class="c-sub" style="margin-top:4px"><span>⚡ 已摆设备用电 <b>${rp.total}</b> 电（${rp.devices} 台用电设备）—— 这只是<b>用电侧</b>；发电侧（热能池烧源矿 / 电池）配置表里没有发电量</span></div>`:''; })()}
+        <div class="c-sub" style="margin-top:4px"><span class="lo-msg">${esc(L.msg||'')}</span></div>
+      </div>
+    </div>`;
+}
+
+function renderMech(){
+  let arr=DB.mechanics;
+  if(kw){
+    const s=kw.toLowerCase();
+    arr=arr.filter(m=>m.name.toLowerCase().includes(s)||(m.desc||'').toLowerCase().includes(s));
+  }
+  if(!arr.length) return `<div class="empty">没有匹配的设施</div>`;
+  return `<div class="list">`+arr.map(m=>{
+    const o=openSet.has('m:'+m.id);
+    return `<div class="card ${o?'open':''}" data-id="m:${esc(m.id)}">
+      <div class="c-top">
+        <span class="c-name">${esc(m.name)}</span>
+        <span class="c-id">${esc(m.id)}</span>
+        <span class="spacer"></span>
+        <span class="c-cat ${m.domainNames[0]!=='全地区通用'?'acc':''}">${esc(m.domainNames.join('/'))}</span>
+      </div>
+      <div class="star">★ ${esc(mechLabel(m.mechanics))}</div>
+      ${o?`<div class="detail"><div class="d-sec"><div class="d-h">游戏内描述原文</div><div class="c-desc">${esc(m.desc)}</div></div></div>`:''}
+    </div>`;
+  }).join('')+`</div>`;
+}
+
+function fmtIng(list){ return list.map(i=>`<b>${esc(i.name)}</b>×${i.count}`).join(' + ')||'(无)'; }
+
+function renderRecipe(){
+  let arr=DB.machine_recipes;
+  if(f1) arr=arr.filter(r=>(r.machineCategory||'其他')===f1);
+  if(kw){
+    const s=kw.toLowerCase();
+    arr=arr.filter(r=>r.id.toLowerCase().includes(s)||(r.machineName||'').toLowerCase().includes(s)||
+      r.ingredients.some(i=>i.name.toLowerCase().includes(s))||
+      r.outcomes.some(i=>i.name.toLowerCase().includes(s)));
+  }
+  if(!arr.length) return `<div class="empty">没有匹配的配方</div>`;
+  const lim=arr.slice(0,200);
+  /* ⭐v104 环境依赖标签：FactoryMachineCraftTable.gasEnv（build 注入成 DB.recipeEnv，仅 5 条非零）——
+     配方要在对应气体环境里才生效（官方：提纯机省料版/洪炉气液模式/反应炉灼铜整组）。 */
+  const _ENV_NM={1:'稳定',2:'湿润',3:'酸性',4:'息壤'};
+  const _ENV_CL={1:'#3D9FD8',2:'#F4F7F8',3:'#E7AC3F',4:'#43B06E'};
+  return `<div class="list">`+lim.map(r=>{
+    const o=openSet.has('r:'+r.id);
+    const ge=(DB.recipeEnv||{})[r.id];
+    return `<div class="card ${o?'open':''}" data-id="r:${esc(r.id)}">
+      <div class="c-top">
+        <span class="c-name">${esc(r.machineName||'—')}</span>
+        <span class="c-id">${esc(r.id)}</span>
+        <span class="spacer"></span>
+        ${ge?`<span class="c-cat" style="color:#1B6E9E" title="通入${({1:'惰气',2:'水蒸气',3:'酸气',4:'息壤气'})[ge]}制造${_ENV_NM[ge]}环境后才生效（气体散布机，最低 6 单位/分）">💨 需${_ENV_NM[ge]}环境</span>`:''}
+        ${r.seconds!=null?`<span class="c-cat acc">${r.seconds} 秒</span>`:''}
+      </div>
+      <div class="formula">
+        <span class="chain">${fmtIng(r.ingredients)}</span>
+        <span class="arrow">→</span>
+        <span class="chain">${fmtIng(r.outcomes)}</span>
+      </div>
+      ${o?`<div class="detail">
+        ${r.desc?`<div class="d-sec"><div class="d-h">配方说明</div><div class="c-desc">${esc(r.desc)}</div></div>`:''}
+        <div class="d-sec"><div class="d-h">技术参数</div>
+          <div class="row"><span class="tag">配方案组</span><span>${esc(r.group||'—')}</span></div>
+          <div class="row"><span class="tag">总进度 / 每轮</span><span>${r.totalProgress} / ${r.progressRound}</span></div>
+          <div class="row"><span class="tag">每轮耗时</span><span>${r.msPerRound} ms</span></div>
+          <div class="row"><span class="tag">设备分类</span><span>${esc(r.machineCategory||'—')}</span></div>
+        </div>
+      </div>`:''}
+    </div>`;
+  }).join('')+`</div>`+(arr.length>200?`<div class="empty" style="padding:20px">共 ${arr.length} 条，仅显示前 200 条，请细化搜索条件</div>`:'');
+}
+
+function renderBuild(){
+  let arr=DB.build_recipes;
+  if(kw){
+    const s=kw.toLowerCase();
+    arr=arr.filter(r=>(r.name||'').toLowerCase().includes(s)||r.id.toLowerCase().includes(s)||
+      r.ingredients.some(i=>i.name.toLowerCase().includes(s)));
+  }
+  if(!arr.length) return `<div class="empty">没有匹配的建造配方</div>`;
+  return `<div class="list">`+arr.map(r=>{
+    const o=openSet.has('br:'+r.id);
+    return `<div class="card ${o?'open':''}" data-id="br:${esc(r.id)}">
+      <div class="c-top">
+        <span class="c-name">${esc(r.name||r.id)}</span>
+        <span class="c-id">${esc(r.id)}</span>
+        <span class="spacer"></span>
+        ${r.techDomains.map(d=>`<span class="c-cat acc">${esc(d)}</span>`).join('')}
+        <span class="c-cat">R${r.rarity}</span>
+      </div>
+      <div class="formula">
+        <span class="chain">${fmtIng(r.ingredients)}</span>
+        <span class="arrow">→</span>
+        <span class="chain">${fmtIng(r.outcomes)}</span>
+      </div>
+      ${o?`<div class="detail"><div class="d-sec"><div class="d-h">解锁信息</div>
+        <div class="row"><span class="tag">科技树分组</span><span>${esc(r.groups.join(', ')||'—')}</span></div>
+        <div class="row"><span class="tag">地区</span><span>${esc(r.techDomains.join('/')||'—')}</span></div>
+        <div class="row"><span class="tag">可用等级</span><span>${r.usableLevel}</span></div>
+      </div></div>`:''}
+    </div>`;
+  }).join('')+`</div>`;
+}
+
+function renderManual(){
+  let arr=DB.manual_recipes;
+  if(f1) arr=arr.filter(r=>r.domainName===f1);
+  if(kw){
+    const s=kw.toLowerCase();
+    arr=arr.filter(r=>(r.name||'').toLowerCase().includes(s)||
+      r.ingredients.some(i=>i.name.toLowerCase().includes(s)));
+  }
+  if(!arr.length) return `<div class="empty">没有匹配的手工配方</div>`;
+  return `<div class="list">`+arr.map(r=>{
+    const o=openSet.has('mn:'+r.id);
+    return `<div class="card ${o?'open':''}" data-id="mn:${esc(r.id)}">
+      <div class="c-top">
+        <span class="c-name">${esc(r.name||r.id)}</span>
+        <span class="c-id">${esc(r.id)}</span>
+        <span class="spacer"></span>
+        <span class="c-cat ${r.domainName!=='通用'?'acc':''}">${esc(r.domainName)}</span>
+        ${r.rarity?`<span class="c-cat">R${r.rarity}</span>`:''}
+      </div>
+      <div class="formula">
+        <span class="chain">${fmtIng(r.ingredients)}</span>
+        <span class="arrow">→</span>
+        <span class="chain">${fmtIng(r.outcomes)}</span>
+      </div>
+      ${o?`<div class="detail"><div class="d-sec"><div class="d-h">解锁信息</div>
+        <div class="row"><span class="tag">默认解锁</span><span>${r.defaultUnlock?'是':'否'}</span></div>
+        <div class="row"><span class="tag">展示类型</span><span>${r.showingType}</span></div>
+      </div></div>`:''}
+    </div>`;
+  }).join('')+`</div>`;
+}
+
+function renderItem(){
+  let arr=Object.values(DB.items);
+  if(f1) arr=arr.filter(v=>'R'+v.rarity===f1);
+  if(kw){
+    const s=kw.toLowerCase();
+    arr=arr.filter(v=>v.name.toLowerCase().includes(s)||v.id.toLowerCase().includes(s)||
+      (v.desc||'').toLowerCase().includes(s)||(v.content||'').includes(s));
+  }
+  arr.sort((a,b)=>(b.rarity||0)-(a.rarity||0)||a.name.localeCompare(b.name,'zh'));
+  if(!arr.length) return `<div class="empty">没有匹配的物品</div>`;
+  const lim=arr.slice(0,150);
+  return `<div class="list">`+lim.map(v=>{
+    const o=openSet.has('i:'+v.id);
+    return `<div class="card ${o?'open':''}" data-id="i:${esc(v.id)}">
+      <div class="c-top">
+        <span class="c-name">${esc(v.name)}</span>
+        <span class="c-id">${esc(v.id)}</span>
+        <span class="spacer"></span>
+        <span class="c-cat">R${v.rarity}</span>
+        ${v.producedBy.length?`<span class="c-cat acc">${v.producedBy.length} 种产出</span>`:'<span class="c-cat">原料</span>'}
+        ${v.consumedBy.length?`<span class="c-cat">${v.consumedBy.length} 处消耗</span>`:''}
+      </div>
+      ${v.content?`<div class="c-desc" style="margin-top:6px"><span class="c-cat acc">${esc(v.content)}</span>${v.desc?` ${esc(v.desc)}`:''}</div>`:(v.desc?`<div class="c-desc" style="margin-top:6px">${esc(v.desc)}</div>`:'')}
+      ${o?`<div class="detail">
+        <div class="d-sec"><div class="d-h">产出途径</div>
+          ${v.producedBy.length?v.producedBy.map(p=>`<div class="row">
+            <span class="tag acc">${esc(p.machine)}</span>
+            <span>×${p.count}</span>
+            ${p.seconds!=null?`<span class="tag">${p.seconds} 秒</span>`:''}
+            <span class="c-id">${esc(p.recipeId)}</span>
+          </div>`).join(''):'<div class="row"><span class="tag">采集 / 原料，无制造配方</span></div>'}
+        </div>
+        <div class="d-sec"><div class="d-h">被消耗于</div>
+          ${v.consumedBy.length?v.consumedBy.map(c=>`<div class="row">
+            <span class="tag">${esc(c.machine)}</span>
+            <span>×${c.count}</span>
+            <span class="c-id">${esc(c.recipeId)}</span>
+          </div>`).join(''):'<div class="row"><span class="tag">暂无下游配方</span></div>'}
+        </div>
+      </div>`:''}
+    </div>`;
+  }).join('')+`</div>`+(arr.length>150?`<div class="empty" style="padding:20px">共 ${arr.length} 条，仅显示前 150 条</div>`:'');
+}
+
+function renderOverview(){
+  const c=DB.meta.counts;
+  const cards=[
+    ['建筑设施',c.buildings],['占地蓝图',c.blueprintEntries],['占格规格',c.footprintGroups],
+    ['有基地的建造区',c.bases],['基地面积条目',c.baseAreas],['据点发展满级',c.domainLevels],
+    ['物流接口',c.portEntries],['物流实体',c.logisticsEntities],['暗管设施',c.undergroundPipes],
+    ['物流常量',c.logisticsConstants],['玩法规则',c.rules],
+    ['生产配方',c.machineRecipes],['建造配方',c.buildRecipes],
+    ['手工配方',c.manualRecipes],['关联物品',c.items],['机制数值',c.mechanicsEntries],
+    ['培养舱配方',c.growCabin],['制造配方',c.manufacture],
+  ].map(([l,n])=>`<div class="ov-card"><div class="ov-num">${n}</div><div class="ov-lbl">${l}</div></div>`).join('');
+
+  const regs=Object.entries(DB.regions).map(([name,v])=>`
+    <div class="row">
+      <span class="tag ${name!=='全地区通用'?'acc':''}">${esc(name)}</span>
+      <span>建筑 ${v.count}</span><span>需通电 ${v.powered}</span>
+      <span>手工配方 ${v.manualRecipes||0}</span>
+      <span>建造配方 ${v.buildRecipes||0}</span>
+    </div>`).join('');
+
+  return `<div class="note">
+    <b>⚠ 数据边界（重要）</b><br>
+    本知识库只收录游戏配置表（TableCfg）中的<b>静态数据</b>：设施名称、耗电、占地、配方、描述文本等。<br>
+    <b>矿脉纯度产率、建设值/RDM 收益、地区建设等级加成</b>这类运行时数值<b>不在配置表内</b>，仍需游戏内实测。<br>
+    好消息是：<b>射程、间距、供电范围等机制数值写在建筑描述文本里</b>，本库已自动抽取，见「机制数值」页。
+  </div>
+  <div class="note" style="margin-top:12px">
+    <b>📐 蓝图数据说明</b><br>
+    占地格数取配置表 <code>range.width / depth / height</code>，是<b>整数格</b>，可直接用于蓝图排布。<br>
+    <code>modelHeight</code> 是模型实际高度（小数，单位米），<b>纯视觉，蓝图不要用</b>。<br>
+    ${esc(DB.meta.blueprintNote||'')}
+  </div>
+  <div class="note" style="margin-top:12px">
+    <b>🏗 基地面积是另一套来源</b><br>
+    「基地面积」页里，<b>建设区域边长 / 单边存取口路数是社区实测</b>（不在配置表内）；<b>扩建价目、据点发展等级上限、蓝图硬上限来自 TableCfg</b>。
+    两类数据在该页分开标注，引用时别混着说。
+  </div>
+  <div class="ov-grid">${cards}</div>
+  <div class="d-sec"><div class="d-h">占格规格分组（同尺寸可共用蓝图网格）</div>
+    ${DB.blueprint.footprintGroups.map(g=>`
+      <div class="row">
+        <span class="tag">${esc(g.footprint)}</span>
+        <span>格高 ${g.height}</span><span>面积 ${g.area} 格²</span>
+        <span><b>${g.count}</b> 座</span>
+      </div>`).join('')}
+  </div>
+  <div class="d-sec" style="margin-top:20px"><div class="d-h">接口边分布统计（全部带接口设施）</div>
+    <div class="row"><span class="tag">进料口</span><span>${Object.entries(DB.blueprint.edgeConvention.input).map(([k,v])=>esc(k)+' '+v).join('　')}</span></div>
+    <div class="row"><span class="tag">出料口</span><span>${Object.entries(DB.blueprint.edgeConvention.output).map(([k,v])=>esc(k)+' '+v).join('　')}</span></div>
+    <div class="row"><span class="tag">口径说明</span><span>${esc(DB.blueprint.edgeConvention.note)}</span></div>
+  </div>
+  <div class="d-sec"><div class="d-h">地区分布</div>${regs}</div>
+  <div class="d-sec" style="margin-top:20px"><div class="d-h">数据来源</div>
+    <div class="row"><span class="tag">项目</span><span>AKEDatabase（明日方舟：终末地非官方数据查询站）</span></div>
+    <div class="row"><span class="tag">数据域</span><span>${esc(DB.meta.dataDomain)}</span></div>
+    <div class="row"><span class="tag">游戏版本</span><span>${esc(DB.meta.gameVersion)}（hotfix ${esc(DB.meta.hotfix)}）</span></div>
+    <div class="row"><span class="tag">构建时间</span><span>${esc(DB.meta.builtAt)}</span></div>
+  </div>`;
+}
+
+function render(){
+  let html='', n=0;
+  /* 布局页左栏是可滚动长列表：每摆一座都重建 DOM，不还原 scrollTop 就会跳回顶部 */
+  const keepPal = tab==='layout' ? $('.lo-pal') : null;
+  const palTop = keepPal ? keepPal.scrollTop : 0;
+  if(tab==='building'){ html=renderBuilding(); n=DB.buildings.length; }
+  else if(tab==='rules'){ html=renderRules(); n=(DB.rules?DB.rules.rules:[]).length; }
+  else if(tab==='blueprint'){ html=renderBlueprint(); n=DB.blueprint.buildings.length; }
+  else if(tab==='layout'){ html=renderLayout(); n=DB.blueprint.buildings.length; }
+  else if(tab==='base'){ html=renderBase(); n=DB.bases.zones.length; }
+  else if(tab==='logistics'){ html=renderLogistics(); n=(DB.logistics.entities||[]).length; }
+  else if(tab==='mechanics'){ html=renderMech(); n=DB.mechanics.length; }
+  else if(tab==='recipe'){ html=renderRecipe(); n=DB.machine_recipes.length; }
+  else if(tab==='build'){ html=renderBuild(); n=DB.build_recipes.length; }
+  else if(tab==='manual'){ html=renderManual(); n=DB.manual_recipes.length; }
+  else if(tab==='item'){ html=renderItem(); n=Object.keys(DB.items).length; }
+  else { html=renderOverview(); }
+  $('#out').innerHTML=html;
+  if(palTop){ const p2=$('.lo-pal'); if(p2) p2.scrollTop=palTop; }
+  $('#cnt').textContent = tab==='overview' ? '' : `库中 ${n} 条`;
+  refreshFilters();
+}
+
+/* ---------- 事件 ---------- */
+let tmr=null;
+$('#q').addEventListener('input',e=>{
+  clearTimeout(tmr);
+  tmr=setTimeout(()=>{ kw=e.target.value.trim(); openSet.clear(); render(); },160);
+});
+$('#f1').addEventListener('change',e=>{ f1=e.target.value; openSet.clear(); render(); });
+
+$('#out').addEventListener('click',e=>{
+  /* 布局页画布的交互走 mousedown/mousemove/mouseup（要支持拖拽），click 阶段只吞掉 */
+  if(tab==='layout' && e.target.closest('.lo-canvas')) return;
+  const card=e.target.closest('.card'); if(!card) return;
+  const id=card.dataset.id;
+  if(openSet.has(id)) openSet.delete(id); else openSet.add(id);
+  render();
+});
+$('#out').addEventListener('mousedown',e=>{ if(tab==='layout') LonMouseDown(e); });
+document.addEventListener('mousemove',LonMouseMove);
+document.addEventListener('mouseup',LonMouseUp);
+document.addEventListener('keydown',LonKeyDown);
+
+render();
+</script>
+</body>
+</html>
+"""
+
+html = HTML.replace("__PAYLOAD__", payload)
+with open(OUT, "w", encoding="utf-8", newline="\n") as f:
+    f.write(html)
+
+print(f"生成: {OUT}")
+print(f"  内联数据 {round(len(payload)/1024,1)} KB")
+print(f"  最终文件 {round(os.path.getsize(OUT)/1024,1)} KB")
