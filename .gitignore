@@ -42,6 +42,7 @@ _shot/
 _shot_*.py
 _ab*.py
 _*.js
+_*.py
 probe_*.js
 _v*_ref.html
 *.bak
