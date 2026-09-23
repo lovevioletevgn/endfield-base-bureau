@@ -32,6 +32,7 @@ push_kb.py —— 终末地基建知识库一键推送（建事务→diff→merg
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -216,15 +217,34 @@ def online_of(rel):
 #   两道闸，而不是「排除几个已知坏项」的黑名单思路。
 #   ⚠️ 与 .gitignore 的口径**有意不同**：托管页需要 终末地基建查询.html（构建产物，
 #      在 .gitignore 里被挡），所以不能直接抄 git 规则。
+#   ⚠️ v114 事故根因（必读）：此前只按**文件名**判断临时件，没检查文件所在的**目录**。
+#      结果 `.workbuddy/memory/MEMORY.md`、`_archive/*.md` 这类「文件名正常、目录内部」的
+#      文件被当成普通产物推上线（本地记忆 + 内部审计报告泄露）。
+#      修法 = 目录黑名单补两项 + 一道通用防线 `_is_internal_path()`（任一级目录以 . 或 _
+#      开头即跳过）。通用防线是关键 —— 否则下次新增任何 `_xxx/` 目录都会重蹈覆辙。
 SCAN_EXTS = (".md", ".py", ".js", ".json", ".html")
 SCAN_SKIP_DIRS = {"raw", "_tx_push", ".baseline", ".git", "__pycache__",
-                  "node_modules", ".vscode", ".idea", "_shot"}
+                  "node_modules", ".vscode", ".idea", "_shot",
+                  ".workbuddy", "_archive"}
+
+
+def _is_internal_path(rel):
+    """v114 新增通用防线：相对路径任一级**目录**以 `.` 或 `_` 开头 → 内部目录，不上线。
+
+    文件名本身正常（如 MEMORY.md）但位于内部目录时，靠文件名前缀是拦不住的，
+    必须从路径段层面判断。
+    """
+    parts = rel.split("/")
+    if len(parts) < 2:
+        return False
+    return any(p.startswith((".", "_")) for p in parts[:-1])
 
 
 def scan_local_artifacts():
     """扫本地、返回**应上托管页**的文件（相对 PROJ，带 PREFIX 前缀），已排序。
 
-    排除：raw/ 与其它排除目录；下划线/点开头的临时件（_*.py / _*.js / _*.md / .gitignore）；
+    排除：raw/、`_archive/`、`.workbuddy/` 与其它排除目录；任一级路径以 . 或 _ 开头的
+    内部目录；下划线/点开头的临时件（_*.py / _*.js / _*.md / .gitignore）；
     probe_ 探针、*.bak、*.log、_v*_ref.html。
     """
     out = []
@@ -241,8 +261,39 @@ def scan_local_artifacts():
                 continue
             full = os.path.join(root, fn)
             rel = os.path.relpath(full, PROJ).replace(os.sep, "/")
+            if _is_internal_path(rel):                         # v114：内部目录防线
+                continue
             out.append(PREFIX + rel)
     return sorted(out)
+
+
+def strip_injection(html):
+    """剥掉托管平台注入的痕迹，得到「本地原始产物」的可比对形态。
+
+    v114：平台对**每个** HTML（不止成品页）都会注入 `data-page-node-id` 属性、
+    `inject.js` 脚本、`<!--pnid:...-->` 注释，注入后字节必然与本地不同。
+    此前终验对所有非 HOST_PATH 的 HTML 直接做字节比对 → 必然误报失败
+    （index.html 就是这么被判「终验不一致」的）。
+    """
+    t = html
+    t = re.sub(r'\s*data-page-node-id="[^"]*"', "", t)
+    t = re.sub(r'\s*data-pnid-children="[^"]*"', "", t)
+    t = re.sub(r'<script[^>]*src="/page/page_comm/inject\.js"[^>]*>\s*</script>', "", t)
+    t = re.sub(r'<!--pnid:[^>]*-->', "", t)
+    return t
+
+
+def same_artifact(remote_bytes, src_path):
+    """终验比对：HTML 剥注入后比对文本，其它按字节。"""
+    if src_path.endswith(".html"):
+        try:
+            return strip_injection(remote_bytes.decode("utf-8", "replace")) == \
+                   strip_injection(open(src_path, encoding="utf-8",
+                                        errors="replace").read())
+        except Exception:
+            return False
+    with open(src_path, "rb") as f:
+        return f.read() == remote_bytes
 
 
 def main():
@@ -327,6 +378,20 @@ def main():
         if local_new:
             say("  ⚠ 本次推送含 %d 个线上没有的新文件（上表 NEW 行）—— 请确认都是该上线的。" % len(local_new))
             push.extend(local_new)
+
+    # ---- 2.5 v116 硬闸：无论 auto 还是 --files，内部/排除目录一律拒绝上传 ----
+    #    ⚠ 事故根因复盘：v114 曾把泄露文件覆盖为占位止血，但 v115 用 auto 模式又被本地
+    #      真实文件顶了回去 —— 只靠 scan_local_artifacts() 的软过滤不够，只要本地文件还在，
+    #      任何一条上传路径都可能把原文重新推上去。所以在 push 列表**确定之后**再兜一次底，
+    #      --files 手动指定也躲不掉。
+    blocked = []
+    for rel in push:
+        rel_np = rel[len(PREFIX):] if rel.startswith(PREFIX) else rel
+        if _is_internal_path(rel_np) or rel_np.split("/")[0] in SCAN_SKIP_DIRS:
+            blocked.append(rel)
+    if blocked:
+        fail(1, "拒绝上传 %d 个内部/排除目录文件（v116 泄露事故硬闸，改用 --files 也无效）：\n  %s"
+             % (len(blocked), "\n  ".join(blocked)))
 
     changed, sames = [], []
     for rel in push:
@@ -430,9 +495,8 @@ def main():
             except Exception as e:
                 bad.append("%s (GET %r)" % (rel, e))
                 continue
-            with open(src, "rb") as f:
-                if f.read() != remote:
-                    bad.append(rel)
+            if not same_artifact(remote, src):
+                bad.append(rel)
         if bad:
             fail(1, "终验不一致: %s（线上 v%s 与本地有出入，人工检查！）" % (bad, ver))
         say("verify: %d/%d 字节一致，v%s 上线确认" % (len(push) - len(bad), len(push), ver))
