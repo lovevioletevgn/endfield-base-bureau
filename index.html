@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>终末地基建知识库 · 在线查询与排布</title>
+<meta name="description" content="《明日方舟：终末地》基建数据查询与产线自动排布工具。107 座建筑占地蓝图、317 条机器配方、物流吞吐常量，单文件离线可用。">
+<meta property="og:title" content="终末地基建知识库 · 在线查询与排布">
+<meta property="og:description" content="《明日方舟：终末地》基建数据查询与产线自动排布工具，打开即用，无需安装。">
+<meta property="og:type" content="website">
+<style>
+  :root {
+    --bg: #0e1116;
+    --surface: #161b22;
+    --surface-2: #1c232c;
+    --line: #2a323d;
+    --text: #e6edf3;
+    --text-2: #9aa7b4;
+    --text-3: #6b7785;
+    --accent: #3fa9f5;
+    --accent-dim: #1f6fb2;
+    --good: #3fb950;
+    --warn: #d29922;
+    --radius: 12px;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+            "Hiragino Sans GB", "Microsoft YaHei", "Source Han Sans SC", sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f6f8fa;
+      --surface: #ffffff;
+      --surface-2: #f0f3f6;
+      --line: #d8dee4;
+      --text: #1f2328;
+      --text-2: #59636e;
+      --text-3: #818b98;
+      --accent: #0969da;
+      --accent-dim: #cfe3f8;
+      --good: #1a7f37;
+      --warn: #9a6700;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.65;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 0 20px 72px; }
+
+  header {
+    padding: 64px 0 40px;
+    border-bottom: 1px solid var(--line);
+  }
+  .kicker {
+    font-size: 13px;
+    letter-spacing: .08em;
+    color: var(--text-3);
+    text-transform: uppercase;
+    margin: 0 0 14px;
+  }
+  h1 {
+    font-size: 34px;
+    line-height: 1.25;
+    font-weight: 600;
+    letter-spacing: -.01em;
+    margin: 0 0 16px;
+  }
+  .lede {
+    font-size: 17px;
+    color: var(--text-2);
+    margin: 0 0 28px;
+    max-width: 62ch;
+  }
+  .cta { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 13px 24px;
+    border-radius: 10px;
+    font-size: 15px;
+    font-weight: 500;
+    text-decoration: none;
+    border: 1px solid transparent;
+    transition: opacity .15s ease;
+  }
+  .btn:hover { opacity: .85; }
+  .btn-primary { background: var(--accent); color: #fff; }
+  html[data-theme="dark"] .btn-primary,
+  :root:not([data-theme="light"]) .btn-primary { color: #06131f; }
+  @media (prefers-color-scheme: dark) {
+    .btn-primary { color: #06131f !important; }
+  }
+  @media (prefers-color-scheme: light) {
+    .btn-primary { color: #fff !important; }
+  }
+  .btn-ghost {
+    background: transparent;
+    color: var(--text);
+    border-color: var(--line);
+  }
+  .cta-note { font-size: 13px; color: var(--text-3); }
+
+  section { padding: 44px 0; border-bottom: 1px solid var(--line); }
+  section:last-of-type { border-bottom: 0; }
+  h2 {
+    font-size: 13px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    font-weight: 600;
+    margin: 0 0 20px;
+  }
+  h3 { font-size: 16px; font-weight: 600; margin: 0 0 8px; }
+  p { margin: 0 0 14px; }
+  p.muted { color: var(--text-2); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .grid { display: grid; gap: 14px; }
+  @media (min-width: 640px) {
+    .grid-2 { grid-template-columns: 1fr 1fr; }
+    .grid-3 { grid-template-columns: repeat(3, 1fr); }
+  }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 20px;
+  }
+  .card h3 { margin-bottom: 6px; }
+  .card p { font-size: 14px; color: var(--text-2); margin: 0; }
+
+  .stat {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 16px 18px;
+  }
+  .stat b {
+    display: block;
+    font-size: 25px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.2;
+  }
+  .stat span { font-size: 13px; color: var(--text-2); }
+
+  pre {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 16px 18px;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.7;
+    margin: 0 0 14px;
+  }
+  code { font-family: var(--mono); font-size: .92em; }
+  p code, li code, td code {
+    background: var(--surface-2);
+    padding: 2px 6px;
+    border-radius: 5px;
+  }
+
+  .note {
+    border-left: 3px solid var(--warn);
+    background: var(--surface);
+    padding: 14px 18px;
+    border-radius: 0 var(--radius) var(--radius) 0;
+    font-size: 14px;
+    color: var(--text-2);
+    margin: 0 0 14px;
+  }
+  .note strong { color: var(--text); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td {
+    text-align: left;
+    padding: 10px 12px 10px 0;
+    border-bottom: 1px solid var(--line);
+    vertical-align: top;
+  }
+  th { color: var(--text-3); font-weight: 500; font-size: 13px; }
+  td:last-child, th:last-child { padding-right: 0; }
+  td.yes { color: var(--good); white-space: nowrap; }
+  td.no { color: var(--warn); white-space: nowrap; }
+
+  ul { padding-left: 20px; margin: 0 0 14px; }
+  li { margin-bottom: 6px; color: var(--text-2); }
+  li strong { color: var(--text); }
+
+  footer {
+    padding-top: 36px;
+    font-size: 13px;
+    color: var(--text-3);
+    line-height: 1.8;
+  }
+  footer p { margin: 0 0 6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <p class="kicker">明日方舟：终末地 · 基建工具</p>
+  <h1>终末地基建知识库</h1>
+  <p class="lede">
+    从游戏配置表提取的基建数据包，配一个可交互的查询界面和产线自动排布器。
+    建筑占几格、接口在哪条边、传送带吞吐多少、这条产线怎么摆 —— 一次查完。
+  </p>
+  <div class="cta">
+    <a class="btn btn-primary" href="https://www.workbuddy.cn/space/d/YQO3ePeFiFgF6BrMKIpFbs" target="_blank" rel="noopener">打开在线版 →</a>
+    <a class="btn btn-ghost" href="#run-locally">本地运行</a>
+    <span class="cta-note">在线版打开即用，无需注册与安装。</span>
+  </div>
+</header>
+
+<section>
+  <h2>这个工具能做什么</h2>
+  <div class="grid grid-2">
+    <div class="card">
+      <h3>占地蓝图</h3>
+      <p>每座建筑的宽×深×高格数、面积、外圈周长，以及每个进料/出料口的格坐标与所在边。接口用 SVG 俯视图画出，对齐游戏蓝图预览的观感。</p>
+    </div>
+    <div class="card">
+      <h3>产线排布器</h3>
+      <p>选一个目标产物，自动解出配方树、规划机器摆放、布线连接，输出一份可直接照着搭的布局，附连通率与原料闭环报告。</p>
+    </div>
+    <div class="card">
+      <h3>配方与物品链路</h3>
+      <p>机器 / 建造 / 手工三张配方表联合查找，任一物品都能双向追溯上下游，不会漏掉只在建造表里出现的中间产物。</p>
+    </div>
+    <div class="card">
+      <h3>物流与玩法规则</h3>
+      <p>传送带与管道的吞吐速率、连接长度与角度限制、暗管配对规则、区域锁定与矿物无线传输条件，每条规则附配置表原文出处。</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>数据规模</h2>
+  <div class="grid grid-3">
+    <div class="stat"><b>107</b><span>建筑设施</span></div>
+    <div class="stat"><b>106</b><span>占地蓝图</span></div>
+    <div class="stat"><b>317</b><span>机器配方</span></div>
+    <div class="stat"><b>427</b><span>关联物品</span></div>
+    <div class="stat"><b>265</b><span>接口坐标</span></div>
+    <div class="stat"><b>35</b><span>物流常量</span></div>
+  </div>
+  <p class="muted" style="margin-top:16px;font-size:14px">
+    当前数据版本：游戏 1.5.3（hotfix 10024360-6）。
+  </p>
+</section>
+
+<section id="run-locally">
+  <h2>本地运行</h2>
+  <p class="muted">
+    在线版是托管页面；如果想离线用、或者自己改，clone 仓库后本地构建即可。
+    产物是<strong>单个 HTML 文件</strong>，内联了全部数据和算法，双击就能开，不依赖网络。
+  </p>
+<pre><code>git clone https://github.com/1595745135/endfield-base-bureau.git
+cd endfield-base-bureau
+python tools/build_html.py      # 生成 终末地基建查询.html
+node   tools/test_html.js       # 回归测试</code></pre>
+  <div class="note">
+    <strong>为什么仓库里没有那个 HTML？</strong> 它是构建产物，可由 <code>data/</code> 与 <code>tools/</code> 完整重建，
+    因此不纳入版本控制（否则每次改动都产生 1.4 MB 的 diff，git 历史会迅速膨胀）。
+    仓库里放的是<strong>能造出它的东西</strong> —— 数据、源码和构建脚本。
+  </div>
+  <p class="muted" style="font-size:14px">
+    命令行也可以直接查，不必开界面：
+  </p>
+<pre><code>python tools/ake.py 蓝图 精炼炉      # 占地格数 + 接口平面图
+python tools/ake.py 树 息壤          # 追溯完整上下游链
+python tools/ake.py 规则 无线        # 搜规则，附原文证据
+python tools/ake.py 基地             # 各基地建设区面积与建造上限</code></pre>
+</section>
+
+<section>
+  <h2>数据分层与版权</h2>
+  <p class="muted">
+    本项目的文件按版权归属分三层，这决定了哪些能进版本库：
+  </p>
+  <table>
+    <thead>
+      <tr><th>层</th><th>体量</th><th>进仓库</th><th>说明</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>游戏解包配置表</td>
+        <td>18.4 MB</td>
+        <td class="no">否</td>
+        <td>含游戏内文案原文，版权归鹰角网络，不外传、不上云</td>
+      </tr>
+      <tr>
+        <td>烘焙派生参数</td>
+        <td>36 KB</td>
+        <td class="yes">是</td>
+        <td>从配置表提取的数值（环境色、散布机规格、可出货物品清单），替代对解包目录的依赖</td>
+      </tr>
+      <tr>
+        <td>清洗后数据包 + 源码</td>
+        <td>约 1.9 MB</td>
+        <td class="yes">是</td>
+        <td>结构化数据与本项目的构建 / 测试脚本</td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="muted" style="margin-top:16px;font-size:14px">
+    因此，没有解包数据的机器（新 clone 的副本）也能完整构建出<strong>字节完全一致</strong>的产物。
+  </p>
+  <p class="muted" style="font-size:14px">
+    游戏数据版权归鹰角网络及相关权利方所有。本项目仅供学习、交流与研究使用；
+    本知识库只收录配置表中的静态数据，矿脉产率、建设值收益等运行时数值不在配置表内，需游戏内实测。
+  </p>
+</section>
+
+<footer>
+  <p>数据来源：<a href="https://github.com/NagiYume/AKEDatabase" target="_blank" rel="noopener">AKEDatabase</a>（数据域 data.akedata.wiki）</p>
+  <p>仓库：<a href="https://github.com/1595745135/endfield-base-bureau" target="_blank" rel="noopener">endfield-base-bureau</a></p>
+</footer>
+
+</div>
+</body>
+</html>

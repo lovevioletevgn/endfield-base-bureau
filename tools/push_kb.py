@@ -5,13 +5,23 @@ push_kb.py —— 终末地基建知识库一键推送（建事务→diff→merg
 
 替代分阶段的 _push.py：一次调用跑完全链，stdout 直接输出摘要，细节落 _tx_push/log.txt。
 
+⚠️ 已知限制（v111 记录，均**不修**，属设计取舍）：
+  1. 脚本**不删除**线上多余文件。本地删掉的文件，线上仍保留（只打 `(线上有本地无，跳过)`）。
+     要清理线上残留得另想办法（或手动在托管页删）。
+  2. 版本号由 base+1 自动递增。若同一次发布拆成多轮推送（如正文一次、补推新文件一次），
+     托管页 commit 会连跳（本次 GitHub v111 / 托管页 v111+v112）→ 与 GitHub 编号错位。
+     **口径：编号错位不等于内容不一致；两边内容以文件比对为准。**
+
 用法（在知识库根或任意位置）:
   python tools/push_kb.py --token <op_...> --message "v86 说明" [选项]
 
 模式:
-  (默认) auto     : 拉线上产物做 diff，自动推送所有内容有差异的文件（raw/ 除外）
+  (默认) auto     : 拉线上产物做 diff，自动推送所有内容有差异的文件（raw/ 除外）。
+                    ⭐v111 起**本地新增文件也会自动推送**（此前会被静默漏掉），
+                    推送时打印 `NEW <路径>（本地新增，自动上传）` 供核对。
   --files a b c   : 只推指定文件（相对知识库根；线上已存在的，SAME 的自动跳过）
-  --allow-new     : 允许推送线上产物树中不存在的新文件
+  --allow-new     : (兼容保留) 允许 --files 模式推送线上产物树中不存在的新文件。
+                    auto 模式自 v111 起已默认允许新文件，此开关对它无影响。
   --dry-run       : 只做 diff，打印将推送什么，不动线上
   --resume        : 复用上次未 commit 的事务（跳过已成功上传的文件）
   --no-verify     : 跳过 commit 后的终验（默认开终验）
@@ -200,6 +210,41 @@ def online_of(rel):
     return os.path.join(ONLINE, rel.replace("/", os.sep))
 
 
+# ⭐v111：托管页产物的扫描口径。
+#   设计原则 = **宁可少扫、不可多扫**：多扫一个文件只是多推一个无用的，本无害；
+#   但把 raw/ 或临时件扫进去就出事（版权 / 垃圾文件）。所以用「只认白名单扩展名 + 排除目录」
+#   两道闸，而不是「排除几个已知坏项」的黑名单思路。
+#   ⚠️ 与 .gitignore 的口径**有意不同**：托管页需要 终末地基建查询.html（构建产物，
+#      在 .gitignore 里被挡），所以不能直接抄 git 规则。
+SCAN_EXTS = (".md", ".py", ".js", ".json", ".html")
+SCAN_SKIP_DIRS = {"raw", "_tx_push", ".baseline", ".git", "__pycache__",
+                  "node_modules", ".vscode", ".idea", "_shot"}
+
+
+def scan_local_artifacts():
+    """扫本地、返回**应上托管页**的文件（相对 PROJ，带 PREFIX 前缀），已排序。
+
+    排除：raw/ 与其它排除目录；下划线/点开头的临时件（_*.py / _*.js / _*.md / .gitignore）；
+    probe_ 探针、*.bak、*.log、_v*_ref.html。
+    """
+    out = []
+    for root, dirs, files in os.walk(PROJ):
+        dirs[:] = [d for d in dirs if d not in SCAN_SKIP_DIRS]
+        for fn in files:
+            if not fn.endswith(SCAN_EXTS):
+                continue
+            if fn.startswith(("_", ".")):                      # 临时件 / 隐藏文件
+                continue
+            if fn.startswith("probe_") or fn.endswith((".bak", ".log")):
+                continue
+            if fn.startswith("_v") and fn.endswith("_ref.html"):
+                continue
+            full = os.path.join(root, fn)
+            rel = os.path.relpath(full, PROJ).replace(os.sep, "/")
+            out.append(PREFIX + rel)
+    return sorted(out)
+
+
 def main():
     global LIB, NODE
     ap = argparse.ArgumentParser(add_help=False)
@@ -267,6 +312,21 @@ def main():
                 and not os.path.exists(local_of(p))]
         for g in gone:
             say("  (线上有本地无，跳过) %s" % g)
+
+        # ⭐v111 修复：auto 模式原先只从「线上已有产物」反推 push，导致**本地新增文件
+        #   静默漏推**（2026-09-23 踩到：排布器算法地图.md / test_harness.js 首次推送丢失，
+        #   只能事后用 --allow-new --files 补推，且把托管页 commit 数字顶到了 v112）。
+        #   这里补一段：扫本地、挑出「该上托管页但线上还没有」的文件，**默认一起推**
+        #   （auto 模式的定位就是「自动推送所有差异」，新文件也是差异之一 → 不该再要人工闸门）。
+        #   口径 = 托管页产物构成（.md/.py/.js/.html/.json），显式排除：
+        #     raw/（版权）、临时件（_ / . 前缀 / probe_ / .bak / .log）、构建产物目录。
+        local_new = [rel for rel in scan_local_artifacts()
+                     if rel not in path_set]
+        for rel in local_new:
+            say("  NEW     %s（本地新增，自动上传）" % rel)
+        if local_new:
+            say("  ⚠ 本次推送含 %d 个线上没有的新文件（上表 NEW 行）—— 请确认都是该上线的。" % len(local_new))
+            push.extend(local_new)
 
     changed, sames = [], []
     for rel in push:
