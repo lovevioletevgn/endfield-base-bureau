@@ -37,16 +37,9 @@ const ONLY = opt('target', null);
 const QUIET = has('quiet');
 
 // ---- 加载 HTML（同 test_html.js 的沙箱模式）----
-const HTML = path.join(__dirname, '..', '终末地基建查询.html');
-const html = fs.readFileSync(HTML, 'utf8');
-let rawCode = null;
-for (const mm of html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)) {
-  if (mm[1].includes('const DB')) { rawCode = mm[1]; break; }
-}
-if (!rawCode) { console.error('FATAL 找不到含 const DB 的 <script> 段'); process.exit(1); }
-try { new vm.Script(rawCode, { filename: 'main.js' }); }
-catch (e) { console.error('FATAL 脚本语法错误: ' + e.message); process.exit(1); }
-const code = rawCode.replace(/\bconst\s+/g, 'var ').replace(/\blet\s+/g, 'var ');
+const H = require('./test_harness');
+const HTML = H.defaultHtml();
+const { html, rawCode, code } = H.load(HTML);
 
 function mkEl(tag) {
   return {

@@ -2826,7 +2826,8 @@ function RwPlaceLimitWarn(res){
   });
   return out;
 }
-/* 子树代价预判：0 = 已经是原料；越大越难得；绕回路径给大惩罚。
+/* 【一句话】递归估「做这件料要绕多远」——给 Rexplode 的 pick() 排序，选子树代价最低的配方。
+   —— 0 = 已经是原料；越大越难得；绕回路径给大惩罚（RW_COST_CYCLE）。
    —— 这一条是 06:0x 那版翻车的直接原因：只看"这一步有没有回头"会选到高产出但绕圈的配方。 */
 const RW_COST_CYCLE=500, RW_COST_CARRIER=2, RW_COST_DEPTH=5, RW_COST_BUDGET=4000;
 function RwCost(iid, path, depth, budget){
@@ -2862,12 +2863,19 @@ function RwCanReceive(iid){
   const d=(DB.items||{})[iid];
   return !!(d && (d.domains||[]).length);
 }
-/* 展开配方树。纯函数（selfLoop 走 opt 传进来，不读全局，方便测试）。
+/* 【一句话】把目标物品的配方树递归展开成一张机器图（节点=机器、边=物流）。
+   纯函数（selfLoop 走 opt 传进来，不读全局，方便测试）。
    opt.selfLoop=true = 「闭环自持」开关：
      只有回收路线的物品**照样往里展开**，靠 载体 / 链上绕回 形成闭环，
      并把启动时要塞的东西记进 seeds —— 博士 2026-09-21 要的就是这个。
    默认 false = 那种料按「外部输入」处理（链短、好摆）。 */
 function Rexplode(targetId, perMin, opt){
+  /* 【分节总览】递归展开主循环（从叶子回溯，不是自顶向下）：
+       ① 解析 opt（selfLoop / shipInList / seeds / region）—— 见下面 ⭐⑥-1/2/3
+       ② 对每个节点：`pick()` 选配方（三级降级）→ `RwCost` 排序 → 递归子料
+       ③ memo 去重：同料只建一套（多目标时挂幽灵边 ref 回指）
+       ④ 收尾交 `RexplodeFinal` 做需求汇总 / 台数重算 / 层级重排（单目标直接跳过）
+     本函数只建「图」，不做布局 —— 摆位是 LawPlan、布线是 RwRoute。 */
   opt=opt||{};
   const selfLoop=!!opt.selfLoop;
   /* ⭐⑥-1：跨地区收货清单 —— 这些料不从野外采、也不在本地做，改由**别的地区传过来**。
@@ -3027,7 +3035,8 @@ function Rexplode(targetId, perMin, opt){
           shared:(useDedup?allReal.filter(n=>n.sharedTo&&Object.keys(n.sharedTo).length):[]),
           totalMachines:machines.reduce((s,n)=>s+n.machines,0)};
 }
-/* ⭐⑥-2 配套（2026-09-22）：多目标 DAG 的「需求汇总 → 台数重算 → 层级重排」。
+/* 【一句话】多目标图的收尾结算：需求沿边摊开 → 台数重算 → 层级重排 → 生成告警。
+   ⭐⑥-2 配套（2026-09-22）：多目标 DAG 的「需求汇总 → 台数重算 → 层级重排」。
    输入 build 期收集的 allEdges（机器→机器的边，含种子边与幽灵边）与 softEdges（原料/绕回/载体边）。
    Kahn：需求沿边自上而下摊（父 actualOut × 配比），某节点的**全部入边**都定了才轮到它 ——
    多父合流自动求和；台数 = ceil(合并需求 / 单台速率)；「按整台算多产出」的警告在这里统一生成。
@@ -3124,6 +3133,9 @@ const RW_ROWGAP=3;
    但大产线会让汇流器找位退化（实测 copper_jar@30 分数 63→7）。
    所以两档都摆一遍，按「连通段数 > 手动连数 > 总线长」择优 —— 谁分高用谁。 */
 const RW_GAP_X_T=2, RW_CORR_T=3;
+/* 【一句话】把机器图摆到画布上：按 depth 分层（上游在下、下游在上），
+   并做**列对齐**（按下游消费关系排序 x，让走线从"绕"变"直上直下"）。
+   opts.fixed = 局部锁定（已固定的机器当障碍）；rowGap 不传时与老行为逐格一致。 */
 function LawPlan(res, size, corr, opts){
   opts=opts||{};
   corr=corr||RW_CORR;
@@ -3264,7 +3276,13 @@ const RW_MERGE_ID='log_converger', RW_MERGE_FANIN=3;
    每个汇流器要多两段走线（进它、出它），少并几条的话失败点反而变多。
    实测 4 台并成 2 条（省 2 条）不如直接连；12 台并成 6 条（省 6 条）才明显划算。 */
 const RW_MERGE_MIN_SAVE=4;
+/* 【一句话】布线总控：把摆好的机器连成产线——多点对多点连接、传送带/管道分流，
+   内部调 RwFindSplit/RwFindMerge 找分流汇流点、RwPath 算具体路径。
+   分支多（8 种介质 × 多源多汇 × 已有线避让），但无深层嵌套；293 行是全项目最长函数。 */
 function RwRoute(placed, res, size, corr, extraBusy){
+  /* 【分节总览】阶段一（连什么）：挑端口 → 定汇流分组 → 预留端点 → 自动摆分流器；
+                 阶段二（怎么连）：统一走线（RwPath 寻路 + 桥格）→ 吞吐体检 → stats 落账。
+     下方 `==========` 注释即两阶段分界，函数内已有 27 条分节注释，无需再补。 */
   const busy={};      /* 已被占的格：机器 + 已铺的线 + 汇流器 */
   placed.forEach(o=>{ for(let j=0;j<o.d;j++) for(let i=0;i<o.w;i++) busy[(o.x+i)+','+(o.y+j)]=1; });
   /* ⭐ ⑤-1「重排其余」用：把**不归排布器管的散件**（手摆的机器 / 手拉的线）也算障碍，
@@ -3599,11 +3617,14 @@ function RwProbe(s, t, busy, size, reserved){
   const mine=k=>k===K(s.x,s.y)||k===K(t.x,t.y);
   return RwPath(s, t, busy, size, (x,y)=>!!reserved[K(x,y)]&&!mine(K(x,y)));
 }
-function RwPath(s, t, busy, size, block, axis){
-  /* ⭐ 路线图 ③「桥接器」（2026-09-21，参照 IndustrialPlanner 的 Connector 规则）：
+/* 【一句话】★ 全项目最硬的一段 —— **带转向代价与桥接的手写 Dijkstra 最短路**（非调库）。
+   状态 = (x, y, 方向, 是否在桥上)：带方向因为转向有代价（TURN=2），带桥因为踩桥有代价（BRIDGE=4）；
+   代价 直行 1 / 转向 +2 / 踩桥 +4，末尾 +0.0001 做稳定排序防同代价抖动。
+   ⭐ 路线图 ③「桥接器」（2026-09-21，参照 IndustrialPlanner 的 Connector 规则）：
      已铺线格不再一律是墙 —— 允许「正交直穿」：我方走向与被穿线的轴向正交、且穿过时不转弯，
      该格铺**物流桥 / 管道桥**（cost +4，比绕远路便宜时自动启用）。同向重叠依然禁止（会互相顶）。
      状态含 onBridge：桥上只能直行、且下一格必须落回空地 —— 一格桥只跨一条线。 */
+function RwPath(s, t, busy, size, block, axis){
   const K=(x,y)=>x+','+y;
   const axOf=(x,y)=>(axis&&axis[K(x,y)])||null;
   const blocked=(x,y)=>!!busy[K(x,y)]||(block?!!block(x,y):false);
@@ -3657,13 +3678,28 @@ function RwPath(s, t, busy, size, block, axis){
   out.reverse();
   return out;
 }
-/* ---------- 一键跑完整条闭环（会清空画布，可撤销）---------- */
+/* ---------- 一键跑完整条闭环（会清空画布，可撤销）----------
+   【一句话】总控 + 优化器：两趟展开配方树 → 枚举布局参数 → 摆+铺+打分 → 择优落盘。
+   【分节】
+     [1] 入参校验 / 目标与速率            → 早退
+     [2] 两趟展开（跨地区收货两遍走）      → res（配方树）
+     [3] 限摆与通道高度自适应              → depLines
+     [4] 打分口径 pickScore（局部函数）
+     [5] 参数网格候选（含 wide 换行档）     → cands
+     [6] 第一轮：全候选摆+铺+打分          → best
+     [7] 失败驱动的三段补搜：
+          (a) 宽间距扩搜  (b) 相邻交换爬山（≤24 次）  (c) 通道高度爬升
+     [8] 落盘：写 L.objs / L.plan / L.msg → render()
+   ⚠️ 第 7 节三段共享 best/tried 状态且顺序敏感；抽成独立函数要传 6 个上下文，
+      签名比函数体还长 → **刻意不抽**（详见 排布器算法地图.md 第五节）。 */
 function LawRun(targetId, perMin){
+  /* ── [1] 入参校验 / 目标与速率 ───────────────────────── */
   const L=Linit();
   if(!targetId){ L.msg='先选一个目标物品'; render(); return; }
   perMin=+perMin||0;
   if(perMin<=0){ L.msg='目标速率要大于 0'; render(); return; }
   L.tgt=targetId; L.rate=perMin;
+  /* ── [2] 两趟展开（跨地区收货两遍走）───────────────── */
   /* ⭐⑥-1 跨地区收货（博士 2026-09-22：「只用从四号谷地向武陵超库存传输」）
      做法是**两趟展开**：第一趟按老口径展开，拿到它认出来的「原料」清单；
      第二趟把其中**能被跨地区传输**的（FactoryItemTable.transferDomainIds 非空，243 件）
@@ -3700,6 +3736,7 @@ function LawRun(targetId, perMin){
       +(res.externals.length?('；这条链里已按外部输入处理的：'+res.externals.map(RwItemName).join('、')):'');
     render(); return;
   }
+  /* ── [3] 限摆与通道高度自适应 ───────────────────────── */
   /* 层间通道高度**按并联线数自适应**：固定 5 行在产能高的时候会被线挤死（实测 30/分 有 9 条连不上）。
      线越多 → 通道越高。上限 14 行，免得画布塞不下。
      ⚠️ 2026-09-21 补：线数口径要跟 RwRoute 的真并联一致（那里 np 会抬到 RwLines(demand)）。 */
@@ -3711,6 +3748,7 @@ function LawRun(targetId, perMin){
      ② 失败驱动的局部交换：最优组若还有「手动连」，对它的每层相邻机器对做交换重铺
         （同 itemId 的不换——换同料机器没意义），分数更高就留，最多试 24 对；
      ③ 择优口径不变：连通段 > 手动连 > 总线长。大产线（>15 台）砍掉交换、网格减半控时长。 */
+  /* ── [4] 打分口径 pickScore（局部函数）───────────────── */
   /* ⭐⭐ ⑤-3（2026-09-22）打分口径修正：**「手动连」的权重从 100 提到 400**。
      实测（实验铜骨骼@10）：全连通的方案（间8/通道13/down，手动连 0、线 753 格）反而**输给**
      还有 2 条手动连的紧凑方案（线 454 格）—— 因为 2×100 的罚分盖不过 300 格线长差。
@@ -3725,6 +3763,7 @@ function LawRun(targetId, perMin){
       v:ok*1000 - jam*500 - manual*400 - rt.belts.length};
   };
   const small=res.totalMachines<=15;
+  /* ── [5] 参数网格候选（含 wide 换行档）──────────────── */
   const cands=[];
   /* 宽度不匹配检测：某层台数 > 其下游层台数 × 1.3 → 加「层内主动换行」候选（down 模式） */
   const cntByDepth={};
@@ -3747,6 +3786,7 @@ function LawRun(targetId, perMin){
     [4,2].forEach(gx=>{ cands.push({gapX:gx, align:false, corrBase:cbD, swap:null, mode:'down'}); });
     if(small) cands.push({gapX:3, align:false, corrBase:cbD, swap:null, mode:'down'});
   }
+  /* ── [6] 第一轮：全候选摆+铺+打分 → best ────────────── */
   let best=null, tried=0, overAll=true;
   cands.forEach(c=>{
     const corr=Math.max(c.corrBase, Math.min(14, Math.ceil(depLines/2)+2));
@@ -3765,6 +3805,8 @@ function LawRun(targetId, perMin){
     L.msg='画布 '+L.size+'×'+L.size+' 放不下这条产线（试了 '+cands.length+' 组参数都越界），先把画布调大或把目标速率调小'
         +(limW.length?('；⚠ '+limW.join('；')):''); render(); return;
   }
+  /* ── [7] 失败驱动的三段补搜 ─────────────────────────── */
+  /* ── [7a] 宽间距扩搜（手动连 > 0 才跑）────────────── */
   /* ⭐⭐ ⑤-3（2026-09-22）失败驱动的「宽间距扩搜」：
      实测 壤晶废液@10 / 清水@10 / 赤铜块@10 / 实验铜骨骼@10 的手动连，**只要把机器间距从 2~4 拉到 8 就全清零** ——
      间距大了，机器之间那条竖缝才够几条线并排走。宽间距会让小产线的总线长变长（线长在评分里是次要项），
@@ -3789,6 +3831,7 @@ function LawRun(targetId, perMin){
       if(sc.v>best.sc.v) best={c:c, sc:sc, plan:pl, route:rt, corr:corr};
     });
   }
+  /* ── [7b] 相邻交换爬山（≤24 次；仅小产线）─────────── */
   /* 失败驱动的局部交换 */
   let swaps=0;
   if(small && best.sc.manual>0 && best.plan.order){
@@ -3808,6 +3851,7 @@ function LawRun(targetId, perMin){
       }
     });
   }
+  /* ── [7c] 通道高度爬升（手动连 > 0 时 +2 重铺）────── */
   /* 失败驱动爬升：最优组仍有手动连时，通道加高 2 行再铺一遍（通道挤是常见失败因） */
   if(best.sc.manual>0){
     const corrUp=Math.min(14, best.corr+2);
@@ -3821,6 +3865,7 @@ function LawRun(targetId, perMin){
       }
     }
   }
+  /* ── [8] 落盘：写 L.objs / L.plan / L.msg → render() ── */
   const plan=best.plan, route=best.route, corr=best.corr;
   const st0=route && route.stats;
   const pickNote='参数搜索 '+tried+' 组'+(wideTried?('（含宽间距扩搜 '+wideTried+' 组）'):'')+(swaps?('（含相邻交换 '+swaps+' 次）'):'')
@@ -5146,7 +5191,17 @@ function renderLayout(){
     }
     return null;
   };
-  /* 接口统计（和下面的逐个渲染同口径：越界的不算、角上取 z 边） */
+  /* ================================================================
+     画布渲染段（flowIn ~ 画布 DOM 拼装）。按渲染层次从上到下阅读：
+       [a] 接口统计 pAll/pOn     —— 接口图例的计数口径
+       [b] 存取线校验 badMap     —— 未接上的件（画布标红）+ 计数/上限
+       [c] 环境范围层 envLayer   —— 散布机 13×13 方形半透明色块（⭐v103）
+       [d] 浮层 gasBar / dlvPop  —— 就地选气条（⭐v104）/ 核心出货清单（⭐v109）
+       [e] 格子渲染 cells        —— 每个建筑一个 .lo-cell（本段最长）
+       [f] 物流汇总 longest      —— 传送带/管道计数与最长连通段
+     各层只读 L.objs / DB，渲染顺序即 DOM 顺序；除 cells 外都是「先算字符串、最后统一拼」。
+     ================================================================ */
+  /* ---- [a] 接口统计（和下面的逐个渲染同口径：越界的不算、角上取 z 边） ---- */
   let pAll=0, pOn=0;
   L.objs.forEach(o=>{
     const b=byBp(o.id); if(!b||b.isLogi) return;
@@ -5163,7 +5218,7 @@ function renderLayout(){
       if(dir&&LlogiAt(lgi,o.x+q.x+dx,o.y+q.z+dz,p.isPipe)) pOn++;
     });
   });
-  /* 存取线校验：哪些件没接上（画布上标红），以及计数 / 上限 */
+  /* ---- [b] 存取线校验：哪些件没接上（画布上标红），以及计数 / 上限 ---- */
   const badMap=LhongsBad(L.objs,presetBus);
   const busZones=((DB.bases&&DB.bases.zones)||[]).filter(z=>z.busCap);
   const curZone=busZones.filter(z=>z.levelId===L.zone)[0]||busZones[0]||null;
@@ -5175,7 +5230,8 @@ function renderLayout(){
   /* 谷地：把预设存取线画到画布**外缘**（整条在画布框外面 —— 不占格、不挡摆放，只做可视参考） */
   const presZone=LbusZone();
   const presetBand=presetBus?LpresetBand(presZone,CELL,L.size):'';
-  /* ⭐v103 环境范围层：每台散布机一块方形 —— 占地外扩 rangeExtend.x（配置表 5 → 13×13）。
+  /* ---- [c] 环境范围层：每台散布机一块方形半透明色块 ---- ⭐v103
+     占地外扩 rangeExtend.x（配置表 5 → 13×13）。
      DOM 顺序放在 cells 之前 = 建筑层之下；pointer-events:none 不挡框选；超界部分裁到画布内。 */
   const envLayer=L.showGas?L.objs.map(o=>{
     const b=byBp(o.id);
@@ -5188,6 +5244,7 @@ function renderLayout(){
     const _ge=o.gas||1;
     return `<div class="lo-env" style="left:${x1*CELL}px;top:${y1*CELL}px;width:${(x2-x1)*CELL}px;height:${(y2-y1)*CELL}px;--envbg:${envColorOf(_ge)};--envline:${envEdgeOf(_ge)};--envop:${envOpOf(_ge)}"></div>`;
   }).join(''):'';
+  /* ---- [d] 浮层：就地选气条 + 核心出货清单 ---- */
   /* ⭐v104 就地选气条（博士：「想要点机器就地选」）：选中散布机时浮在机器正上方 ——
      色块 = 四种气体（即四种环境，圈色同款），点一下 LgasSet 批量换气；当前气描高亮圈。
      与环境圈层开关解耦：圈藏了也能换气（换的是对象属性，不是图层）。 */
@@ -5236,6 +5293,7 @@ function renderLayout(){
         ${body}
       </div>`;
   })();
+  /* ---- [e] 格子渲染：每个建筑一个 .lo-cell（本段最长，逐件生成 SVG + tooltip） ---- */
   const cells=L.objs.map(o=>{
     const b=byBp(o.id);
     const px=o.x*CELL, py=o.y*CELL, w=o.w*CELL, d=o.d*CELL;
@@ -5318,7 +5376,7 @@ function renderLayout(){
       </div>`;
   }).join('');
   const dm=L.pick?Ldims(L.pick,L.pickRot):null;
-  /* 物流件汇总 + 传送带最长连通段 */
+  /* ---- [f] 物流件汇总 + 传送带最长连通段 ---- */
   const lgs=L.objs.filter(o=>{ const b=byBp(o.id); return !!b&&!!b.isLogi; });
   const isPipePiece=o=>{ const b=byBp(o.id); return b&&b.lgMedium==='管道'; };
   const pipeN=lgs.filter(isPipePiece).length, beltN=lgs.length-pipeN;
@@ -5360,6 +5418,7 @@ function renderLayout(){
     if(p) parts.push('管道 '+p+' 条（流体 '+rt.fluidIn+'/分 ÷ 120）');
     return parts.length?parts.join(' · '):'这配方不用外接料';
   };
+  /* ---- [1] 配方块：单台机器的配方下拉 + 产能读数 ---- */
   const recipeBlock=(rInfo&&rInfo.recipes.length)?`
     <div class="lo-rp">
       <div class="lo-ph">🧾 配方 · <b>${esc(rInfo.building.name)}</b> — 可选 ${rInfo.recipes.length} 条${rInfo.count>1?' · 会同时改选中的 '+rInfo.count+' 台同机种':''}</div>
@@ -5397,8 +5456,18 @@ function renderLayout(){
   const rawNeed=(P&&P.rawNeed)?P.rawNeed:{};
   /* 评价函数按**当前画布**算：手动加/删了机器，分数也跟着变 */
   const sc=(P&&P.plan)?Rscore(P.res, P.plan, P.route, rawNeed):null;
-  const planReport=(P&&L.objs.some(o=>o.planRole))?Rreport(P,pw,bw,th,lim,st,rawNeed,sc):'';
-  const planBlock=`<div class="lo-rp lo-plan">
+    const planReport=(P&&L.objs.some(o=>o.planRole))?Rreport(P,pw,bw,th,lim,st,rawNeed,sc):'';
+    /* ================================================================
+       本函数（rCarrier）是左栏「配方 + 产线闭环」的整块 HTML 拼装。
+       368 行、几乎全是模板字符串，改前先看下面四个路标定位：
+         [1] 配方块 recipeBlock        —— 单台机器的配方下拉 + 产能读数
+         [2] 产线闭环块 planBlock      —— 目标物品/速率/各开关按钮
+         [3] 图例 legend / gasLegend   —— 接口图例 + 环境圈图例
+         [4] 帮助手册 lo-help          —— 176 行静态说明文本（最长的一块，纯文档）
+       顺序即渲染顺序；各块之间只通过上面这几个 const 传递，无交叉依赖。
+       ================================================================ */
+    /* ---- [2] 产线闭环块：目标物品 / 速率 / 各开关按钮 ---- */
+    const planBlock=`<div class="lo-rp lo-plan">
       <div class="lo-ph">🏭 <b>产线闭环（排布器 v2）</b> <span class="lo-tag">2026-09-21</span> <span class="lo-tag">评价函数 v1</span> <span class="lo-tag">吞吐体检 v1</span> —— 选目标物品 + 速率，一键展开配方树 · 摆机器 · 连管线 · 打分</div>
       <div class="lo-bar" style="margin:8px 0 0">
         <span>目标物品：</span>${tgtSel}
@@ -5441,6 +5510,7 @@ function renderLayout(){
          采集（矿机/水泵只能放野外矿点）、防御设施、装饰不列；中继器（含息壤中继器）、洒水机 / 给水器 / 滑索架、便捷存取站 / 留言信标，
          以及配置表里与正常版同名的<b>免电变体</b>（id 带 <code>_nop_</code>）同样不列 —— 要单独看某一类，用上方分类下拉选。
          ${presetBus?'<br><b>当前选了四号谷地的基地</b>：谷地的存取线由基地自动铺，所以源桩 / 基段这里不列（要自己摆就切到武陵的基地）。':''}</div>`;
+  /* ---- [3] 图例：接口图例 + 环境圈图例 ---- */
   const legend=L.showPort?`<div class="lo-legend">
       <span><i class="inp"></i>进料口</span>
       <span><i class="outp"></i>出料口</span>
@@ -5462,6 +5532,8 @@ function renderLayout(){
       <span>多台重叠自然加深 · 色块不挡点击 · 圈色按游戏 UI 校准（近似色）</span>
       <span>机器须<b>完全处于圈内</b>才受影响 · 一台的圈可同时罩多台 · 通气最低 <b>6 单位/分</b>（官方面板）</span>
     </div>`:'';
+  /* ---- [4] 帮助手册：176 行静态说明文本（本函数最长的一块，纯文档、无逻辑）----
+     查功能说明、快捷键、口径解释，直接往下翻到这里；改 UI 逻辑不用看这一段。 */
   return `<details class="note lo-help" style="margin-bottom:12px">
       <summary><b>🖱 布局试摆（占地沙盘 + 接口 + 物流件）</b> —— 操作手册与数据附录 <span class="lo-tag">点开 / 收起</span></summary>
       <div style="margin-bottom:4px"><span class="lo-tag">接口标记 v3 · 2026-09-21</span> <span class="lo-tag">基地 / 地区分开 v1 · 2026-09-21</span> <span class="lo-tag">谷地预设线 v1 · 2026-09-21</span> <span class="lo-tag">评价函数 v1 · 2026-09-21 晚</span> <span class="lo-tag">约束补齐 v1 · 2026-09-21 晚</span> <span class="lo-tag">局部锁定 v1 · 2026-09-22</span> <span class="lo-tag">分流器多摆 v1 · 2026-09-22</span> <span class="lo-tag">连通率 v1 · 2026-09-22</span></div>

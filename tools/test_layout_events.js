@@ -14,27 +14,13 @@
 const fs = require('fs');
 const vm = require('vm');
 const path = require('path');
+const H = require('./test_harness');
 
 const HTML = process.argv[2]
   ? path.resolve(process.argv[2])
-  : path.join(__dirname, '..', '终末地基建查询.html');
-const html = fs.readFileSync(HTML, 'utf8');
-
-let rawCode = null;
-for (const mm of html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)) {
-  if (mm[1].includes('const DB')) { rawCode = mm[1]; break; }
-}
-if (!rawCode) { console.error('FATAL 找不到含 const DB 的 <script> 段'); process.exit(1); }
-
-// 语法门禁：必须用原始代码（const/let 转 var 会吞掉重复声明错误）
-try {
-  new vm.Script(rawCode, { filename: 'main.js' });
-} catch (e) {
-  console.error('FATAL 脚本语法错误（真实浏览器会整段作废 → 页面空白）');
-  console.error('  ' + e.name + ': ' + e.message);
-  process.exit(1);
-}
-const code = rawCode.replace(/\bconst\s+/g, 'var ').replace(/\blet\s+/g, 'var ');
+  : H.defaultHtml();
+// 加载 + 提段 + 语法门禁（三处测试共用的引导逻辑，见 test_harness.js）
+const { html, rawCode, code } = H.load(HTML);
 
 // ---------- 迷你 DOM ----------
 function mkClassList() {

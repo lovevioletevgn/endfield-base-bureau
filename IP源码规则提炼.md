@@ -1,10 +1,10 @@
-# IndustrialPlanner 源码规则提炼（供路线图 ③⑤ 参照）
+# IndustrialPlanner 源码规则提炼
 
 > 来源：github.com/hsyhhssyy/IndustrialPlanner（MIT，v1.5.1 @ 2026-09-20，数据源 AKEData 与本库同上游）。
 > 它 = 手动画布 + 物理仿真；本库排布器 = 自动规划。本文只记「能抄的规则」，不是使用教程。
 > 提炼日期：2026-09-21。关键源文件：`src/editor/actions/logistics-action.ts`、`src/editor/logistics/logistics-utils.ts`、`src/simulation/runtime/*`、`src/simulation/contracts/tick-rate.ts`。
 
-## 一、编辑器物流连接规则（喂 RwRoute / 路线图 ③）
+## 一、编辑器物流连接规则（供 RwRoute / 单基地优化参照）
 
 物流是**逐格实体**：每格一个弯道/直道/分流/汇流定义；画新线通过 `cellOverrides` 精确改写受影响格，其余格不动。三种自动设备 `AutoDeviceKind = splitter | converger | connector`。
 
@@ -37,9 +37,9 @@
   - 游标推进规则：**实际发生过传输（moved）的边推进游标**；未连接的死端口跳过、不阻塞轮转；**空 tick（全组无传输）保留游标位置**——否则游标会与设备输出节奏同步锁死（源码注释记录了 2026-05-08 / 05-17 两次订正）。
   - ⭐ 对本库的意义：分流器 1 进 3 出的语义是**轮询均分**，不是按需分配。下游三路速率不同时，实际吞吐受游标节奏约束——排布器报告应把这一点写进分流器的说明里。
 
-## 三、对本库路线图的具体落点
+## 三、对本库的具体落点
 
-1. **③ RwRoute 升级清单**（按收益排序）：
+1. **RwRoute 升级清单**（按收益排序）：
    - 正交穿越 → 自动上**桥接器**（现为绕路或失败）；
    - BFS 前加**头对头/方向预检**（省失败重试）；
    - 分流器报告加「round-robin 均分」语义说明；

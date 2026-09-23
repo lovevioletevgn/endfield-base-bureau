@@ -17,23 +17,16 @@
 const fs = require('fs');
 const vm = require('vm');
 const path = require('path');
+const H = require('./test_harness');
 
 const HTML = process.argv[2]
   ? path.resolve(process.argv[2])
-  : path.join(__dirname, '..', '终末地基建查询.html');
+  : H.defaultHtml();
 const SELF = __filename;
-const html = fs.readFileSync(HTML, 'utf8');
-
-// 取含数据包的那段 <script>（平台托管的页面会在 <head> 里另插一个带属性的 <script src>，
-// 所以不能简单取第一个，也不能用贪婪匹配）
-let rawCode = null;
-for (const mm of html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)) {
-  if (mm[1].includes('const DB')) { rawCode = mm[1]; break; }
-}
-if (!rawCode) {
-  console.error('FATAL 找不到含 const DB 的 <script> 段');
-  process.exit(1);
-}
+// 加载 + 提段 + 语法门禁（三处测试共用的引导逻辑，见 test_harness.js）
+// 注：原实现里「取含 const DB 的 <script>」与「语法门禁」两步之间还有别的代码，
+//     现一并收进 H.load()（顺序不变：先语法门禁、后 const→var 转写）。
+const { html, rawCode, code } = H.load(HTML);
 
 // ---- 语法门禁（必须先于任何转写！）----
 // ⚠️ 血泪教训：下面为了沙箱会把 const/let 全换成 var，而 var 允许重复声明。
@@ -41,16 +34,7 @@ if (!rawCode) {
 // 曾因此把 ENT_CATS 重复声明放过去，浏览器里整个脚本作废、页面全白，
 // 而本测试却报 90/90 通过。
 // V8 的编译器是权威判据，交给它就行。
-try {
-  new vm.Script(rawCode, { filename: 'main.js' });
-} catch (e) {
-  console.error('FATAL 脚本语法错误（真实浏览器会整段作废 → 页面空白）');
-  console.error('  ' + e.name + ': ' + e.message);
-  process.exit(1);
-}
-
-// 沙箱里 const/let 不会挂到 context，全部换成 var
-let code = rawCode.replace(/\bconst\s+/g, 'var ').replace(/\blet\s+/g, 'var ');
+// （该门禁已收进 H.load()，此处保留教训备查；rawCode 是未经转写的原文。）
 
 // ---- DOM stub ----
 function mkEl(tag) {
@@ -97,8 +81,10 @@ function chk(name, cond, extra) {
 
 // ---- 两档制（2026-09-22 博士拍板）----
 // 默认 = 日常档：跳过 ⑤-2/⑤-3 里单次求解 >800ms 的大链走线用例（LawRun hook 实测 6 簇合计 ~13.5s/32s，
-// profile 89% 在 RwPath BFS）。发布前必须 `HEAVY=1 node tools/test_html.js` 全量跑（RESULT pass=671）。
-// 跳过的断言不计 pass/fail，只计 skipHeavy，RESULT 会带 skip=N —— 默认档全绿 = pass=660 fail=0 skip=11。
+// profile 89% 在 RwPath BFS）。发布前必须 `HEAVY=1 node tools/test_html.js` 全量跑。
+// 跳过的断言不计 pass/fail，只计 skipHeavy，RESULT 会带 skip=N —— 日常档应满足 fail=0。
+// ⚠️ 此处刻意不写具体通过数：断言数随版本持续增长，写死的数字必然过期（v103 起已过一轮）。
+//    门禁口径以脚本实际输出的 RESULT 行为准 —— 日常档 fail=0 且 skip 数无异常增长即可。
 // ⑥-2 多目标回归锁（清水+息壤 / 双目标报告头 / 收货组合）**不跳** —— v96 bug 的锁在日常档也要站岗。
 const HEAVY = process.env.HEAVY === '1';
 let skipHeavy = 0;
@@ -2253,9 +2239,9 @@ chk('采集数据带上无线字段：miner_2/3/4 = true，miner_1 = false', (()
   return g('miner_2').wireless === true && g('miner_3').wireless === true && g('miner_4').wireless === true &&
     g('miner_1').wireless === false;
 })(), 'wireless 字段');
-chk('水驱矿机的 wireless 来源标成「博士实机确认」（配置表里没有这个字段）', (() => {
+chk('水驱矿机的 wireless 来源标成「实机确认」（配置表里没有这个字段）', (() => {
   const g = (A.DB.mining_power.gather || []).filter(x => x.id === 'miner_4')[0] || {};
-  return String(g.wirelessSource || '').indexOf('博士实机确认') >= 0;
+  return String(g.wirelessSource || '').indexOf('实机确认') >= 0;
 })(), '来源分级');
 chk('7 座采集建筑都带 wirelessNote（每台的实情都要能写明）', (() => {
   const arr = A.DB.mining_power.gather || [];

@@ -21,10 +21,16 @@ import os
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 # ⭐v110：node 路径原为硬编码本机绝对路径（云端/Linux 不成立）。
-#   优先 $KB_NODE，其次 PATH 里的 node，最后回落原本机路径。
+#   优先 $KB_NODE，其次 PATH 里的 node，再其次常见安装位置，最后回落本机便携版。
+import shutil as _sh
 NODE = (os.environ.get('KB_NODE')
-        or (__import__('shutil').which('node'))
-        or r'C:\Users\Violet Evergarden\.workbuddy\binaries\node\versions\22.22.2-3\node.exe')
+        or _sh.which('node')
+        or next((c for c in (
+            r'C:\Program Files\nodejs\node.exe',
+            r'C:\Program Files (x86)\nodejs\node.exe',
+        ) if os.path.exists(c)), None)
+        or os.path.join(os.path.expanduser('~'), '.workbuddy', 'binaries', 'node',
+                        'versions', '22.22.2-3', 'node.exe'))
 PY = sys.executable or 'python3'
 
 
