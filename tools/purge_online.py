@@ -14,8 +14,14 @@
   python tools/purge_online.py --token <op_...> --yes            # 覆盖默认三处内部目录
   python tools/purge_online.py --token <op_...> --dry-run        # 只打清单，不动线上
   python tools/purge_online.py --token <op_...> --prefix raw/ --yes
+  python tools/purge_online.py --token <op_...> --exact index.html --yes   # v119：精确单个文件
 
 默认覆盖前缀：raw/ 、.workbuddy/ 、_archive/
+
+--exact 用于「整个文件路径」的精确匹配（相对 PREFIX 之下），补 --prefix 只能按目录前缀
+覆盖的不足。v119 用它下架 `index.html`：仓库根那份静态介绍页**只该待在 GitHub**，
+一旦上了托管页就会占住空间的「默认打开」位置，把主链接变成落地页、成品页反而躲到二级路径。
+
 占位内容：一行说明文本（73 字节），与 v114 止血时一致，便于识别。
 """
 from __future__ import annotations
@@ -74,6 +80,7 @@ def main() -> int:
     ap.add_argument("--token", default="")
     ap.add_argument("--node-id", dest="node_id", default=DEF_NODE)
     ap.add_argument("--prefix", dest="prefixes", action="append", default=[])
+    ap.add_argument("--exact", dest="exacts", action="append", default=[])
     ap.add_argument("--message", default="")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--yes", action="store_true")
@@ -82,13 +89,18 @@ def main() -> int:
     if not a.token:
         print("缺 --token（op_...）", file=sys.stderr)
         return 2
-    prefixes = a.prefixes or DEFAULT_PREFIXES
+    prefixes = a.prefixes or ([] if a.exacts else DEFAULT_PREFIXES)
     full = [PREFIX + p for p in prefixes]
+    exact_full = set(PREFIX + e for e in a.exacts)
 
     # 1) 拉线上清单
     d = api("list_page_artifacts.py", ["--node-id", a.node_id], a.token)
     artifacts = [x.get("path") for x in (d.get("artifacts") or []) if isinstance(x, dict)]
-    targets = sorted(p for p in artifacts if any(p.startswith(f) for f in full))
+    targets = sorted(p for p in artifacts
+                     if p in exact_full or any(p.startswith(f) for f in full))
+    missing = sorted(exact_full - set(artifacts))
+    if missing:
+        print("⚠ 线上不含以下指定文件（跳过）: %s" % missing)
     print("线上版本 v%s，产物 %d 项；命中待覆盖 %d 项" % (d.get("version"), len(artifacts), len(targets)))
     if not targets:
         print("无需覆盖。")
@@ -117,8 +129,8 @@ def main() -> int:
             print("  覆盖 %d/%d" % (i, len(targets)))
 
     # 4) commit
-    msg = a.message or ("purge：%s 覆盖为占位（平台无删除接口，历史版本 URL 仍保留原文）"
-                        % "/".join(prefixes))
+    what = "/".join(prefixes + a.exacts) if (prefixes or a.exacts) else "(未指定)"
+    msg = a.message or ("purge：%s 覆盖为占位（平台无删除接口，历史版本 URL 仍保留原文）" % what)
     d = api("commit_page_transaction.py", ["--transaction-id", tx, "--message", msg], a.token)
     print("commit v%s  %s" % (d.get("newVersion"), d.get("url")))
     print("⚠ 历史版本 URL 无法删除，请人工登记残留。")

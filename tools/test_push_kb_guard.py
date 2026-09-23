@@ -14,6 +14,10 @@
 「剔除 + 告警」，只有 --files 显式点名内部路径时才 fail。安全性等价（剔除点仍在最后一步，
 没有任何路径能绕过），但通道保持可用 —— 下面为此专门加了一条回归断言。
 
+⚠ v122 策略反转：index.html 从「排除上托管页」改为「回归托管页当跳板」（托管环境自动
+跳转成品页；space/d 需登录是平台设计，访客分享走 workbuddy.link/p/ 发布短链）。相应
+断言从「不含/必拦」翻转为「含/放行」，SCAN_SKIP_FILES 断言改为「名单为空集」。
+
 用法：
     python tools/test_push_kb_guard.py                 # 只跑离线断言
     python tools/test_push_kb_guard.py --token <op_..> # 连跑硬闸（需网络，会建 dry-run 事务）
@@ -75,6 +79,10 @@ def main() -> int:
             leaked.append(rel)
     check("scan 零泄露", not leaked, str(leaked[:5]))
     check("scan 含主产物", any(f.endswith("终末地基建查询.html") for f in scan))
+    # v122 反转：index.html 回归托管页当跳板（托管环境自动跳成品页），必须能被 scan 扫到，
+    #             否则发布版默认入口会停在 v120 的占位页
+    check("scan 含 index.html",
+          any(f.endswith("/index.html") or f == "index.html" for f in scan))
 
     # ---- 2. _is_internal_path 单元断言 ----
     cases = [
@@ -90,14 +98,19 @@ def main() -> int:
         got = pk._is_internal_path(rel)
         check("internal(%s)==%s" % (rel, want), got == want, "got=%s" % got)
 
+    # v122 反转：GitHub 专属排除名单已清空（index.html 回归托管页）；名单机制保留备用
+    check("SCAN_SKIP_FILES 为空集", not pk.SCAN_SKIP_FILES,
+          str(getattr(pk, "SCAN_SKIP_FILES", None)))
+
     # ---- 3. 上传硬闸（需 token）----
     if not a.token:
-        skips += 5
+        skips += 7
         print("skip: 硬闸用例（未给 --token，不联网）")
     else:
         for rel, want_block in [("raw/ItemTable.json", True),
                                 (".workbuddy/memory/MEMORY.md", True),
                                 ("_archive/代码质量审计报告.md", True),
+                                ("index.html", False),
                                 ("data/items.json", False)]:
             r = subprocess.run([sys.executable, PUSH_KB, "--token", a.token, "--message", "guard test",
                                 "--dry-run", "--files", rel, "--allow-new"],

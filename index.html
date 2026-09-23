@@ -205,6 +205,19 @@
   }
   footer p { margin: 0 0 6px; }
 </style>
+<script>
+  /* 托管环境自动跳转：本文件在 GitHub 仓库里是项目介绍页；但推上 WorkBuddy 托管页后，
+     它是访客打开分享链接时的默认入口（产物树里字母序第一个 HTML），此时应把访客
+     直接送到成品页，而不是停在这份介绍上。GitHub / 本地打开（hostname 不匹配）不跳。 */
+  (function () {
+    var h = location.hostname, p = location.pathname;
+    var hosted =
+      h.indexOf(".codebuddy.work") !== -1 ||                              // 托管静态域
+      h.indexOf("workbuddy.link") !== -1 ||                               // 发布短链域
+      (h.indexOf("workbuddy.cn") !== -1 && p.indexOf("/space/d/") === 0); // 打开节点的视图
+    if (hosted) location.replace("终末地基建查询.html");
+  })();
+</script>
 </head>
 <body>
 <div class="wrap">
@@ -217,7 +230,7 @@
     建筑占几格、接口在哪条边、传送带吞吐多少、这条产线怎么摆 —— 一次查完。
   </p>
   <div class="cta">
-    <a class="btn btn-primary" href="https://www.workbuddy.cn/space/d/YQO3ePeFiFgF6BrMKIpFbs" target="_blank" rel="noopener">打开在线版 →</a>
+    <a class="btn btn-primary" href="https://workbuddy.link/p/YQO3ePeFiFgF6BrMKIpFbs" target="_blank" rel="noopener">打开在线版 →</a>
     <a class="btn btn-ghost" href="#run-locally">本地运行</a>
     <span class="cta-note">在线版打开即用，无需注册与安装。</span>
   </div>

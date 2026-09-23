@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-push_kb.py —— 终末地基建知识库一键推送（建事务→diff→merge→上传→commit→终验）
+push_kb.py —— 终末地基建知识库一键推送（建事务→diff→merge→上传→commit→publish→终验）
 
 替代分阶段的 _push.py：一次调用跑完全链，stdout 直接输出摘要，细节落 _tx_push/log.txt。
+
+⭐v122：commit 之后会自动 publish（此前从未 publish，访客发布视图曾停在 v116 长达四版）。
+  终验同时核对 publishVersion 是否追上本次 commit，没追上按 FAIL 处理。
 
 ⚠️ 已知限制（v111 记录，均**不修**，属设计取舍）：
   1. 脚本**不删除**线上多余文件。本地删掉的文件，线上仍保留（只打 `(线上有本地无，跳过)`）。
@@ -227,6 +230,14 @@ SCAN_SKIP_DIRS = {"raw", "_tx_push", ".baseline", ".git", "__pycache__",
                   "node_modules", ".vscode", ".idea", "_shot",
                   ".workbuddy", "_archive"}
 
+# ⭐v119：仓库根的 index.html（GitHub 落地页）曾被排除上托管页 —— 当时它占住了空间的
+#   「默认打开」位，主链接变成落地页自己，成品页躲到二级路径。
+# ⭐v122 反转：space/d 需登录是平台设计（它是「打开节点」链接，不是分享链接）；访客分享
+#   改走 workbuddy.link/p/ 发布短链（免登录、URL 永不变），而发布版默认入口 = 产物树
+#   字母序第一个 HTML。index.html 已加「托管环境自动跳转到成品页」逻辑（GitHub/本地打开
+#   不跳），回到托管页当跳板才是正解。排除名单清空，机制保留（以后再有 GitHub 专属文件往这里加）。
+SCAN_SKIP_FILES = set()
+
 
 def _is_internal_path(rel):
     """v114 新增通用防线：相对路径任一级**目录**以 `.` 或 `_` 开头 → 内部目录，不上线。
@@ -258,6 +269,8 @@ def scan_local_artifacts():
             if fn.startswith("probe_") or fn.endswith((".bak", ".log")):
                 continue
             if fn.startswith("_v") and fn.endswith("_ref.html"):
+                continue
+            if fn in SCAN_SKIP_FILES:                       # GitHub 专属文件（v122 起为空集）
                 continue
             full = os.path.join(root, fn)
             rel = os.path.relpath(full, PROJ).replace(os.sep, "/")
@@ -428,7 +441,8 @@ def main():
     blocked, kept = [], []
     for rel in push:
         rel_np = rel[len(PREFIX):] if rel.startswith(PREFIX) else rel
-        if _is_internal_path(rel_np) or rel_np.split("/")[0] in SCAN_SKIP_DIRS:
+        if (_is_internal_path(rel_np) or rel_np.split("/")[0] in SCAN_SKIP_DIRS
+                or rel_np in SCAN_SKIP_FILES):
             blocked.append(rel)
         else:
             kept.append(rel)
@@ -438,9 +452,9 @@ def main():
         named = [r for r in blocked
                  if r in a.files or (r.startswith(PREFIX) and r[len(PREFIX):] in a.files)]
         if named:
-            fail(1, "拒绝上传 %d 个内部/排除目录文件（--files 显式指定，v116 泄露事故硬闸）：\n  %s"
+            fail(1, "拒绝上传 %d 个内部/排除/不上线文件（--files 显式指定，v116 泄露事故硬闸）：\n  %s"
                  % (len(named), "\n  ".join(named)))
-        say("  ⛔ 剔除 %d 个内部/排除目录文件（v116 硬闸，永不上传）：" % len(blocked))
+        say("  ⛔ 剔除 %d 个内部/排除/不上线文件（v116 硬闸，永不上传）：" % len(blocked))
         for r in blocked:
             say("       %s" % r)
         push = kept
@@ -536,7 +550,17 @@ def main():
     say("commit: v%s  %s" % (ver, d.get("url") or ""))
     os.remove(STATE_P)
 
-    # ---- 6. 终验（按新版本号拉回，字节比对） ----
+    # ---- 5.5 publish（⭐v122）commit 只产生新版本，访客发布视图要 publish 才更新。
+    #     根因复盘：本工具从建链以来从不 publish，访客短链 workbuddy.link/p/ 曾停在
+    #     v116 长达四版（v117–v120 访客全看不见）。publish 失败不在此处中止 ——
+    #     终验的 publishVersion 核对会兜底；--no-verify 时仅告警。 ----
+    try:
+        d = api("publish_page.py", ["--node-id", NODE], a.token)
+        say("publish: ok  %s" % (d.get("publishUrl") or "(服务端未回 publishUrl)"))
+    except SystemExit as e:
+        say("publish: FAIL（exit=%s）—— 访客发布视图可能落后于 v%s，终验会进一步核对。" % (e, ver))
+
+    # ---- 6. 终验（按新版本号拉回，字节比对 + 发布视图核对） ----
     if not a.no_verify:
         v_url, _ = list_artifacts(a.token, ver)
         bad = []
@@ -552,6 +576,15 @@ def main():
         if bad:
             fail(1, "终验不一致: %s（线上 v%s 与本地有出入，人工检查！）" % (bad, ver))
         say("verify: %d/%d 字节一致，v%s 上线确认" % (len(push) - len(bad), len(push), ver))
+
+        # ⭐v122：发布视图必须追上本次 commit，否则访客短链看到的还是旧版。
+        pd = api("list_page_publish_artifacts.py", ["--node-id", NODE], a.token)
+        m = re.search(r"/page/[^/]+/(\d+)/", str(pd.get("url") or ""))
+        pub_ver = int(m.group(1)) if m else None
+        if pub_ver != ver:
+            fail(1, "发布视图未追上: publishVersion=%s，本次 commit=v%s"
+                    "（访客短链将看到旧版；可重跑 publish_page.py 补发）" % (pub_ver, ver))
+        say("verify: publishVersion=v%s 已对齐，访客短链指向最新版" % pub_ver)
     say("elapsed %.1fs" % (time.monotonic() - T0))
 
 
