@@ -2189,6 +2189,45 @@ function LlayTo(ex,ey){
     const rot=nxt?LrotFrom(c,nxt):(i>0?LrotFrom(ln.cells[i-1],c):L.pickRot);
     added.push(Lmk(L.pick,c[0],c[1],rot));
   });
+  /* ⭐v128（博士 2026-09-24「连续放传送带时，在上一条传送带的末尾拐弯放置，
+     末尾那格不会自动变成拐弯」）：链尾自动拧转。弯头渲染靠 flowIn 拓扑反推
+     （邻居指向我才有进边）——「从旧带末尾拐出去」时旧尾格没有任何邻居指向它，
+     推断必然失效，永远画直条。游戏口径是新带衔接旧链尾时旧尾格自动变弯头：
+     扫描新路径首格四邻，同类介质的普通带/管段 P 满足——
+     ① P 出向不指首格（已衔接的不动）；
+     ② 首格出向不指 P（首格流入 P 的不拧，否则拧成互指死循环）；
+     ③ P 出向的下一格是空格（真链尾——下一格压着机器口/分流器/别的带都算已有承接，
+        拧了会破坏既有衔接；中间段拧了会把链拧断）——
+     才把 P.rot 拧向首格，v106 的渲染推断随即自动把 P 画成弯头。
+     幂等：拧过一次 P 出向已指首格，后续帧判定①不再命中，拖动重铺不会反复拧；
+     撤销：整段手势的快照在起手前压栈（LonMouseDown 的 Lpush），拧转与铺带
+     同一次 Ctrl+Z 还原。只处理起点侧；终点侧（新带流入旧带）flowIn 自动衔接。 */
+  if(added.length){
+    const pickB=byBp(L.pick.id);
+    const pickPipe=!!pickB&&pickB.lgMedium==='管道';
+    const f0=added[0];
+    const V2={r:[1,0], b:[0,1], l:[-1,0], t:[0,-1]};
+    const outV=(b,rot)=>{ const q=(lgPortSides(b,rot).out||[])[0]; return q?(V2[q]||null):null; };
+    const lgAt={}, occ={};
+    /* occ 按**占地逐格**展开（3×3 机器压着的 9 格都算承接）—— 只记左上角会让
+       「出向下一格压在机器肚子里」漏判，把已接进机器的带子拧走（v128 首轮实测踩过） */
+    const occMark=q=>{ const b=byBp(q.id); const fp=b?Lfp(b):[1,1];
+      for(let dx=0;dx<fp[0];dx++) for(let dy=0;dy<fp[1];dy++) occ[(q.x+dx)+','+(q.y+dy)]=q; };
+    L.objs.forEach(q=>{ const b=byBp(q.id); occMark(q); if(b&&b.isLogi) lgAt[q.x+','+q.y]=q; });
+    added.forEach(q=>{ occMark(q); });   /* 本帧要铺上的格子也算承接方 */
+    [[1,0],[-1,0],[0,1],[0,-1]].forEach(v=>{
+      const P=lgAt[(f0.x+v[0])+','+(f0.y+v[1])];
+      if(!P||L.objs.indexOf(P)<0) return;        /* 必须是已有旧带（不含本手势自己的格子） */
+      const b=byBp(P.id);
+      if(!b||!b.isLogi||(b.lgType!=='Belt'&&b.lgType!=='Pipe')||(b.lgMedium==='管道')!==pickPipe) return;
+      const pov=outV(b,P.rot); if(!pov) return;
+      if(P.x+pov[0]===f0.x&&P.y+pov[1]===f0.y) return;            /* ① 已指向首格 */
+      const fov=outV(pickB,f0.rot);
+      if(fov&&f0.x+fov[0]===P.x&&f0.y+fov[1]===P.y) return;       /* ② 首格流入 P */
+      if(occ[(P.x+pov[0])+','+(P.y+pov[1])]) return;              /* ③ 出向下格非空=有承接 */
+      P.rot=LrotFrom([P.x,P.y],[f0.x,f0.y]);
+    });
+  }
   st.uids=added.map(o=>o.uid);
   if(!added.length){ L.msg='这条线上没有可放的空格'; render(); return; }
   added.forEach(o=>L.objs.push(o));

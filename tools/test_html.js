@@ -2134,6 +2134,127 @@ loReset(50);
   A.LO.dlvPop = null;
 })();
 
+// ⭐v128 链尾自动拧转（博士 2026-09-24「连续放传送带时，在上一条传送带的末尾拐弯放置，
+//   末尾那格不会自动变更拐弯」）。弯头渲染靠 flowIn 拓扑反推（邻居指向我才有进边），
+//   「从旧带末尾拐出去」时旧尾格没有任何邻居指向它 → 永远画直条。
+//   修法 = LlayTo 落格后扫描首格四邻，把满足「出向不指首格 + 首格不流入它 +
+//   出向下格是空格」的同类普通带/管段拧向首格（v106 渲染推断随即画弯头）。
+loReset(50);
+(function () {
+  // 场景1：横排带 (3,5)(4,5)(5,5) 全向右流，E=(5,5) 是链尾。从 E 上方 (5,4) 起手
+  //   向上拖到 (5,2) → 新竖列向上流，E 应被拧成 270（左进上出弯头）。
+  A.LO.objs = [
+    A.Lmk(A.byBp('grid_belt_01'), 3, 5, 0),
+    A.Lmk(A.byBp('grid_belt_01'), 4, 5, 0),
+    A.Lmk(A.byBp('grid_belt_01'), 5, 5, 0)
+  ];
+  A.Lpick('grid_belt_01');
+  A.LODRAG = { mode: 'lay', sx: 5, sy: 4, ex: 5, ey: 4, uids: [], hist: [[5, 4]] };
+  A.LlayTo(5, 2);
+  const e1 = A.LO.objs.filter(o => o.x === 5 && o.y === 5)[0];
+  chk('v128 链尾拧转：横排末尾格拧向上（270）', !!e1 && e1.rot === 270, e1 ? 'rot=' + e1.rot : 'none');
+  const nv1 = A.LO.objs.filter(o => o.id === 'grid_belt_01' && o.y <= 4 && o.y >= 2 && o.x === 5);
+  chk('v128 新竖列铺上且向上流（270）', nv1.length === 3 && nv1.every(o => o.rot === 270),
+      nv1.map(o => o.y + '@' + o.rot).join(' '));
+  // 撤销口径：手势起手前 Lpush 压栈（mousedown 同款），拧转+铺带一次 Ctrl+Z 全还原
+  A.LO.undo = []; A.LO.redo = [];
+  A.LO.objs = [
+    A.Lmk(A.byBp('grid_belt_01'), 3, 5, 0),
+    A.Lmk(A.byBp('grid_belt_01'), 4, 5, 0),
+    A.Lmk(A.byBp('grid_belt_01'), 5, 5, 0)
+  ];
+  A.Lpush();   // 模拟 mousedown 起手压栈
+  A.LODRAG = { mode: 'lay', sx: 5, sy: 4, ex: 5, ey: 4, uids: [], hist: [[5, 4]] };
+  A.LlayTo(5, 2);
+  A.Lundo();
+  chk('v128 撤销一次：拧转与铺带同批还原（回到 3 格横排、末尾 rot=0）',
+      A.LO.objs.length === 3 &&
+      A.LO.objs.every(o => o.y === 5 && o.rot === 0),
+      A.LO.objs.length + ' 格 ' + A.LO.objs.map(o => o.x + ',' + o.y + '@' + o.rot).join(' '));
+})();
+
+loReset(50);
+(function () {
+  // 场景2：非链尾不拧 —— E=(5,5) 出向 (6,5) 有同类承接，拧了会断链。
+  A.LO.objs = [
+    A.Lmk(A.byBp('grid_belt_01'), 3, 5, 0),
+    A.Lmk(A.byBp('grid_belt_01'), 4, 5, 0),
+    A.Lmk(A.byBp('grid_belt_01'), 5, 5, 0),
+    A.Lmk(A.byBp('grid_belt_01'), 6, 5, 0)
+  ];
+  A.Lpick('grid_belt_01');
+  A.LODRAG = { mode: 'lay', sx: 5, sy: 4, ex: 5, ey: 4, uids: [], hist: [[5, 4]] };
+  A.LlayTo(5, 2);
+  const e2 = A.LO.objs.filter(o => o.x === 5 && o.y === 5)[0];
+  chk('v128 非链尾不拧：出向有承接的中间段保持 0', !!e2 && e2.rot === 0, e2 ? 'rot=' + e2.rot : 'none');
+})();
+
+loReset(50);
+(function () {
+  // 场景3：首格流入旧带不拧（防拧成互指死循环）—— 从 E 上方向下拖，新带流向 E。
+  A.LO.objs = [
+    A.Lmk(A.byBp('grid_belt_01'), 3, 5, 0),
+    A.Lmk(A.byBp('grid_belt_01'), 4, 5, 0),
+    A.Lmk(A.byBp('grid_belt_01'), 5, 5, 0)
+  ];
+  A.Lpick('grid_belt_01');
+  A.LODRAG = { mode: 'lay', sx: 5, sy: 4, ex: 5, ey: 4, uids: [], hist: [[5, 4]] };
+  A.LlayTo(5, 5);   // 向下一格：(5,5) 被旧带占 → 跳过，首格 (5,4) rot=90 流向 E
+  const e3 = A.LO.objs.filter(o => o.x === 5 && o.y === 5)[0];
+  const f3 = A.LO.objs.filter(o => o.x === 5 && o.y === 4)[0];
+  chk('v128 首格流入旧带：E 不拧（保持 0，链由 flowIn 自动衔接）',
+      !!e3 && e3.rot === 0 && !!f3 && f3.rot === 90,
+      'E=' + (e3 ? e3.rot : 'none') + ' F=' + (f3 ? f3.rot : 'none'));
+})();
+
+loReset(50);
+(function () {
+  // 场景4：旧尾已指向首格不拧 —— 从 E 右边 (6,5) 起手向上拖，E 出向恰指首格。
+  A.LO.objs = [
+    A.Lmk(A.byBp('grid_belt_01'), 4, 5, 0),
+    A.Lmk(A.byBp('grid_belt_01'), 5, 5, 0)
+  ];
+  A.Lpick('grid_belt_01');
+  A.LODRAG = { mode: 'lay', sx: 6, sy: 5, ex: 6, ey: 5, uids: [], hist: [[6, 5]] };
+  A.LlayTo(6, 3);
+  const e4 = A.LO.objs.filter(o => o.x === 5 && o.y === 5)[0];
+  chk('v128 旧尾已指向首格：不拧（E 保持 0，E→新带已衔接）',
+      !!e4 && e4.rot === 0, e4 ? 'rot=' + e4.rot : 'none');
+})();
+
+loReset(50);
+(function () {
+  // 场景5：管道同款 —— 横排管道链尾，从末尾上方拐出去，尾管拧向上。
+  A.LO.objs = [
+    A.Lmk(A.byBp('log_pipe_01'), 3, 7, 0),
+    A.Lmk(A.byBp('log_pipe_01'), 4, 7, 0),
+    A.Lmk(A.byBp('log_pipe_01'), 5, 7, 0)
+  ];
+  A.Lpick('log_pipe_01');
+  A.LODRAG = { mode: 'lay', sx: 5, sy: 6, ex: 5, ey: 6, uids: [], hist: [[5, 6]] };
+  A.LlayTo(5, 4);
+  const e5 = A.LO.objs.filter(o => o.id === 'log_pipe_01' && o.x === 5 && o.y === 7)[0];
+  chk('v128 管道链尾同款拧转（270）', !!e5 && e5.rot === 270, e5 ? 'rot=' + e5.rot : 'none');
+})();
+
+loReset(50);
+(function () {
+  // 场景6：出向下格压着机器不拧 —— E 出向指着机器输入侧，拧走会破坏「带子进机器」。
+  A.Lpick('furnance_1'); A.Lput(6, 4);   // 3×3 占 (6,4)~(8,6)，含 E=(5,5) 出向的 (6,5)
+  A.LO.objs.push(
+    A.Lmk(A.byBp('grid_belt_01'), 3, 5, 0),
+    A.Lmk(A.byBp('grid_belt_01'), 4, 5, 0),
+    A.Lmk(A.byBp('grid_belt_01'), 5, 5, 0)
+  );
+  A.Lpick('grid_belt_01');
+  A.LODRAG = { mode: 'lay', sx: 5, sy: 4, ex: 5, ey: 4, uids: [], hist: [[5, 4]] };
+  A.LlayTo(5, 2);
+  const e6 = A.LO.objs.filter(o => o.x === 5 && o.y === 5)[0];
+  chk('v128 出向下格压机器：不拧（保住带子进机器的衔接）',
+      !!e6 && e6.rot === 0, e6 ? 'rot=' + e6.rot : 'none');
+  A.LO.objs = A.LO.objs.filter(o => o.id !== 'grid_belt_01');
+})();
+
 // ⚠️ 接口标记的几何护栏（2026-09-21 两轮报障的根因都在这块）
 // 第一轮：标记"往格外偏 4.5px" + .lo-cell 带 overflow:hidden → 被裁成贴边细线，「看不见」。
 // 第二轮：改成压格线跨出去 → 一半伸进邻格，邻格放传送带就互相压字，「重叠不美观」。
