@@ -1774,7 +1774,15 @@ function hubPickItem(o,idx){ const iid=hubPickGet(o,idx); return iid?((DB.hubIte
 /* 稀有度 → 星串（列表里用，纯字符不给字号列表加样式负担） */
 function hubStars(r){ r=Math.max(1,Math.min(6,r|0)); return '★'.repeat(r); }
 /* 打开某台核心的出料口选货清单 */
-function LdlvOpen(uid,idx){ const L=Linit(); L.dlvPop={uid:uid, idx:idx}; render(); }
+/* ⭐v123（博士「鼠标一移动到机器口上就只能选择物品」）：手里拿着东西时点出货箭头
+   不再弹选货浮层 —— 手拿物流件时 mousedown 已分流去「口格拉线」（见 LonMouseDown），
+   但 mouseup 后 click 照样派发到箭头的 onclick，不拦会把刚起手的线头顶出浮层。
+   空手点击才真正开选货。 */
+function LdlvOpen(uid,idx){
+  const L=Linit();
+  if(L.pick) return;
+  L.dlvPop={uid:uid, idx:idx}; render();
+}
 function LdlvClose(){ const L=Linit(); L.dlvPop=null; render(); }
 function LdlvPick(uid,idx,itemId){
   const L=Linit();
@@ -2283,8 +2291,12 @@ function LonMouseDown(e){
   if(e.target.closest&&e.target.closest('.lo-gasbar')) return;
   /* ⭐v109 协议核心出货：内部箭头（.lo-dlv）与选货浮层（.lo-dlvpop）自成一套点击 ——
      放行给它们自己的 onclick，否则点箭头会被当成「点画布 → 清选中 / 摆新件」。
-     点画布别处则顺手关掉浮层（浮层外点击 = 收起）。 */
-  if(e.target.closest&&e.target.closest('.lo-dlv')) return;
+     点画布别处则顺手关掉浮层（浮层外点击 = 收起）。
+     ⭐v123（博士「手拿传送带一移到口上就只能选货」）：箭头压在口格上，v109 的无条件
+     放行把 v108「从口格拉线」挡死了。改为**手拿物流件时不放行** —— 往下走到 portpend
+     分支（原地松手=拉线、拖动=移机器）；空手点箭头仍放行开选货浮层（click 链由
+     LdlvOpen 的「手里有东西不开」守卫兜底）。 */
+  if(e.target.closest&&e.target.closest('.lo-dlv')&&!(Linit().pick&&Linit().pick.isLogi)) return;
   if(e.target.closest&&e.target.closest('.lo-dlvpop')) return;
   if(Linit().dlvPop) Linit().dlvPop=null;
   const c=e.target.closest('.lo-canvas'); if(!c) return;

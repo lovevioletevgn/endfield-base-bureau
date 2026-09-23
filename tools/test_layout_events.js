@@ -94,21 +94,35 @@ function onOutHtml(el) {
   const mw = /width:(\d+)px/.exec(sv), mh = /height:(\d+)px/.exec(sv);
   if (mw && mh) canvas._rect = { left: 0, top: 0, width: +mw[1], height: +mh[1] };
 
-  // ⭐v109 协议核心出货块：解析出 .lo-dlv 与 .lo-dlvpop，挂到画布上（供事件层探针使用）
+  // ⭐v109 协议核心出货块：解析出 .lo-dlv 与 .lo-dlvpop（供事件层探针使用）。
+  // ⭐v123：dlv 的 _host 必须挂到**所属 cell** —— 真实 DOM 里箭头是 .lo-cell 的子元素
+  //   （渲染层把 ports 拼进 cell 的 innerHTML），closest('.lo-cell') 从箭头出发要能命中
+  //   机器格。v109 时 mousedown 对 .lo-dlv 无条件放行、链路走不到 cellEl 判定，「挂
+  //   canvas」的简化从未暴露；v123 手拿物流件不放行走深后，dlv→canvas 的假链让
+  //   cellEl=null → 被当成点空地起手铺带，4 条断言全崩（2026-09-23 实锤）。
+  //   修法 = 顺序扫描，记录「最近开标签的 cell」，dlv 挂到它名下；顺带存口格中心像素
+  //   （_px/_py），让探针能按真实口格坐标发事件。
   canvas._dlvs = [];
   canvas._dlvpop = null;
-  const dre = /<div class="lo-dlv( set)?" style="left:(-?[\d.]+)px;top:(-?[\d.]+)px"/g;
-  let dm2;
-  while ((dm2 = dre.exec(v))) {
-    const d = mkEl('div');
-    d._dlv = true; d._host = canvas;
-    if (dm2[1]) d.classList.add('set');
-    canvas._dlvs.push(d);
-  }
-  if (v.indexOf('class="lo-dlvpop"') >= 0) {
-    const p = mkEl('div');
-    p._dlvpop = true; p._host = canvas;
-    canvas._dlvpop = p;
+  const hostRe = /<div class="lo-cell(?: [^"]*)?" data-uid="([^"]+)"|<div class="lo-dlv( set)?" style="left:(-?[\d.]+)px;top:(-?[\d.]+)px"|<div class="lo-dlvpop"/g;
+  let curCell = null, hm;
+  while ((hm = hostRe.exec(v))) {
+    /* 分支判定用「必有组」：cell=组1(uid)、dlv=组3(left)。
+       ⚠️ 不能用组2(set) 判 dlv —— 可选组 `( set)?` 未参与匹配时是 undefined 而非 ''，
+       `!== undefined` 恒 false，dlv 会全部掉进 dlvpop 分支（2026-09-23 实测崩过）。 */
+    if (hm[1] !== undefined) {
+      curCell = canvas._cells.filter(c => c.dataset.uid === hm[1])[0] || null;
+    } else if (hm[3] !== undefined) {
+      const d = mkEl('div');
+      d._dlv = true; d._host = curCell || canvas;
+      d._px = +hm[3]; d._py = +hm[4];
+      if (hm[2]) d.classList.add('set');
+      canvas._dlvs.push(d);
+    } else {
+      const p = mkEl('div');
+      p._dlvpop = true; p._host = canvas;   // 选货浮层是画布级浮层（不进 cell 树）
+      canvas._dlvpop = p;
+    }
   }
 }
 
@@ -608,8 +622,10 @@ A.LonMouseUp();
 A.LO.pick = null;
 
 // ---------- v109 第二半：协议核心出货箭头（博士：「出货口可以点击选择物品出货」+「内部给个箭头」）----------
-// 箭头 .lo-dlv 是画布内的可点浮层，LonMouseDown 必须放行 —— 否则点箭头会被当成
-// 「点画布」：清掉选中、手里有件时还会顺手再摆一座（v104 的 gasbar 同款坑）。
+// 箭头 .lo-dlv 是画布内的可点浮层，空手点击必须放行给选货。⭐v123（博士「手拿传送带
+// 一移到口上就只能选货」）：手拿**物流件**时不再放行 —— 箭头压在口格上，v109 的无条件
+// 放行把 v108「从口格拉线」挡死了。新分流：拿件点口=待决态（原地松手=拉线、拖动=移动），
+// 空手点口=选货浮层；click 链由 LdlvOpen 的「手里有东西不开」守卫兜底。
 resetCanvas(40);
 (function () {
   A.Lpick('sp_hub_1'); A.Lput(4, 4);
@@ -618,19 +634,43 @@ resetCanvas(40);
   A.render();
   chk('事件层：协议核心渲染出 6 个出货箭头', canvas._dlvs.length === 6, String(canvas._dlvs.length));
 
-  // 1) 手里拿着物流件点箭头 → 不能摆出新件、不能清选中、不能起拖
+  // 1) 手里拿着物流件点箭头 → 不放行：进「口格拉线」待决态（不误摆件、不清选中）
   A.Lpick('grid_belt_01');
   const nBefore = A.LO.objs.filter(o => o.id === 'grid_belt_01').length;
   const selBefore = A.LO.sel.slice();
   const arrow = canvas._dlvs[0];
-  A.LonMouseDown(ev(arrow, px(0), px(0)));
-  chk('事件层：手拿物流件点出货箭头 → 不摆新件',
+  // 坐标从数据侧算（渲染层同款 LportXY/LportDirRot）—— v123 起不放行，链路要 LhitPort
+  // 真命中口格。⚠️ 事件坐标是 canvas 绝对系；dlv 的 style left/top 是 cell 相对系，
+  // 直接拿来发事件会偏掉一个建筑原点（2026-09-23 实测：点成了核心内部的普通格 → move）。
+  const hbp = A.DB.blueprint.buildings.find(b => b.id === 'sp_hub_1');
+  const dvq = { r: [1, 0], l: [-1, 0], d: [0, 1], u: [0, -1] };
+  const pc = hbp.ports.filter(p => p.kind === 'output').map(p => {
+    const q = A.LportXY(p, 0, 9, 9);
+    const gx = 4 + q.x, gy = 4 + q.z;
+    const dir = A.LportDirRot(p, 0, 9, 9);
+    const dv = dvq[dir] || [0, 0];
+    return { gx, gy, ox: gx + dv[0], oy: gy + dv[1] };
+  }).filter(c => c.ox >= 0 && c.oy >= 0 && c.ox < 40 && c.oy < 40 &&
+      !A.LO.objs.some(o => c.ox >= o.x && c.ox < o.x + o.w && c.oy >= o.y && c.oy < o.y + o.d));
+  chk('事件层：数据侧能算出核心的口外空格（探针前置）', pc.length > 0, String(pc.length));
+  const P = pc[0];
+  A.LonMouseDown(ev(arrow, px(P.gx), px(P.gy)));
+  chk('事件层：手拿物流件点出货箭头 → 进「口格拉线」待决态（v123 拉线优先于选货）',
+      !!A.LODRAG && A.LODRAG.mode === 'portpend', A.LODRAG ? A.LODRAG.mode : 'null');
+  chk('事件层：手拿物流件点出货箭头不误摆新件',
       A.LO.objs.filter(o => o.id === 'grid_belt_01').length === nBefore,
       nBefore + ' → ' + A.LO.objs.filter(o => o.id === 'grid_belt_01').length);
-  chk('事件层：点出货箭头不清掉选中', A.LO.sel.join() === selBefore.join(),
+  chk('事件层：手拿物流件点出货箭头不清掉选中', A.LO.sel.join() === selBefore.join(),
       A.LO.sel.join() + ' vs ' + selBefore.join());
-  chk('事件层：点出货箭头不起拖动（LODRAG 仍为 null）', A.LODRAG === null,
-      A.LODRAG ? A.LODRAG.mode : 'null');
+
+  // 1b) 待决态原地松手 = 从口外一格起手铺带（v108 拉线复活）
+  A.LonMouseUp();
+  const nb1 = A.LO.objs.filter(o => o.id === 'grid_belt_01');
+  chk('事件层：口上原地松手 → 从口外起手铺带（拉线复活）',
+      !!A.LODRAG && A.LODRAG.mode === 'lay' && nb1.length === nBefore + 1 &&
+      nb1[nb1.length - 1].x === P.ox && nb1[nb1.length - 1].y === P.oy,
+      A.LODRAG ? A.LODRAG.mode + ' 带 ' + nBefore + '→' + nb1.length : 'null');
+  A.LODRAG = null;   // lay 态手势不收尾，清掉防泄漏到下一个用例
 
   // 2) 空手点箭头同样不能摆件 / 清选中
   A.LO.pick = null;

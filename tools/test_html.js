@@ -1729,6 +1729,81 @@ loReset(50);
       sn ? sn.x + ',' + sn.y + '@' + sn.dir : 'null');
 })();
 
+// ⭐v123（博士「协议核心还是无法从机器口拉传送带，鼠标一移动到机器口上就只能选择物品」）：
+// v109 的出货箭头 .lo-dlv 压在口格上，LonMouseDown 对它无条件放行 → 手拿物流件点口
+// 永远弹选货浮层，v108「从口格拉线」起不来。修复 = 手拿物流件时不放行（走 portpend：
+// 原地松手=拉线、拖动=移机器），空手点箭头才开浮层；LdlvOpen 加「手里有东西不开」守卫
+// 兜住 mouseup 后仍会派发到箭头 onclick 的 click。沙箱没有真实 DOM 树，事件对象手工造
+// （closest 按选择器映射，Lxy 用假 getBoundingClientRect）。
+(function () {
+  loReset(50);
+  A.Lpick('sp_hub_1'); A.Lput(5, 5);   // 9×9 占 (5..13, 5..13)
+  const hub = A.LO.objs.filter(o => o.id === 'sp_hub_1')[0];
+  const hb = A.DB.blueprint.buildings.find(b => b.id === 'sp_hub_1');
+  const dvq = { r: [1, 0], l: [-1, 0], d: [0, 1], u: [0, -1] };
+  // 找一个「口外格在画布内且为空」的出料口（rot=0，渲染层同款 LportDirRot）
+  const cand = hb.ports.filter(p => p.kind === 'output').map(p => {
+    const q = A.LportXY(p, 0, 9, 9);
+    const gx = 5 + q.x, gy = 5 + q.z;
+    const dir = A.LportDirRot(p, 0, 9, 9);
+    const dv = dvq[dir] || [0, 0];
+    return { gx, gy, dir, ox: gx + dv[0], oy: gy + dv[1] };
+  }).filter(c => c.dir && c.ox >= 0 && c.oy >= 0 && c.ox < A.LO.size && c.oy < A.LO.size &&
+      !A.LO.objs.some(o => c.ox >= o.x && c.ox < o.x + o.w && c.oy >= o.y && c.oy < o.y + o.d));
+  chk('v123 前置：核心存在口外为空的出料口', cand.length > 0, String(cand.length));
+  if (!cand.length) return;
+  const P = cand[0];
+
+  function fakeEv(hitDlv) {
+    const CELL = A.LOCELL;
+    const canvas = { getBoundingClientRect() {
+        return { left: 0, top: 0, width: A.LO.size * CELL, height: A.LO.size * CELL }; },
+      querySelectorAll() { return []; } };   // LpaintSel 只遍历 .lo-cell，空表即可
+    const cell = { dataset: { uid: hub.uid } };
+    return { button: 0, preventDefault() {},
+      clientX: (P.gx + 0.5) * CELL, clientY: (P.gy + 0.5) * CELL,
+      target: { closest(sel) {
+        if (sel === '.lo-gasbar' || sel === '.lo-dlvpop') return null;
+        if (sel === '.lo-dlv') return hitDlv ? { stub: true } : null;
+        if (sel === '.lo-canvas') return canvas;
+        if (sel === '.lo-cell') return cell;
+        return null; } } };
+  }
+
+  // ① 空手点箭头：仍放行（v109 行为保留）→ 不进任何拖拽态，交给 onclick 开选货
+  A.LO.pick = null; A.LODRAG = null;
+  A.LonMouseDown(fakeEv(true));
+  chk('v123 空手点出货箭头 → 放行（不起 portpend，交给 onclick 选货）',
+      A.LODRAG === null, String(A.LODRAG && A.LODRAG.mode));
+
+  // ② 手拿传送带点箭头：不放行 → 进 portpend 待决态（v108 拉线复活的实锤）
+  A.Lpick('grid_belt_01'); A.LODRAG = null;
+  A.LonMouseDown(fakeEv(true));
+  chk('v123 手拿传送带点出料口箭头 → 进 portpend 待决态',
+      !!A.LODRAG && A.LODRAG.mode === 'portpend', A.LODRAG ? A.LODRAG.mode : 'null');
+
+  // ③ 原地松手 = 从口外一格起手拉线
+  A.LonMouseUp();
+  chk('v123 口上原地松手 → 从口外 (' + P.ox + ',' + P.oy + ') 起手拉线',
+      !!A.LODRAG && A.LODRAG.mode === 'lay' && A.LODRAG.sx === P.ox && A.LODRAG.sy === P.oy,
+      A.LODRAG ? A.LODRAG.mode + '@' + A.LODRAG.sx + ',' + A.LODRAG.sy : 'null');
+
+  // ④ click 链守卫：拉线中手里仍有物流件，mouseup 后派发的 click 不许弹选货浮层
+  A.LODRAG = null;
+  if (!A.LO.pick) A.Lpick('grid_belt_01');
+  A.LdlvOpen(hub.uid, 0);
+  chk('v123 手里有物流件 → LdlvOpen 不开选货浮层（click 兜底守卫）',
+      A.LO.dlvPop === null, JSON.stringify(A.LO.dlvPop));
+
+  // ⑤ 空手调 LdlvOpen → 浮层照常打开（选货能力无损）
+  A.LO.pick = null;
+  A.LdlvOpen(hub.uid, 0);
+  chk('v123 空手点箭头 → 选货浮层照常打开',
+      !!A.LO.dlvPop && A.LO.dlvPop.uid === hub.uid && A.LO.dlvPop.idx === 0,
+      JSON.stringify(A.LO.dlvPop));
+  A.LO.dlvPop = null;
+})();
+
 // ⭐v106 弯头格渲染（博士 2026-09-23 游戏截图「一格拐弯画不了」）：
 // 带子 rot 单值推的「进=出的反向」在拐弯处与真实拓扑不同轴 —— 旧版进色条画上边、
 // 弯道弧却从左边绕，自相矛盾。修复 = 进色条与 tooltip 都用 flowIn 反推的真实进边。
