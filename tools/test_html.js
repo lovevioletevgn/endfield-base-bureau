@@ -1813,6 +1813,18 @@ loReset(50);
       !!A.LO.dlvPop && A.LO.dlvPop.uid === hub.uid && A.LO.dlvPop.idx === 0,
       JSON.stringify(A.LO.dlvPop));
   A.LO.dlvPop = null;
+
+  // ⑥ ⭐v125 手拿**建筑**（非物流件）调 LdlvOpen → 照常开：Lput 摆放成功后不清 pick
+  //    （连续摆放交互），摆完核心手里还拿着核心，v123 的 if(L.pick) 把这种选货也拦死
+  //    （博士实测「又选不了货了」）。守卫收窄为只拦物流件后，此场景必须恢复。
+  A.Lpick('sp_hub_1');
+  chk('v125 前置：手拿协议核心，pick 存在且非物流件',
+      !!A.LO.pick && !A.LO.pick.isLogi, String(A.LO.pick && A.LO.pick.isLogi));
+  A.LdlvOpen(hub.uid, 0);
+  chk('v125 手拿建筑点出货箭头 → 选货浮层照常打开（守卫只拦物流件）',
+      !!A.LO.dlvPop && A.LO.dlvPop.uid === hub.uid && A.LO.dlvPop.idx === 0,
+      JSON.stringify(A.LO.dlvPop));
+  A.LO.pick = null; A.LO.dlvPop = null;
 })();
 
 // ⭐v106 弯头格渲染（博士 2026-09-23 游戏截图「一格拐弯画不了」）：

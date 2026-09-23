@@ -8,6 +8,9 @@
   2. _is_internal_path()         —— 通用防线：任一级目录以 . 或 _ 开头即内部
   3. 上传硬闸（push 列表确定后）  —— 剔除而非放行；--files 显式点名才中止
   4. strip_injection()           —— v117：平台注入 + 属性重排 + 内联 CSS 补空格的归一化
+  5. same_content()              —— v125：diff 阶段 HTML 也走剥注入口径（修 index.html
+                                    连续三版误报 CHANGED —— merge 只保护主成品页，
+                                    index.html 线上版带注入 vs 本地干净版字节必不同）
 
 ⚠ 第 3 道在 v117 改过行为：原来「发现内部路径 → 整批 fail」，但那些内部文件是**线上残留
 占位**，线上产物树里永远存在 → auto 模式每次必挂、发布通道被防线自己堵死。现改为
@@ -155,6 +158,24 @@ def main() -> int:
           si(plain) != si(injected.replace("font-size:14px", "font-size:99px")))
     check("strip: 属性名改动仍不等",
           si('<meta name="a" content="b">') != si('<meta name="a" describe="b">'))
+
+    # ---- 5. same_content：HTML 分支也走剥注入口径（v125）----
+    #      复现 index.html 误报场景：线上=注入版、本地=干净版，同文件落盘比对
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        p_local = os.path.join(td, "local.html")
+        p_online = os.path.join(td, "online.html")
+        p_online_bad = os.path.join(td, "online_bad.html")
+        with open(p_local, "w", encoding="utf-8") as f:
+            f.write(plain)
+        with open(p_online, "w", encoding="utf-8") as f:
+            f.write(injected)
+        with open(p_online_bad, "w", encoding="utf-8") as f:
+            f.write(injected.replace("hi</p>", "HELLO</p>"))
+        sc = pk.same_content
+        check("same_content: 注入版(线上) vs 干净版(本地) → 一致", sc(p_online, p_local))
+        check("same_content: 反向（本地注入场景不存在，口径应对称）", sc(p_local, p_online))
+        check("same_content: 真改动仍判 CHANGED", not sc(p_online_bad, p_local))
 
     print("RESULT pass=%d fail=%d skip=%d" % (passes, len(fails), skips))
     for f in fails:

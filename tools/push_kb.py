@@ -192,11 +192,22 @@ def download_tree(base_url, paths, out_dir, token_unused=None):
 
 
 def same_content(online_file, local_file):
-    """JSON 规范化比对（忽略键序），其它按字节。"""
+    """JSON 规范化比对（忽略键序）；HTML 剥平台注入后比对（v125）；其它按字节。
+
+    ⭐v125（index.html 连续三版误报 CHANGED）：diff 阶段的 HTML 也走 strip_injection，
+    与终验 same_artifact 同口径。此前 diff 对 HTML 按字节比，而平台对**每个** HTML
+    都注入（见 strip_injection 的 v114 注），merge 又只保护主成品页（if HOST_PATH in
+    push）→ index.html 线上版带注入、本地干净版，字节必不同 → 每版误报一次，
+    上传干净版后平台再注入，死循环。
+    """
     try:
         if online_file.endswith(".json") and local_file.endswith(".json"):
             with open(online_file, encoding="utf-8") as f1, open(local_file, encoding="utf-8") as f2:
                 return json.load(f1) == json.load(f2)
+        if online_file.endswith(".html") and local_file.endswith(".html"):
+            with open(online_file, encoding="utf-8", errors="replace") as f1, \
+                 open(local_file, encoding="utf-8", errors="replace") as f2:
+                return strip_injection(f1.read()) == strip_injection(f2.read())
     except Exception:
         pass
     with open(online_file, "rb") as f1, open(local_file, "rb") as f2:

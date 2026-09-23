@@ -1778,10 +1778,12 @@ function hubStars(r){ r=Math.max(1,Math.min(6,r|0)); return '★'.repeat(r); }
 /* ⭐v123（博士「鼠标一移动到机器口上就只能选择物品」）：手里拿着东西时点出货箭头
    不再弹选货浮层 —— 手拿物流件时 mousedown 已分流去「口格拉线」（见 LonMouseDown），
    但 mouseup 后 click 照样派发到箭头的 onclick，不拦会把刚起手的线头顶出浮层。
-   空手点击才真正开选货。 */
+   ⭐v125（博士「又选不了货了」）：守卫收窄为只拦物流件 —— Lput 摆放成功后 pick 不清
+   （连续摆放交互），摆完核心手里还拿着核心，v123 的 if(L.pick) 把手拿建筑点箭头选货
+   也拦死了；选货是核心属性操作，手拿建筑不冲突。 */
 function LdlvOpen(uid,idx){
   const L=Linit();
-  if(L.pick) return;
+  if(L.pick&&L.pick.isLogi) return;
   L.dlvPop={uid:uid, idx:idx}; render();
 }
 function LdlvClose(){ const L=Linit(); L.dlvPop=null; render(); }
