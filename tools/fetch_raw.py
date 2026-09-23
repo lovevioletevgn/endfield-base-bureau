@@ -55,7 +55,7 @@ TABLES = [
     "FactoryLevelRegionTable", "FactoryLiquidConnectorTable", "FactoryLiquidPipeTable",
     "FactoryLiquidRouterTable", "FactoryMachineCraftGroupTable",
     "FactoryMachineCraftTable", "FactoryManualCraftTable", "FactoryMinerTable",
-    "FactoryNodeTypeToBuildingType", "FactoryPanelStoreTable", "FactoryPowerPoleTable",
+    "FactoryNodeTypeToBuildingType", "FactoryPanelStoreTable",     "FactoryPowerPoleTable", "FactoryQuickBarTypeTable",
     "FactoryRegionTable", "FactoryResourceItemId2MachineIdTable",
     "FactoryResourceItemId2TagIdTable", "FactorySpecialPowerPoleTable",
     "FactoryUndergroundPipeTable", "FactoryVaporizerTable", "I18nTextTable_CN",

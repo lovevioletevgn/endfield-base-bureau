@@ -59,7 +59,9 @@ TECHTREE_NAMES = {
 #   游戏内「工业设备」面板的分组与它对不上（博士 2026-09-24 截图指出：仓库存取线基段和源桩应同组）。
 #   官方 9 组带 priority 排序：快捷建造100 / 物流99 / 资源开采98 / 仓储存取97 / 基础生产96 /
 #   合成制造95 / 电力94 / 功能设备93 / 战斗辅助92（快捷建造是玩家自定义栏，不进产物）。
-QUICKBAR_NAMES = {
+# ⭐v132 起分组名/组序**动态读 raw 表**（AKEDatabase 更新 → fetch_raw.py → 下面的 load_quickbar()
+#   自动跟上）；这份字面量降级为「raw 缺表时的回落快照 + 对账基准」，不再是一等数据源。
+QUICKBAR_NAMES_SNAPSHOT = {
     "logistic": "物流",
     "source_machine": "资源开采",
     "basic_machine": "基础生产",
@@ -71,8 +73,8 @@ QUICKBAR_NAMES = {
     "": "装饰与其他",
 }
 # 官方面板从上到下的组顺序（priority 降序；「快捷建造」是玩家自定义栏，不算建筑分组）
-QUICKBAR_ORDER = ["logistic", "source_machine", "storage", "basic_machine",
-                  "assemble_machine", "electric_machine", "extra_machine", "battle_machine"]
+QUICKBAR_ORDER_SNAPSHOT = ["logistic", "source_machine", "storage", "basic_machine",
+                           "assemble_machine", "electric_machine", "extra_machine", "battle_machine"]
 
 TAG_IMAGE = re.compile(r'<image="[^"]*"(?:\s+[^>]*)?>')
 TAG_ANY = re.compile(r"<[^>]{0,120}>")
@@ -163,6 +165,57 @@ def load(name):
         return {}
     with open(p, encoding="utf-8") as f:
         return json.load(f)
+
+
+# ⭐v132 分组名/组序动态化：数据源 = raw/FactoryQuickBarTypeTable.json（AKEDatabase 数据域，
+#   fetch_raw.py 清单已登记）。游戏版本更新 → fetch_raw 拉新表 → 这里自动跟上，
+#   改动会打印成「组 X 名变化」日志留痕。raw 缺表/解析失败 → 回落 v131 快照并 WARN。
+#   对账：动态结果与快照不一致不算错（改名正是要采纳），但快照里的组在上游消失会加粗警告。
+def load_quickbar():
+    try:
+        qbt = load("FactoryQuickBarTypeTable")
+        itn = load("I18nTextTable_CN")
+        rows = qbt if isinstance(qbt, list) else (qbt.get("DataList") or list(qbt.values()))
+        pairs = []
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            rid = str(r.get("id", ""))
+            if not rid or rid == "custom":     # 「快捷建造」是玩家自定义栏，不算建筑分组
+                continue
+            name = r.get("name") or {}
+            nid = name.get("id") if isinstance(name, dict) else name
+            nm = itn.get(str(nid))
+            if not nm:
+                raise ValueError(f"组 {rid} 的 I18n 名缺失（text id={nid}）")
+            pairs.append((rid, str(nm), int(r.get("priority", 0))))
+        if len(pairs) < 5:
+            raise ValueError(f"识别到的组数异常: {len(pairs)}")
+        pairs.sort(key=lambda x: -x[2])        # priority 降序 = 游戏面板从上到下
+        names = {rid: nm for rid, nm, _ in pairs}
+        names[""] = "装饰与其他"
+        order = [rid for rid, _, _ in pairs]
+        return names, order, None
+    except Exception as e:                     # noqa: BLE001 - 任何解析失败都回落快照
+        return None, None, str(e)
+
+
+QB_NAMES_DYN, QB_ORDER_DYN, QB_ERR = load_quickbar()
+if QB_NAMES_DYN is not None:
+    QUICKBAR_NAMES = QB_NAMES_DYN
+    QUICKBAR_ORDER = QB_ORDER_DYN
+    QB_MODE = "dynamic"
+    for _k, _v in QUICKBAR_NAMES_SNAPSHOT.items():
+        if _k and QUICKBAR_NAMES.get(_k) not in (None, _v):
+            print(f"  [quickbar] 组 {_k} 名变化: {_v} → {QUICKBAR_NAMES[_k]}（跟随 AKEDatabase 更新）")
+    for _k in QUICKBAR_NAMES_SNAPSHOT:
+        if _k and _k not in QUICKBAR_NAMES:
+            print(f"  ⚠️ [quickbar] 官方组 {_k} 在上游分组表里消失了！请人工核对")
+else:
+    QUICKBAR_NAMES = dict(QUICKBAR_NAMES_SNAPSHOT)
+    QUICKBAR_ORDER = list(QUICKBAR_ORDER_SNAPSHOT)
+    QB_MODE = "fallback"
+    print(f"⚠️ [quickbar] raw 分组表不可用（{QB_ERR}）—— 分组名/组序回落 v131 快照")
 
 
 def clean_text(s):
@@ -315,6 +368,14 @@ def main():
         rng = b.get("range") or {}
         desc = T(b.get("desc"))
         cat = resolve_category(bid, b.get("quickBarType", ""))
+        cat_nm = QUICKBAR_NAMES.get(cat)
+        if cat_nm is None:
+            if cat:
+                print(f"  ⚠️ [quickbar] {bid}: quickBarType={cat} 不在官方分组表 —— 上游加新组了？"
+                      f"分类名暂用原始 id，请把新组加进配色/字标特例（build_html.py）")
+                cat_nm = cat
+            else:
+                cat_nm = "装饰与其他"
         W = rng.get("width")
         D = rng.get("depth")
         H = rng.get("height")
@@ -323,7 +384,7 @@ def main():
             "id": bid,
             "name": nm,
             "category": cat,
-            "categoryName": QUICKBAR_NAMES.get(cat, cat or "装饰与其他"),
+            "categoryName": cat_nm,
             "needPower": bool(b.get("needPower")),
             "powerConsume": b.get("powerConsume", 0),
             "bandwidth": b.get("bandwidth", 0),
@@ -1286,7 +1347,8 @@ def main():
     dump("regions.json", region_view)
     # v131：分类字典 + 官方面板组顺序（priority 降序）——排序信息从此有数据依据
     dump("categories.json", {
-        "source": "FactoryQuickBarTypeTable（游戏内「工业设备」面板官方分组，v131 对齐）",
+        "source": "FactoryQuickBarTypeTable（游戏内「工业设备」面板官方分组，v131 对齐；v132 起动态读 raw 表）",
+        "mode": QB_MODE,
         "names": QUICKBAR_NAMES,
         "order": QUICKBAR_ORDER,
     })

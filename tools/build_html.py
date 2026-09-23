@@ -718,7 +718,9 @@ function loCatOptions(){
 }
 function f1Html(){
   if(tab==='building')
-    return opt(uniq(DB.buildings.map(b=>b.categoryName)), '全部分类');
+    /* v132 下拉也按官方组序（CAT_ORDER），与列表卡片一致 */
+    return opt(uniq(DB.buildings.map(b=>b.categoryName))
+      .sort((a,b)=>(CAT_ORDER[a]!=null?CAT_ORDER[a]:99)-(CAT_ORDER[b]!=null?CAT_ORDER[b]:99)), '全部分类');
   if(tab==='blueprint')
     return opt(['有接口','无接口','有传送带口','有管道口','有数量上限']
       .concat(uniq(DB.blueprint.buildings.flatMap(b=>b.domainNames||[]))), '全部筛选');
@@ -1134,16 +1136,13 @@ const CORE_STRUCT_IDS={'sp_hub_1':1,'sp_sub_hub_1':1};
   (arr||[]).forEach(function(b){ if(b&&CORE_STRUCT_IDS[b.id]) b.categoryName='核心结构'; });
 });
 
-/* v131 分类名对齐游戏内「工业设备」面板官方分组（FactoryQuickBarTypeTable，build.py 已同步改名）：
-   官方八组 = 物流/资源开采/仓储存取/基础生产/合成制造/电力/功能设备/战斗辅助，另有空 quickBarType
-   兜底「装饰与其他」。改名对照：资源采集→资源开采、基础加工→基础生产、组件加工→合成制造、
-   物流辅助→功能设备、仓储物流→仓储存取、防御设施→战斗辅助（配色与字标沿用原映射）。 */
-const CAT_COLOR={'物流':'#8E86C9','资源开采':'#C7B57A','仓储存取':'#A9C7C2','基础生产':'#9FB4C7','合成制造':'#C79A9A','电力':'#E4C36A','功能设备':'#B8C79B','战斗辅助':'#C79BA8','装饰与其他':'#D3D0C7','核心结构':'#C98A5E','物流件':'#8E86C9'};
-const CAT_GLYPH={'物流':'流','资源开采':'采','仓储存取':'储','基础生产':'基','合成制造':'合','电力':'电','功能设备':'功','战斗辅助':'战','装饰与其他':'饰','核心结构':'核','物流件':'运'};
-/* 官方组序 = FactoryQuickBarTypeTable.priority（面板从上到下）：快捷建造100（=核心结构，按 ID 单列）→
-   物流99 → 资源开采98 → 仓储存取97 → 基础生产96 → 合成制造95 → 电力94 → 功能设备93 → 战斗辅助92。
-   装饰与其他（空 quickBarType 兜底桶）与物流件（沙盘侧 LO_LG 包装名）排在官方组之后。 */
-const CAT_ORDER={'核心结构':0,'物流':1,'资源开采':2,'仓储存取':3,'基础生产':4,'合成制造':5,'电力':6,'功能设备':7,'战斗辅助':8,'装饰与其他':9,'物流件':10};
+/* v132 分类三表（CAT_COLOR/CAT_GLYPH/CAT_ORDER）由构建时动态生成（由构建时 gen_cat_tables() 注入）：
+   名单源 = data/categories.json（AKEDatabase FactoryQuickBarTypeTable，build.py 动态读 raw 表，
+   游戏版本更新 → fetch_raw.py → 重跑构建即自动跟上），并兜底收集数据里实际出现过的全部
+   categoryName —— 上游加新组时自动获得灰底 + 名字首字字标，前端永不查空。
+   v131 改名对照留档：资源采集→资源开采、基础加工→基础生产、组件加工→合成制造、
+   物流辅助→功能设备、仓储物流→仓储存取、防御设施→战斗辅助。 */
+/*__CAT_TABLES__*/
 function catColor(b){ return CAT_COLOR[b.categoryName]||CAT_COLOR['装饰与其他']; }
 function catGlyph(b){ return CAT_GLYPH[b.categoryName]||CAT_GLYPH['装饰与其他']; }
 /* 物流件的色 / 字形按介质分：传送带系青、管道系紫；功能件用「汇/分/桥/阀」，纯带子留箭头 */
@@ -6239,7 +6238,57 @@ render();
 </html>
 """
 
-html = HTML.replace("__PAYLOAD__", payload)
+def gen_cat_tables():
+    """v132：CAT_COLOR/CAT_GLYPH/CAT_ORDER 动态生成。
+    名单源 = bundle['categories']（AKEDatabase FactoryQuickBarTypeTable，build.py 动态读 raw 表），
+    再兜底收集数据里实际出现过的全部 categoryName —— 上游加新组时新组自动获得
+    灰底（#B4B2A9）+ 名字首字字标。特例字标沿用 v131：资源开采=采/装饰与其他=饰/
+    核心结构=核（页面载入后改类的运行时名）/物流件=运（LO_LG 运行时包装名）。"""
+    cats = bundle.get("categories") or {}
+    names = dict(cats.get("names") or {})
+    order = list(cats.get("order") or [])
+    seen = []
+    def see(c):
+        if c and c not in seen:
+            seen.append(c)
+    for x in (bundle.get("buildings") or []):
+        see((x or {}).get("categoryName"))
+    bp = bundle.get("blueprint") or {}
+    for x in ((bp.get("buildings") if isinstance(bp, dict) else bp) or []):
+        see((x or {}).get("categoryName"))
+    for x in (bundle.get("mechanics") or []):
+        see((x or {}).get("categoryName"))
+    for e in ((bundle.get("logistics") or {}).get("entities") or []):
+        see((e or {}).get("categoryName"))
+    official = [names[i] for i in order if i in names]
+    tail = [c for c in seen if c not in official and c not in ("核心结构", "物流件")]
+    seq = ["核心结构"] + official + tail
+    for must in ("装饰与其他", "物流件"):     # catColor/catGlyph 的 fallback 依赖这两键，强制保证
+        if must not in seq:
+            seq.append(must)
+    COLOR_KNOWN = {"物流": "#8E86C9", "资源开采": "#C7B57A", "仓储存取": "#A9C7C2",
+                   "基础生产": "#9FB4C7", "合成制造": "#C79A9A", "电力": "#E4C36A",
+                   "功能设备": "#B8C79B", "战斗辅助": "#C79BA8", "装饰与其他": "#D3D0C7",
+                   "核心结构": "#C98A5E", "物流件": "#8E86C9"}
+    GLYPH_KNOWN = {"物流": "流", "资源开采": "采", "仓储存取": "储", "基础生产": "基",
+                   "合成制造": "合", "电力": "电", "功能设备": "功", "战斗辅助": "战",
+                   "装饰与其他": "饰", "核心结构": "核", "物流件": "运"}
+    color, glyph, corder = {}, {}, {}
+    for i, c in enumerate(seq):
+        color[c] = COLOR_KNOWN.get(c, "#B4B2A9")
+        glyph[c] = GLYPH_KNOWN.get(c, (c[0] if c else "?"))
+        corder[c] = i
+    def jso(d):
+        return "{" + ",".join("'" + str(k).replace("'", "\\'") + "':"
+                              + json.dumps(v, ensure_ascii=False) for k, v in d.items()) + "}"
+    return ("const CAT_COLOR=%s;\nconst CAT_GLYPH=%s;\n"
+            "/* 上三表由构建时动态生成（v132）：官方组序 = FactoryQuickBarTypeTable.priority（面板从上到下），\n"
+            "   核心结构（快捷建造位）排最前，装饰与其他、物流件（LO_LG 包装名）垫底；\n"
+            "   上游加新组自动获得灰底+首字标，见 tools/build_html.py gen_cat_tables()。 */\n"
+            "const CAT_ORDER=%s;" % (jso(color), jso(glyph), jso(corder)))
+
+cat_js = gen_cat_tables()
+html = HTML.replace("__PAYLOAD__", payload).replace("/*__CAT_TABLES__*/", cat_js)
 with open(OUT, "w", encoding="utf-8", newline="\n") as f:
     f.write(html)
 
