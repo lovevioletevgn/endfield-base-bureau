@@ -313,7 +313,7 @@ nav button.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:
 /* ⚠️ 上面必须是 overflow:visible：谷地预设存取线整条画在画布框**外面**（贴外缘、不占格），
    一旦 overflow:hidden 就整条被裁 —— 和当年「接口标记看不见」是同一个坑。 */
 /* 谷地预设存取线（四号谷地：基地升级后自动铺在基地外侧边缘，玩家不用摆）。
-   颜色沿用数据里的分类色：仓储物流 #A9C7C2；源桩用核心结构的 #C98A5E —— 与基地面积页那张示意图一致。 */
+   颜色沿用数据里的分类色：仓储存取 #A9C7C2；源桩用核心结构的 #C98A5E —— 与基地面积页那张示意图一致。 */
 .lo-pre{position:absolute;background:#A9C7C2;border:1px solid #7FA8A2;border-radius:2px;pointer-events:none;z-index:0}
 .lo-pre-h{background-image:repeating-linear-gradient(90deg,rgba(255,255,255,.5) 0 1px,transparent 1px var(--locell,20px))}
 .lo-pre-v{background-image:repeating-linear-gradient(180deg,rgba(255,255,255,.5) 0 1px,transparent 1px var(--locell,20px))}
@@ -709,7 +709,7 @@ function opt(vals, emptyLabel){
     .concat(vals.map(v=>`<option value="${esc(v)}">${esc(v)}</option>`)).join('');
 }
 /* 试摆的分类下拉只列「选得出东西」的分类 —— 拉黑清单（LO_SKIP_IDS）可能整类清空
-   （博士 2026-09-21 把「物流辅助」下的洒水机/给水器/滑索架/便捷存取站/留言信标全部点名去掉），
+   （博士 2026-09-21 把「功能设备」（v131 前旧名「物流辅助」）下的洒水机/给水器/滑索架/便捷存取站/留言信标全部点名去掉），
    留一个空选项只会让人点进去看到「没有匹配的分类」。回归测试也要求每个筛选项都有结果。 */
 function loCatOptions(){
   return uniq(DB.blueprint.buildings
@@ -725,7 +725,7 @@ function f1Html(){
   if(tab==='base')
     return opt(uniq(DB.bases.zones.map(z=>z.domainName)), '全部据点');
   if(tab==='layout')
-    return opt(loCatOptions().concat(['物流件']), '默认：生产·电力·存储物流·物流件');
+    return opt(loCatOptions().concat(['物流件']), '默认：核心·生产·电力·仓储·物流件');
   if(tab==='logistics')
     return opt(uniq(DB.logistics.constants.map(c=>c.group))
       .concat(uniq(DB.logistics.entities.map(e=>e.category))), '全部筛选');
@@ -766,6 +766,10 @@ function renderBuilding(){
     }
     return true;
   });
+  /* v131 官方组排序：组间按 CAT_ORDER（= FactoryQuickBarTypeTable.priority 面板序），组内保持
+     配置表原序（Array.sort 稳定）。核心结构（协议核心/次级核心，面板「快捷建造」组）排最前。 */
+  arr.sort((a,b)=>(CAT_ORDER[a.categoryName]!=null?CAT_ORDER[a.categoryName]:99)
+                -(CAT_ORDER[b.categoryName]!=null?CAT_ORDER[b.categoryName]:99));
   if(!arr.length) return `<div class="empty">没有匹配的建筑</div>`;
   return `<div class="list">`+arr.map(b=>{
     const o=openSet.has('b:'+b.id);
@@ -1130,8 +1134,16 @@ const CORE_STRUCT_IDS={'sp_hub_1':1,'sp_sub_hub_1':1};
   (arr||[]).forEach(function(b){ if(b&&CORE_STRUCT_IDS[b.id]) b.categoryName='核心结构'; });
 });
 
-const CAT_COLOR={'资源采集':'#C7B57A','基础加工':'#9FB4C7','组件加工':'#C79A9A','物流辅助':'#B8C79B','电力设施':'#E4C36A','仓储物流':'#A9C7C2','防御设施':'#C79BA8','装饰与其他':'#D3D0C7','核心结构':'#C98A5E','物流件':'#8E86C9'};
-const CAT_GLYPH={'资源采集':'采','基础加工':'炼','组件加工':'组','物流辅助':'流','电力设施':'电','仓储物流':'储','防御设施':'御','装饰与其他':'饰','核心结构':'核','物流件':'运'};
+/* v131 分类名对齐游戏内「工业设备」面板官方分组（FactoryQuickBarTypeTable，build.py 已同步改名）：
+   官方八组 = 物流/资源开采/仓储存取/基础生产/合成制造/电力/功能设备/战斗辅助，另有空 quickBarType
+   兜底「装饰与其他」。改名对照：资源采集→资源开采、基础加工→基础生产、组件加工→合成制造、
+   物流辅助→功能设备、仓储物流→仓储存取、防御设施→战斗辅助（配色与字标沿用原映射）。 */
+const CAT_COLOR={'物流':'#8E86C9','资源开采':'#C7B57A','仓储存取':'#A9C7C2','基础生产':'#9FB4C7','合成制造':'#C79A9A','电力':'#E4C36A','功能设备':'#B8C79B','战斗辅助':'#C79BA8','装饰与其他':'#D3D0C7','核心结构':'#C98A5E','物流件':'#8E86C9'};
+const CAT_GLYPH={'物流':'流','资源开采':'采','仓储存取':'储','基础生产':'基','合成制造':'合','电力':'电','功能设备':'功','战斗辅助':'战','装饰与其他':'饰','核心结构':'核','物流件':'运'};
+/* 官方组序 = FactoryQuickBarTypeTable.priority（面板从上到下）：快捷建造100（=核心结构，按 ID 单列）→
+   物流99 → 资源开采98 → 仓储存取97 → 基础生产96 → 合成制造95 → 电力94 → 功能设备93 → 战斗辅助92。
+   装饰与其他（空 quickBarType 兜底桶）与物流件（沙盘侧 LO_LG 包装名）排在官方组之后。 */
+const CAT_ORDER={'核心结构':0,'物流':1,'资源开采':2,'仓储存取':3,'基础生产':4,'合成制造':5,'电力':6,'功能设备':7,'战斗辅助':8,'装饰与其他':9,'物流件':10};
 function catColor(b){ return CAT_COLOR[b.categoryName]||CAT_COLOR['装饰与其他']; }
 function catGlyph(b){ return CAT_GLYPH[b.categoryName]||CAT_GLYPH['装饰与其他']; }
 /* 物流件的色 / 字形按介质分：传送带系青、管道系紫；功能件用「汇/分/桥/阀」，纯带子留箭头 */
@@ -2005,7 +2017,7 @@ function Lpick(id){
   const L=Linit(); L.pick=byBp(id);
   L.msg=L.pick&&L.pick.isLogi?'物流件：在空白格按住拖动可一次铺一排；R 换走向':''; render();
 }
-/* 把上方分类下拉切到指定分类（'' = 回到默认三类）；下拉要跟着同步，否则重渲染会把它拨回去 */
+/* 把上方分类下拉切到指定分类（'' = 回到默认清单）；下拉要跟着同步，否则重渲染会把它拨回去 */
 function Lonly(v){
   f1=v;
   const s=$('#f1');
@@ -2604,10 +2616,9 @@ function LonKeyDown(e){
   if(k==='Delete'||k==='Backspace'){ e.preventDefault(); Ldel(); return; }
   if(k==='Escape'){ Linit().sel=[]; Linit().msg=''; render(); }
 }
-/* 布局试摆默认只列「能进基地产线」的基建：
-     生产   = 基础加工 + 组件加工
-     电力   = 电力设施
-     存储物流 = 仓储物流 + 物流辅助
+/* 布局试摆默认只列「能进基地产线」的基建（v131 起分类名 = 游戏内「工业设备」面板官方分组名）：
+     仓储存取 + 基础生产 + 合成制造 + 电力（+ 功能设备 —— 现在 9 件全在拉黑清单，默认清单里是
+     0 件，但保留在放行名单里，将来把某件从 LO_SKIP_IDS 放回来就立即生效）
    另外放行「核心结构」—— 协议核心 / 次级核心。它们在配置表里 quickBarType 为空、被兜底归进
    「装饰与其他」（界面上显示成「饰」），但 9×9 占地 + 20 个接口，基地布局绕不开，所以按 ID
    单独放行（不按名称匹配，免得踩中文名变动的坑）。分类本身已在数据载入时改成「核心结构」，
@@ -2615,9 +2626,9 @@ function LonKeyDown(e){
    ⚠️ 这里曾经把「产物排出口 liquid_recycle_gate_1 / 污水接入口 liquid_clean_gate_1」也一并放行 ——
    它们是武陵净水节点上的野外固定闸口（allowPlayerMove=false、canDelete=false），不在基地里，
    博士 2026-09-21 在游戏里找不到、核查后移除。
-   默认不列：资源采集（矿机/水泵只能放野外矿点）、防御设施、装饰（玩偶/立牌/田块等）。
+   默认不列：资源开采（矿机/水泵只能放野外矿点）、战斗辅助、装饰（玩偶/立牌/田块等）。
    要单独看某一类，用上方的分类下拉直接选。 */
-const LO_KEEP_CATS=['基础加工','组件加工','电力设施','仓储物流','物流辅助'];
+const LO_KEEP_CATS=['仓储存取','基础生产','合成制造','电力','功能设备'];
 const LO_KEEP_IDS=['sp_hub_1','sp_sub_hub_1'];
 /* 沙盘里一概不提供的建筑（按 ID 拉黑，含多地区同名变体）：
      中继器 power_pole_2 / 息壤中继器 power_pole_3 —— 博士 2026-09-21 要求去掉。
@@ -4880,7 +4891,7 @@ function RoreCapOf(itemId){ return RoreCapacity().filter(x=>x.itemId===itemId)[0
    ⚠️ 滑索架（travel_pole_1 / travel_pole_2 / travel_pole_nop_1）现在在 LO_SKIP_IDS 里
       —— 博士 2026-09-21 要求它不出现在试摆清单里，所以沙盘上一般摆不出滑索，这一项通常是 0。
       校验照样算：将来把它放回清单、或从别处带进来，这一行会立刻起作用（不写死 0）。 */
-const RW_DEF_CAT='防御设施';
+const RW_DEF_CAT='战斗辅助';
 const RW_TRAVEL_IDS=['travel_pole_1','travel_pole_nop_1','travel_pole_2'];
 function RlimitChecks(objs){
   const L=Linit();
@@ -5165,7 +5176,7 @@ function Rreport(P, pw, bw, th, lim, st, rawNeed, sc){
       <div class="c-sub" style="margin-top:2px"><span>· <b>协议容量</b>：${bw.use}${bw.cap!=null?(' / '+bw.cap+'（'+esc(bw.zone||'')+'满级档）'):'（自由模式没指定基地，没有上限可对）'}${bw.over?' —— <b style="color:'+RW_COL.bad+'">超出 '+(bw.use-bw.cap)+'，得换更大的建造区或拆掉一些</b>':' —— 在限内 ✓'}</span></div>
       <div class="c-sub" style="margin-top:2px"><span>· <b>发电</b>：这条产线用电 <b>${pw.total}</b> 电；协议核心自带 <b>${th.base}</b> 基础发电${th.gap>0?(' → 缺口 <b>'+th.gap+'</b>，需要热能池：'+th.fuels.map(f=>esc(f.item)+' <b>'+f.count+'</b> 台（'+f.power+'/台）').join(' · ')):' → <b>不用额外发电</b>'}${th.fuels.length?` <span class="c-id">（按地区选燃料：${esc(Lregion()||'通用')}）</span>`:''}${stations?`　<span class="c-id">画布上已摆热能池 ${stations} 台</span>`:''}</span></div>
       <div class="c-sub" style="margin-top:2px"><span>· <b>存电</b> <span class="lo-tag">路线图 ②c · 已纳入</span>：上限 <b>${st.cap.toLocaleString?st.cap.toLocaleString('en-US'):st.cap}</b>（社区实测）${st.gap>0?('　当前缺口 <b>'+st.gap+'</b> 电 → 纯靠存电能撑 <b>'+st.minutes+'</b> 分钟（约 '+r1(st.minutes/60)+' 小时），撑完设备就停；这是缓冲不是电源，得补发电'):'　当前用电没超基础发电，存电不动 ✓'}</span></div>
-      <div class="c-sub" style="margin-top:2px"><span>· <b>防御建筑上限</b> <span class="lo-tag">路线图 ②b</span>：${lim.defCap!=null?('<b>'+lim.def+'</b> / '+lim.defCap+'（'+esc(lim.zone||'')+'）'+(lim.defOver?' —— <b style="color:'+RW_COL.bad+'">超了 '+(lim.def-lim.defCap)+'</b>':' —— 在限内 ✓')):'（自由模式没指定基地，没有上限可对）'}<span class="c-id">　按分类「防御设施」计</span></span></div>
+      <div class="c-sub" style="margin-top:2px"><span>· <b>防御建筑上限</b> <span class="lo-tag">路线图 ②b</span>：${lim.defCap!=null?('<b>'+lim.def+'</b> / '+lim.defCap+'（'+esc(lim.zone||'')+'）'+(lim.defOver?' —— <b style="color:'+RW_COL.bad+'">超了 '+(lim.def-lim.defCap)+'</b>':' —— 在限内 ✓')):'（自由模式没指定基地，没有上限可对）'}<span class="c-id">　按分类「战斗辅助」计</span></span></div>
       <div class="c-sub" style="margin-top:2px"><span>· <b>滑索上限</b> <span class="lo-tag">路线图 ②b</span>：<b>基地画布里不涉及</b> —— 滑索架只放野外，不摆进基地（博士 2026-09-21 定，所以左栏也不提供）。本建造区的上限是 <b>${lim.travCap!=null?lim.travCap:'—'}</b>（配置表 <code>travelPoleLimit</code>），那个数服务的是**野外滑索架**，不是基地内的产线。<span class="c-id">沙盘上滑索数恒为 0，所以这一项永远显示 0 / 上限 —— 不是没做校验，是本来就不该在基地里数。</span></span></div>
       <div class="c-sub" style="margin-top:2px"><span>· <b>等级上限（逐档）</b> <span class="lo-tag">配置表 LevelGradeTable</span>：${(()=>{
         const z=((DB.bases||{}).zoneGrades||{})[Linit().base||''];
@@ -5252,7 +5263,7 @@ function loAllowed(b){
 }
 function renderLayout(){
   const L=Linit(), CELL=LOCELL;
-  /* 默认只列产线相关的三类 + 核心结构 + 物流件；上方分类下拉选了具体分类时，就只列那一类。
+  /* 默认只列产线相关的官方组（仓储/基础生产/合成制造/电力）+ 核心结构 + 物流件；上方分类下拉选了具体分类时，就只列那一类。
      拉黑名单（中继器等）两条路都不给。 */
   /* 免电变体在这里先剔掉，下面的 arr 和分类计数都以它为准 —— 同一座设施只留正常版（博士 2026-09-21）。
      选了谷地的基地时，再把源桩 / 基段剔掉：谷地这两样由基地自动铺，左栏不给（博士 2026-09-21）。 */
@@ -5548,8 +5559,11 @@ function renderLayout(){
     return best;
   })();
   /* 左栏顶部：说清默认列了哪几类、共多少项（数字从数据算，不写死） */
-  const grp=[['生产',['基础加工','组件加工']],['电力',['电力设施']],
-             ['存储物流',['仓储物流','物流辅助']],['核心结构',null],['物流件',['物流件']]];
+  /* v131 左栏分组按游戏「工业设备」面板官方组序（与 CAT_ORDER 同源）：快捷建造（=核心结构）→
+     物流（=物流件）→ 资源开采（默认不列）→ 仓储存取 → 基础生产 → 合成制造 → 电力 →
+     功能设备 → 战斗辅助（默认不列）。组名直接用官方组名。 */
+  const grp=[['核心结构',null],['物流件',['物流件']],['仓储存取',['仓储存取']],['基础生产',['基础生产']],
+             ['合成制造',['合成制造']],['电力',['电力']],['功能设备',['功能设备']]];
   const cnt=g=>(g[1]?all.filter(b=>g[1].indexOf(b.categoryName)>=0)
                      :all.filter(b=>LO_KEEP_IDS.indexOf(b.id)>=0))
                     .filter(b=>LO_SKIP_IDS.indexOf(b.id)<0).length;
@@ -5654,7 +5668,7 @@ function renderLayout(){
     ? `<div class="lo-ph">只显示「${esc(f1)}」共 ${arr.length} ${f1==='物流件'?'件':'座'}
          <button class="lo-reset" onclick="Lonly('')">回到默认清单</button></div>`
     : `<div class="lo-ph">默认只列 ${grp.map(g=>`<b>${g[0]} ${cnt(g)}</b>`).join(' · ')}，共 ${arr.length} 项。<br>
-         采集（矿机/水泵只能放野外矿点）、防御设施、装饰不列；中继器（含息壤中继器）、洒水机 / 给水器 / 滑索架、便捷存取站 / 留言信标，
+         资源开采（矿机/水泵只能放野外矿点）、战斗辅助、装饰不列；中继器（含息壤中继器）、洒水机 / 给水器 / 滑索架、便捷存取站 / 留言信标，
          以及配置表里与正常版同名的<b>免电变体</b>（id 带 <code>_nop_</code>）同样不列 —— 要单独看某一类，用上方分类下拉选。
          ${presetBus?'<br><b>当前选了四号谷地的基地</b>：谷地的存取线由基地自动铺，所以源桩 / 基段这里不列（要自己摆就切到武陵的基地）。':''}</div>`;
   /* ---- [3] 图例：接口图例 + 环境圈图例 ---- */
@@ -5730,7 +5744,7 @@ function renderLayout(){
       z=0 与 z=D-1 是同一条线，几何退化）。**方位只说画布的上/下/左/右，不声称游戏内的绝对方位。**<br>
       点选一件后<b>在空白格按住拖动</b>，沿拖拽主轴（横或竖）一次铺满一排；<code>R</code> 换走向。
       压到建筑或已有物流件的格子会自动跳过。<br>
-      左栏默认只列 <b>生产 / 电力 / 存储物流 / 核心结构 / 物流件</b>，采集、防御、装饰不占位置。
+      左栏默认只列 <b>仓储存取 / 基础生产 / 合成制造 / 电力 / 核心结构 / 物流件</b>，资源开采、战斗辅助、装饰不占位置。
       下面的计数区会给出物流件件数、传送带最长连通多少格、接口接上了几个，以及存取线的连接情况。<br>
       <b>仓库存取线</b>（源桩 / 基段 / 存货口 / 取货口）：配置表写明基段「需要和仓库存取线源桩或其他<b>生效的</b>基段相连」，
       存货口与取货口「只能贴靠仓库存取线放置」。这里照游戏的实际判定来 —— <b>两条边有接触就算相连</b>
@@ -5807,7 +5821,7 @@ function renderLayout(){
       <b>存电</b> <span class="lo-tag">路线图 ②c · 2026-09-21 晚</span>：协议核心有存电，<b>社区实测上限 10 万</b>（配置表里没有这一项）。
       用电超过基础发电（200）的部分就是在吃存电 —— 报告会给出<b>纯靠存电还能撑多少分钟</b>，以及按地区燃料补上这个缺口需要几台热能池。
       ⚠️ 存电是<b>缓冲不是电源</b>：撑的时间只是留给你补发电的，不能当长期方案。<br>
-      <b>野外开采产量</b>（7 座采集建筑，按建筑表 <code>quickBarType=资源采集</code> 列全）：<br>
+      <b>野外开采产量</b>（7 座采集建筑，按建筑表 <code>quickBarType=资源开采</code> 列全）：<br>
       · 采矿机 —— 便携源石矿机 / 电驱矿机 / 二型电驱矿机 都是 <b>20/分</b>（配置表 <code>msPerRound</code> 3000），
       可采 <b>源矿 / 紫晶矿 / 蓝铁矿</b>；<br>
       · <b>水驱矿机</b> —— <b>20/分</b>，可采 <b>赤铜矿</b>（**唯一能采赤铜矿的设备**），

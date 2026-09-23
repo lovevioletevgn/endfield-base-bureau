@@ -1,1 +1,1 @@
-{"source_machine":"资源采集","basic_machine":"基础加工","assemble_machine":"组件加工","extra_machine":"物流辅助","electric_machine":"电力设施","storage":"仓储物流","battle_machine":"防御设施","":"装饰与其他"}
+{"source":"FactoryQuickBarTypeTable（游戏内「工业设备」面板官方分组，v131 对齐）","names":{"logistic":"物流","source_machine":"资源开采","basic_machine":"基础生产","assemble_machine":"合成制造","extra_machine":"功能设备","electric_machine":"电力","storage":"仓储存取","battle_machine":"战斗辅助","":"装饰与其他"},"order":["logistic","source_machine","storage","basic_machine","assemble_machine","electric_machine","extra_machine","battle_machine"]}

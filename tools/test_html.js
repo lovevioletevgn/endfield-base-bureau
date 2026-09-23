@@ -296,8 +296,9 @@ chk('布局试摆有可摆放建筑列表', loHtml.indexOf('lo-btn') >= 0, 'pale
 // 画布默认 50×50（LO 在 renderLayout 里被 Linit 初始化）
 chk('画布默认 50×50', A.LO && A.LO.size === 50, String(A.LO && A.LO.size));
 
-// ---- 5d-2. 左栏默认清单：只要生产 / 电力 / 存储物流（+ 核心结构 + 物流件）----
-// 需求：沙盘只服务基地产线布局，采集（只能放野外）、防御、装饰默认不列。
+// ---- 5d-2. 左栏默认清单：官方组（仓储存取/基础生产/合成制造/电力/功能设备）+ 核心结构 + 物流件 ----
+// 需求：沙盘只服务基地产线布局，资源开采（只能放野外）、战斗辅助、装饰默认不列。
+// v131 起分类名 = 游戏内「工业设备」面板官方分组名（FactoryQuickBarTypeTable）。
 // 2026-09-21 起物流件（传送带/管道/汇流分流/桥/阀门）也进左栏 —— 它们不在 blueprint.buildings
 // 里，来自 logistics.entities，页面用 Llogi()/LO_LG() 包一层后并入同一份清单，这里照同一条路径算期望值。
 const bpAll = A.DB.blueprint.buildings;
@@ -308,17 +309,17 @@ const loAllowedList = bpAll.concat(lgAll)
   .filter(b => A.loAllowed(b));
 const loCats = [...new Set(loAllowedList.map(b => b.categoryName))].sort();
 chk('默认清单的分类只落在生产/电力/存储物流 + 核心结构 + 物流件',
-    loCats.every(c => ['基础加工', '组件加工', '电力设施', '仓储物流', '物流辅助', '核心结构', '物流件'].includes(c)),
+    loCats.every(c => ['仓储存取', '基础生产', '合成制造', '电力', '功能设备', '核心结构', '物流件'].includes(c)),
     loCats.join(','));
-chk('默认清单含生产三类之外的生产类（基础加工 + 组件加工）',
-    loCats.includes('基础加工') && loCats.includes('组件加工'), loCats.join(','));
-// 「物流辅助」下的建筑被博士逐个点名拉黑（洒水机/给水器/滑索架/便捷存取站/留言信标），
-// 该分类现在是空的、也已从下拉里移除 —— 所以这里只断言电力与存储物流
-chk('默认清单含电力与存储物流',
-    loCats.includes('电力设施') && loCats.includes('仓储物流'),
+chk('默认清单含两个生产组（基础生产 + 合成制造）',
+    loCats.includes('基础生产') && loCats.includes('合成制造'), loCats.join(','));
+// 「功能设备」（v131 前旧名「物流辅助」）下的建筑被博士逐个点名拉黑（洒水机/给水器/滑索架/便捷存取站/留言信标），
+// 该分类现在是空的、也已从下拉里移除 —— 所以这里只断言电力与仓储存取
+chk('默认清单含电力与仓储存取',
+    loCats.includes('电力') && loCats.includes('仓储存取'),
     loCats.join(','));
-chk('默认清单排除资源采集与防御设施',
-    !loAllowedList.some(b => b.categoryName === '资源采集' || b.categoryName === '防御设施'),
+chk('默认清单排除资源开采与战斗辅助',
+    !loAllowedList.some(b => b.categoryName === '资源开采' || b.categoryName === '战斗辅助'),
     [...new Set(loAllowedList.map(b => b.categoryName))].join(','));
 // v18 起「协议核心 / 次级核心」在数据载入时已被改成「核心结构」分类，
 // 「装饰与其他」里不再放行任何东西
@@ -336,9 +337,9 @@ chk('默认清单不含防御塔', !loAllowedList.some(b => b.id === 'battle_tur
 chk('默认清单不含中继器（中继器 + 息壤中继器）',
     !loAllowedList.some(b => b.id === 'power_pole_2' || b.id === 'power_pole_3'),
     loAllowedList.filter(b => b.id.indexOf('power_pole') === 0).map(b => b.id).join(','));
-chk('电力设施类剔掉两台中继器后还剩 3 台',
-    loAllowedList.filter(b => b.categoryName === '电力设施').length === 3,
-    loAllowedList.filter(b => b.categoryName === '电力设施').map(b => b.name).join(','));
+chk('电力组剔掉两台中继器后还剩 3 台',
+    loAllowedList.filter(b => b.categoryName === '电力').length === 3,
+    loAllowedList.filter(b => b.categoryName === '电力').map(b => b.name).join(','));
 
 // 物流件：10 件全部进默认清单，按 1×1 处理，带介质与吞吐
 chk('默认清单含全部 10 件物流件',
@@ -492,19 +493,19 @@ chk('示意图声明了「只记几条边 / 方位随镜头变」',
     busPageHtml.indexOf('只记') >= 0 && busPageHtml.indexOf('随镜头') >= 0);
 
 // 用上方分类下拉仍可单独看某一类（逃生口没堵死），但拉黑名单照样不出现
-A.Lonly('电力设施');
+A.Lonly('电力');
 const palPower = outEl.innerHTML || '';
 const powerIds = [...palPower.matchAll(/onclick="Lpick\('([^']+)'\)"/g)].map(m => m[1]);
-chk('单看「电力设施」时保留供电桩、不给中继器',
+chk('单看「电力」时保留供电桩、不给中继器',
     powerIds.includes('power_diffuser_1') && !powerIds.includes('power_pole_2') && !powerIds.includes('power_pole_3'),
     powerIds.join(','));
-A.Lonly('防御设施');
+A.Lonly('战斗辅助');
 const palDef = outEl.innerHTML || '';
 const defIds = [...palDef.matchAll(/onclick="Lpick\('([^']+)'\)"/g)].map(m => m[1]);
-chk('切到「防御设施」时左栏只列防御类',
+chk('切到「战斗辅助」时左栏只列防御类',
     defIds.includes('battle_turret_1') && !defIds.includes('furnance_1'),
     defIds.length + ' 个');
-chk('Lonly 同步了顶部分类下拉的值', els['#f1'].value === '防御设施', els['#f1'].value);
+chk('Lonly 同步了顶部分类下拉的值', els['#f1'].value === '战斗辅助', els['#f1'].value);
 A.Lonly('');
 setTab('layout'); A.render();
 const palBack = [...(outEl.innerHTML || '').matchAll(/onclick="Lpick\('([^']+)'\)"/g)].map(m => m[1]);
@@ -1431,7 +1432,7 @@ chk('计数区常显协议容量与用电', (() => {
 // 能取证的：用电 = FactoryBuildingTable.powerConsume；开采 = FactoryMinerTable.msPerRound（20/分）、
 // FactoryFluidPumpInTable（60/分）。**每台热能池发多少电配置表里没有**（建筑表无发电量字段）。
 const mp = A.DB.mining_power || {};
-chk('开采数据：采集建筑共 **7 座**（按 quickBarType=资源采集 列全）',
+chk('开采数据：采集建筑共 **7 座**（按 quickBarType=资源开采 列全）',
     (mp.gather || []).length === 7, String((mp.gather || []).length));
 chk('开采数据：**水驱矿机在列**，且 desc 说明它采赤铜矿（博士 2026-09-21 抓到的漏项）', (() => {
   const m = (mp.gather || []).filter(x => x.id === 'miner_4')[0];

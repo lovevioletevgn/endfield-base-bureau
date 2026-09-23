@@ -37,7 +37,7 @@
 ```bash
 python tools/ake.py 统计                    # 看数据包内容
 python tools/ake.py 建筑 滑索                # 按关键词查建筑
-python tools/ake.py 建筑 --分类 电力设施      # 按分类列
+python tools/ake.py 建筑 --分类 电力        # 按分类列
 python tools/ake.py 蓝图 --规格              # 按占格规格分组（搭蓝图用）
 python tools/ake.py 蓝图 精炼炉              # 占地格数 + 接口平面图
 python tools/ake.py 蓝图 --接口 --详细        # 只列有接口的，带坐标明细

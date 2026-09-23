@@ -54,16 +54,25 @@ TECHTREE_NAMES = {
     "factech_recipe_tundra": "四号谷地",
     "factech_recipe_jinlong": "武陵",
 }
+# ⭐v131 分类名对齐游戏官方分组（raw/FactoryQuickBarTypeTable.json，2026-09-24 拉）。
+#   旧名（资源采集/基础加工/组件加工/物流辅助/电力设施/仓储物流/防御设施）是 2026-09-21 自造的翻译，
+#   游戏内「工业设备」面板的分组与它对不上（博士 2026-09-24 截图指出：仓库存取线基段和源桩应同组）。
+#   官方 9 组带 priority 排序：快捷建造100 / 物流99 / 资源开采98 / 仓储存取97 / 基础生产96 /
+#   合成制造95 / 电力94 / 功能设备93 / 战斗辅助92（快捷建造是玩家自定义栏，不进产物）。
 QUICKBAR_NAMES = {
-    "source_machine": "资源采集",
-    "basic_machine": "基础加工",
-    "assemble_machine": "组件加工",
-    "extra_machine": "物流辅助",
-    "electric_machine": "电力设施",
-    "storage": "仓储物流",
-    "battle_machine": "防御设施",
+    "logistic": "物流",
+    "source_machine": "资源开采",
+    "basic_machine": "基础生产",
+    "assemble_machine": "合成制造",
+    "extra_machine": "功能设备",
+    "electric_machine": "电力",
+    "storage": "仓储存取",
+    "battle_machine": "战斗辅助",
     "": "装饰与其他",
 }
+# 官方面板从上到下的组顺序（priority 降序；「快捷建造」是玩家自定义栏，不算建筑分组）
+QUICKBAR_ORDER = ["logistic", "source_machine", "storage", "basic_machine",
+                  "assemble_machine", "electric_machine", "extra_machine", "battle_machine"]
 
 TAG_IMAGE = re.compile(r'<image="[^"]*"(?:\s+[^>]*)?>')
 TAG_ANY = re.compile(r"<[^>]{0,120}>")
@@ -75,7 +84,7 @@ BUILDINGS_RAW = {}
 def resolve_category(bid, raw_cat):
     """定分类。_nop_ 免电变体在 quickBarType 上是空的（配置表没填），
     直接落到「装饰与其他」会和秋千、玩偶混在一起。但它就是原版的免电版，
-    分类应跟原版一致 —— 否则按「物流辅助」筛选时会把免电版漏掉。
+    分类应跟原版一致 —— 否则按「功能设备」（v131 前自造名「物流辅助」）筛选时会把免电版漏掉。
     """
     if raw_cat:
         return raw_cat
@@ -677,6 +686,7 @@ def main():
     print(f"  物流实体 {len(logistics['entities'])} / 常量 {len(logistics['constants'])} / "
           f"总线 {len(logistics['buses'])} / 采矿 {len(logistics['miners'])}")
     for e in logistics["entities"]:
+        e["categoryName"] = "物流"  # 官方分组（FactoryQuickBarTypeTable.logistic），v131 补
         print(f"    {e['id']:<24} {e['name']:<10} {e['type']:<16} {e['unitsPerMinute']}/min")
 
     # ---------- 玩法机制规则层 ----------
@@ -869,7 +879,7 @@ def main():
     # ⚠️ 2026-09-21 修正：**不能只从 FactoryMinerTable 取矿机**！那张表只有 miner_1/2/3，
     #    把 **miner_4 水驱矿机**（采赤铜矿）、gas_pump_1 气体收集泵、pump_2 二型耐酸水泵 全漏了。
     #    博士当场指出「不是还有赤铜矿吗，可以用水驱矿机开采」——他说得对。
-    #    正确做法：**遍历建筑表里 quickBarType=资源采集 的全部建筑**，再去矿机表/泵表取速率（取不到就写清没有）。
+    #    正确做法：**遍历建筑表里 quickBarType=资源开采（官方组 source_machine）的全部建筑**，再去矿机表/泵表取速率（取不到就写清没有）。
     miners=[]; pumps=[]; gather=[]
     def rate(ms):
         return round(60000.0/ms, 2) if ms else None
@@ -921,7 +931,7 @@ def main():
         "https://www.biubiu001.com/news/191794.html  （沉积酸：强腐蚀液体，专为它新增二型耐酸水泵）",
     ]
     for b in building_list:
-        if b.get("categoryName") != "资源采集":
+        if b.get("categoryName") != "资源开采":  # 官方组名（v131 前 self 造名「资源采集」）
             continue
         bid = b["id"]
         m = miner_tab.get(bid); p = pump_tab.get(bid)
@@ -1261,7 +1271,7 @@ def main():
                          "一台热能池的发电功率 = 它烧的那种燃料的功率值（前提是燃料供给跟得上），"
                          "所以需要的热能池台数 = ceil(缺口 / 电池功率值)。")
     mining_power = {
-        "madeFrom": "FactoryBuildingTable（按 quickBarType=资源采集 列全 7 座）+ FactoryMinerTable + FactoryFluidPumpInTable + 社区实测（发电数值 / 三台采集设备的速率与可采物 / 矿点与纯度）",
+        "madeFrom": "FactoryBuildingTable（按 quickBarType=资源开采 列全 7 座）+ FactoryMinerTable + FactoryFluidPumpInTable + 社区实测（发电数值 / 三台采集设备的速率与可采物 / 矿点与纯度）",
         "rateSources": WEB_SOURCES,
         "ores": ores,
         "gather": gather, "miners": miners, "pumps": pumps,
@@ -1274,7 +1284,12 @@ def main():
     dump("manufacture.json", manufacture)
     dump("mechanics.json", mechanics_index)
     dump("regions.json", region_view)
-    dump("categories.json", QUICKBAR_NAMES)
+    # v131：分类字典 + 官方面板组顺序（priority 降序）——排序信息从此有数据依据
+    dump("categories.json", {
+        "source": "FactoryQuickBarTypeTable（游戏内「工业设备」面板官方分组，v131 对齐）",
+        "names": QUICKBAR_NAMES,
+        "order": QUICKBAR_ORDER,
+    })
     dump("blueprint.json", blueprint)
     dump("logistics.json", logistics)
     dump("rules.json", rules)

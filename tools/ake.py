@@ -5,7 +5,7 @@
 用法：
   python ake.py 建筑 <关键词>          查建筑（名称/ID/描述模糊匹配）
   python ake.py 建筑 --地区 武陵        按地区列建筑
-  python ake.py 建筑 --分类 电力设施     按分类列建筑
+  python ake.py 建筑 --分类 电力        按分类列建筑
   python ake.py 蓝图 <关键词>          查占地格数 + 接口布局（搭蓝图用）
   python ake.py 蓝图 --接口 │ --无接口 │ --规格 │ --详细
   python ake.py 基地                   各基地建设区面积、扩建价目、据点建造上限
@@ -882,7 +882,7 @@ def main():
         s = sub.add_parser(name, help=help_text)
         s.add_argument("关键词", nargs="?", default="", help="搜索关键词（名称或 ID）")
         s.add_argument("--地区", default="", help="按地区筛选，如 武陵 / 四号谷地")
-        s.add_argument("--分类", default="", help="按分类筛选，如 电力设施 / 防御设施")
+        s.add_argument("--分类", default="", help="按分类筛选，如 电力 / 战斗辅助")
         s.add_argument("--设备", default="", help="按设备名筛选")
         s.add_argument("--限制", type=int, default=30, help="最多显示条数")
         s.add_argument("--全部", action="store_true", help="显示全部结果")
