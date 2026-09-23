@@ -3044,6 +3044,29 @@ chk('⑥-2 生成消息的机器台数与画布实摆一致（external 不再虚
     (A.LO.msg || '').slice(0, 60) + ' | placed=' + A.LO.objs.filter(o => o.planRole === 'machine').length);
 A.LO.mt = [];
 
+// ---- v133 扩容反应池「同池并行」（博士 2026-09-24 实机 + 官方文案 + 社区实测三重核实）----
+// 壤晶链 = 息壤+清水→液化息壤 / 液化息壤+污水→壤晶废液+惰性壤晶废液 / 壤晶废液+蓝铁粉→壤晶（+污水）
+// 三条反应同属 group_mix_pool_2_liquid：游戏里 1 栋扩容池（8 缓存格）就能同时跑 —— 我们原先按
+// 「一条配方一栋」算 3 栋。口径：同组 ≥2 条不同配方 → 整组升扩容池；栋数 = 组内 max(n_i)。
+const rPool = A.Rexplode('item_xiranite_poly', 10, {});
+const poolNodes = rPool.machines.filter(n => n.machineId === 'mix_pool_2');
+chk('v133 壤晶链：同组 ≥2 条反应 → 整组升级为扩容反应池（链里不再有基础池）',
+    !rPool.machines.some(n => n.machineId === 'mix_pool_1') && poolNodes.length >= 1,
+    JSON.stringify(rPool.machines.map(n => n.machineName + 'x' + n.machines + '<' + n.recipeId + '>')));
+chk('v133 壤晶链：同池并行合并 —— 主体承接组内 max 栋数、省下栋数记账（合并节点已从清单剔除）',
+    (() => {
+      if (!rPool.poolMerge || !rPool.poolMerge.length) return false;
+      const g = rPool.poolMerge[0];
+      const lead = rPool.machines.filter(n => n.machineId === 'mix_pool_2')[0];
+      return g.members.length >= 2 && g.slots <= 8 && g.saved >= 1 &&
+             !!lead && g.count === lead.machines;
+    })(),
+    JSON.stringify(rPool.poolMerge) + ' | 主体 ' + JSON.stringify(rPool.machines.filter(n => n.machineId === 'mix_pool_2').map(n => n.recipeId + 'x' + n.machines)));
+chk('v133 单配方链不升扩容池（赤铜块链只 1 条池子配方 → 仍是基础反应池）',
+    (() => { const r = A.Rexplode('item_copper_nugget', 10, {});
+      return !r.machines.some(n => n.machineId === 'mix_pool_2'); })(),
+    JSON.stringify(A.Rexplode('item_copper_nugget', 10, {}).machines.map(n => n.machineName + 'x' + n.machines)));
+
 // ---- ⑥-2 × ⑥-1 组合：多目标 + 跨地区收货同时开 ----
 // 要守住的：收货判定吃的是**合并后的原料并集与合并后的需求**（两条链的赤铜矿需求 20+20=40/分），
 // 共用段照常渲染，本地冶炼（赤铜块）照建 —— 收货只改「料从哪来」。
@@ -3463,7 +3486,7 @@ chkHeavy('⑥-4+v99 端到端（重）：膨地啪@30（12 炉 = 游戏上限满
     ['锁定一件 + 重排其余',
      "Linit(); LO.objs=[]; LO.sel=[]; LO.size=70; LawRun('item_iron_cmpt',10); var ms=LO.objs.filter(function(o){return o.planRole==='machine';}); ms[0].lock=true; Lreroll();"],
     ['⑤-3 宽间距扩搜（赤铜块@10，12 台全摆 + 手动连 ≤2）',
-     "Linit(); LO.objs=[]; LO.sel=[]; LO.size=80; var _t2=RwTargets().filter(function(x){return x.name==='赤铜块';})[0]; LawRun(_t2.id,10); if(LO.plan.plan.objs.length!==LO.plan.res.totalMachines) throw new Error('丢了机器'); if(LO.plan.route.warns.filter(function(w){return w.indexOf('手动连')>=0;}).length>2) throw new Error('手动连超过 2 条');"],
+     "Linit(); LO.objs=[]; LO.sel=[]; LO.size=80; var _t2=RwTargets().filter(function(x){return x.name==='赤铜块';})[0]; LawRun(_t2.id,10); var _diag='机器【'+LO.plan.res.machines.map(function(m){return m.machineName+'x'+m.machines+'<'+(m.recipeId||'')+'>';}).join(' ')+'】摆放 '+LO.plan.plan.objs.length+'/'+LO.plan.res.totalMachines+' 手动连 '+LO.plan.route.warns.filter(function(w){return w.indexOf('手动连')>=0;}).length+' 条'; if(LO.plan.plan.objs.length!==LO.plan.res.totalMachines) throw new Error('丢了机器 | '+_diag); if(LO.plan.route.warns.filter(function(w){return w.indexOf('手动连')>=0;}).length>2) throw new Error('手动连超过 2 条 | '+_diag);"],
     ['分流器分支（工业爆炸物@5，1 台上游喂 5 台下游）',
      "Linit(); LO.objs=[]; LO.sel=[]; LO.size=50; var _t=RwTargets().filter(function(x){return x.name==='工业爆炸物';})[0]; LawRun(_t.id,5); if(!LO.plan || !LO.plan.route.stats || LO.plan.route.stats.split<1) throw new Error('分流器分支没走到');"],
     ['render() 走一遍（含锁定态与工具条）', "render();"],

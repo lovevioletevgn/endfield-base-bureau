@@ -498,6 +498,9 @@ def main():
             "seconds": seconds,
             "sortId": c.get("sortId"),
             "desc": T(c.get("formulaDesc")),
+            # ⭐v133 该配方涉及的缓冲物（每条配方都有，317/317）——前端做「扩容反应池同池并行」的
+            #   占格依据：同池并行配方的 buffers 物品并集 ≤ 缓存格数（8）。
+            "buffers": [{"id": k, "name": iname(k)} for k in (c.get("buffers") or {})],
         })
     craft_list.sort(key=lambda r: (r.get("sortId") or 0, r["id"]))
 

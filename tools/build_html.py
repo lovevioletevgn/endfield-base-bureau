@@ -3168,6 +3168,11 @@ function Rexplode(targetId, perMin, opt){
     (n.children||[]).forEach(walk);
   };
   rootObjs.forEach(walk);
+  /* ⭐v133 扩容反应池同池并行合并（改物理池子数，不动需求/产出；单/多目标两条路径都过这里） */
+  RwPoolUpgrade(nodes);          /* 同组 ≥2 条配方 → 基础池整组升扩容池（单配方保持基础池） */
+  const poolMerge=RwPoolMerge(nodes);
+  /* 合并后 machines=0 的节点（已并入主体池子）从机器清单剔除 —— 清单只留真实要摆的机器 */
+  for(let mi=machines.length-1;mi>=0;mi--){ if(!machines[mi].machines) machines.splice(mi,1); }
   const shipIns=nodes.filter(n=>n.shipIn);
   const tgts=seedArr.map(s=>({id:s.itemId, name:RwItemName(s.itemId), perMin:s.perMin}));
   return {root:rootObjs[0], nodes:nodes, machines:machines, raw:raw, externals:externals, seeds:seeds, warns:warns,
@@ -3175,7 +3180,78 @@ function Rexplode(targetId, perMin, opt){
           target:targetId, targetName:RwItemName(targetId), perMin:perMin,
           targets:(seedArr.length>1?tgts:null),
           shared:(useDedup?allReal.filter(n=>n.sharedTo&&Object.keys(n.sharedTo).length):[]),
+          poolMerge:poolMerge,
           totalMachines:machines.reduce((s,n)=>s+n.machines,0)};
+}
+/* ⭐v133 扩容反应池「同池并行」（博士 2026-09-24 实机 + 官方文案 + 社区实测三重核实）：
+   官方文案：「拥有更多的端口并可同时进行更多的化学反应」；实机口径：一栋 8 个缓存格，
+   最多同时跑 3 条不同反应；NGA 实测补充：多条**不同**配方同池并行、各跑各的额定速度，
+   **同一条配方不能并行提速**（速度不叠加）。因此我们按「一条配方一栋」算会多算池子
+   （典型：息壤→液化息壤→壤晶废液→壤晶 三段反应，游戏里 1 栋扩容池、我们原本算 3 栋）。
+   合并口径：同池并行配方的 buffers 物品并集 ≤ RW_POOL_SLOTS → 栋数 = 组内 max(n_i)
+   （每栋对其中每条配方各贡献 1 份产能）；并集超限 → 贪心分组、组间栋数相加。
+   ⚠️ 只改「物理池子数」：各配方的需求 / 产出 / 下游传播一律不动（产出不变，与实机一致）。
+   范围：只处理扩容反应池（RW_POOL_FACILITY）；基础反应池保持现状（博士 2026-09-24 定）。 */
+const RW_POOL_SLOTS=8;
+const RW_POOL_FACILITY='mix_pool_2';
+/* ⭐v133 池子变体升级：默认选基础反应池（更便宜更小）；只有当**同组出现 ≥2 条不同配方**
+   （展开完才知道）时才有「同池并行」收益 —— 那时把该组节点整组换成扩容池变体
+   （唯一能塞下多条并行的池子），再交给 RwPoolMerge 合并。
+   单配方仍用基础池：扩容池 100 电 / 6×5 占地 vs 基础池 50 电 / 5×5，无并行收益时纯亏。 */
+function RwPoolUpgrade(nodes){
+  /* 池子节点：mix_pool_1（基础池）/ mix_pool_2（扩容池）都算「反应池类」。
+     ⚠️ 同一反应在两个池子上各有变体，且 **group 名不同**（group_mix_pool_1_liquid vs
+     group_mix_pool_2_liquid）—— 「是不是同一条反应」要用原料/产物签名（sig）判，
+     不能用 group 名或 recipeId（_1 / _2 后缀不同）。 */
+  const isPool=r=>r&&(r.machineId==='mix_pool_1'||r.machineId===RW_POOL_FACILITY);
+  const sig=r=>JSON.stringify((r.ingredients||[]).map(x=>x.id+'x'+x.count).join('+')+' > '+
+                              (r.outcomes||[]).map(x=>x.id+'x'+x.count).join('+'));
+  const pool=nodes.filter(n=>isPool(RbyId(n.recipeId)));
+  if(pool.length<2) return 0;
+  const kinds={};
+  pool.forEach(n=>{ const r=RbyId(n.recipeId); if(r) kinds[sig(r)]=1; });
+  if(Object.keys(kinds).length<2) return 0;      /* 只有一种反应 → 无并行收益，保持基础池 */
+  const exp=Rof(RW_POOL_FACILITY);
+  let upgraded=0;
+  pool.forEach(n=>{
+    const r0=RbyId(n.recipeId);
+    if(!r0||r0.machineId===RW_POOL_FACILITY) return;      /* 已是扩容池变体 */
+    const twin=exp.filter(x=>sig(x)===sig(r0))[0];
+    if(!twin) return;                                     /* 找不到孪生变体就保持原样（防呆） */
+    n.recipeId=twin.id; n.machineId=twin.machineId; n.machineName=twin.machineName;
+    const pm=RwPerMin(twin, n.itemId);
+    n.perMachine=Math.round(pm*1000)/1000;
+    n.machines=Math.max(1, Math.ceil(n.demand/(pm||1)));   /* 产能同 → 与升级前一致 */
+    upgraded++;
+  });
+  return upgraded;
+}
+function RwPoolMerge(nodes){
+  const pool=nodes.filter(n=>n.machineId===RW_POOL_FACILITY && n.machines>0);
+  if(pool.length<2) return null;
+  const bset=n=>{ const r=RbyId(n.recipeId); return ((r&&r.buffers)||[]).map(b=>b.id); };
+  const groups=[];
+  pool.slice().sort((a,b)=>b.machines-a.machines).forEach(n=>{
+    const s=bset(n);
+    let target=null;
+    for(const g of groups){
+      const u=g.set.concat(s.filter(x=>g.set.indexOf(x)<0));
+      if(u.length<=RW_POOL_SLOTS){ target=g; g.set=u; break; }
+    }
+    if(!target){ target={set:s.slice(), members:[]}; groups.push(target); }
+    target.members.push(n);
+  });
+  const out=[];
+  groups.forEach(g=>{
+    const total=Math.max.apply(null, g.members.map(m=>m.machines));
+    const lead=g.members[0];
+    const saved=g.members.reduce((s,m)=>s+m.machines,0)-total;
+    lead.machines=total;
+    lead.poolMerge={count:total, members:g.members.map(m=>m.name), slots:g.set.length, saved:saved};
+    g.members.slice(1).forEach(m=>{ m.machines=0; m.poolWith=lead.name; });
+    if(saved>0) out.push(lead.poolMerge);
+  });
+  return out.length?out:null;
 }
 /* 【一句话】多目标图的收尾结算：需求沿边摊开 → 台数重算 → 层级重排 → 生成告警。
    ⭐⑥-2 配套（2026-09-22）：多目标 DAG 的「需求汇总 → 台数重算 → 层级重排」。
@@ -5081,6 +5157,8 @@ function Rreport(P, pw, bw, th, lim, st, rawNeed, sc){
           ?('目标 '+P.res.targets.map(t=>'<b>'+esc(t.name)+'</b> '+t.perMin+'/分').join(' ＋ '))
           :('目标 <b>'+esc(P.res.targetName)+'</b> '+P.res.perMin+'/分')} · 机器 <b>${P.res.totalMachines}</b> 台（${P.res.machines.length} 种）· 管线 <b>${P.route.belts.length}</b> 格 · 占 <b>${P.plan.height}</b> 行</span>
       </div>
+      ${P.res.poolMerge?`
+      <div class="c-sub" style="margin-top:2px"><span><b>扩容反应池同池并行</b> <span class="lo-tag">v133 · 官方文案+实机核实</span>：${P.res.poolMerge.map(g=>'一栋跑 <b>'+g.members.length+'</b> 条反应（'+g.members.map(esc).join('、')+'）· 占 '+g.slots+'/'+RW_POOL_SLOTS+' 格'+(g.saved?('，比一条一栋省 <b>'+g.saved+'</b> 栋'):'')).join('；')}　<span class="c-id">同池并行不提速：每条反应各跑各的额定速度</span></span></div>`:''}
       ${sc?`
       <div class="lo-score">
         <div class="lo-ph">🧮 <b>评价函数</b> <span class="lo-tag">路线图 ① · 2026-09-21</span> —— 这一版布局的分数</div>
