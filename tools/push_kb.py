@@ -267,6 +267,29 @@ def scan_local_artifacts():
     return sorted(out)
 
 
+# 开始标签：<tagname ...attrs... [/]>   （属性按「名="值"」解析，值内允许 > 字符）
+_TAG_RE = re.compile(r'<([a-zA-Z][\w-]*)((?:[\s]+[\w:-]+(?:="[^"]*")?)*)\s*(/?)>')
+_ATTR_RE = re.compile(r'([\w:-]+)(?:="([^"]*)")?')
+
+
+def _sort_tag_attrs(m):
+    """把开始标签的属性**按名排序**重排，消除平台侧的序列化差异。"""
+    name, attrs, slash = m.group(1), m.group(2) or "", m.group(3)
+    pairs = _ATTR_RE.findall(attrs)
+    tail = "/" if slash else ""
+    if not pairs:
+        return "<%s%s>" % (name, tail)
+    pairs.sort(key=lambda kv: kv[0])
+    buf = []
+    for k, v in pairs:
+        # 平台会重写内联 CSS：`margin-top:16px;font-size:14px` → `...; font-size:...`
+        # （分号/冒号后补空格）。这是纯序列化差异，比对时抹掉分隔符两侧的空白。
+        if k.lower() == "style":
+            v = re.sub(r'\s*([;:,])\s*', r'\1', v)
+        buf.append(' %s="%s"' % (k, v))
+    return "<%s%s%s>" % (name, "".join(buf), (" " + tail) if tail else "")
+
+
 def strip_injection(html):
     """剥掉托管平台注入的痕迹，得到「本地原始产物」的可比对形态。
 
@@ -274,12 +297,22 @@ def strip_injection(html):
     `inject.js` 脚本、`<!--pnid:...-->` 注释，注入后字节必然与本地不同。
     此前终验对所有非 HOST_PATH 的 HTML 直接做字节比对 → 必然误报失败
     （index.html 就是这么被判「终验不一致」的）。
+
+    v117：光剥注入属性**仍然不够** —— 平台重排 HTML 时会**连属性顺序一起重排**
+    （本地 `<meta name=... content=...>`，线上变成 `<meta content=... name=...>`），
+    剥完注入属性两边依旧不等，v117 推送就又吃了一次误报 FAIL。
+    所以再补一步：把开始标签的属性按名排序，让「属性顺序」不再参与比对。
+
+    ⚠ 比对口径因此变成「标签结构 + 属性集合 + 文本」，**属性书写顺序不敏感** ——
+    这正是我们要的（顺序差异 100% 来自平台序列化，不是本地内容变了）。
     """
     t = html
+    # 注入脚本删掉后必须连它后面那个换行一起吃掉，否则 <head> 下会多出一个空行
+    t = re.sub(r'<script[^>]*src="/page/page_comm/inject\.js"[^>]*>\s*</script>[ \t]*\r?\n?', "", t)
+    t = re.sub(r'<!--pnid:[^>]*-->', "", t)
     t = re.sub(r'\s*data-page-node-id="[^"]*"', "", t)
     t = re.sub(r'\s*data-pnid-children="[^"]*"', "", t)
-    t = re.sub(r'<script[^>]*src="/page/page_comm/inject\.js"[^>]*>\s*</script>', "", t)
-    t = re.sub(r'<!--pnid:[^>]*-->', "", t)
+    t = _TAG_RE.sub(_sort_tag_attrs, t)
     return t
 
 
@@ -379,19 +412,38 @@ def main():
             say("  ⚠ 本次推送含 %d 个线上没有的新文件（上表 NEW 行）—— 请确认都是该上线的。" % len(local_new))
             push.extend(local_new)
 
-    # ---- 2.5 v116 硬闸：无论 auto 还是 --files，内部/排除目录一律拒绝上传 ----
+    # ---- 2.5 v117 硬闸：内部/排除目录一律**剔除**出上传列表，绝不让本地内容上线 ----
     #    ⚠ 事故根因复盘：v114 曾把泄露文件覆盖为占位止血，但 v115 用 auto 模式又被本地
     #      真实文件顶了回去 —— 只靠 scan_local_artifacts() 的软过滤不够，只要本地文件还在，
-    #      任何一条上传路径都可能把原文重新推上去。所以在 push 列表**确定之后**再兜一次底，
-    #      --files 手动指定也躲不掉。
-    blocked = []
+    #      任何一条上传路径都可能把原文重新推上去。所以在 push 列表**确定之后**再兜一次底。
+    #
+    #    ⚠ v117 行为修正（此前为「整批 fail」，实测有致命副作用）：
+    #      v116 的写法是「发现内部路径 → 整批中止」。但那些内部文件是**线上残留的占位**，
+    #      线上产物树里永远存在、本地也永远存在（占位只改线上不改本地），于是 auto 模式
+    #      **每次必挂、再也推不动** —— 防线自己把发布通道堵死了。
+    #      正确做法是**剔除 + 明确告警**：剔除点仍在最后一步（没有任何路径能绕过），
+    #      安全性与整批中止等价，但发布通道保持可用。
+    #      唯一保留「中止」的情形：用户用 --files **显式点名**了内部路径 —— 那是明确要求
+    #      上传它，做不到就必须说清楚，不能静默跳过让人误以为传上去了。
+    blocked, kept = [], []
     for rel in push:
         rel_np = rel[len(PREFIX):] if rel.startswith(PREFIX) else rel
         if _is_internal_path(rel_np) or rel_np.split("/")[0] in SCAN_SKIP_DIRS:
             blocked.append(rel)
+        else:
+            kept.append(rel)
+
     if blocked:
-        fail(1, "拒绝上传 %d 个内部/排除目录文件（v116 泄露事故硬闸，改用 --files 也无效）：\n  %s"
-             % (len(blocked), "\n  ".join(blocked)))
+        # --files 显式点名的（含带/不带 PREFIX 两种写法）→ 中止并报出来
+        named = [r for r in blocked
+                 if r in a.files or (r.startswith(PREFIX) and r[len(PREFIX):] in a.files)]
+        if named:
+            fail(1, "拒绝上传 %d 个内部/排除目录文件（--files 显式指定，v116 泄露事故硬闸）：\n  %s"
+                 % (len(named), "\n  ".join(named)))
+        say("  ⛔ 剔除 %d 个内部/排除目录文件（v116 硬闸，永不上传）：" % len(blocked))
+        for r in blocked:
+            say("       %s" % r)
+        push = kept
 
     changed, sames = [], []
     for rel in push:
