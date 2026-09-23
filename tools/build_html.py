@@ -1804,12 +1804,30 @@ function LfreeIn(list,x,y){
   return true;
 }
 /* 接口朝外的方向：取该接口格压在占地方框的哪条边上。
-   角上的接口两条边都算，这里固定取 z 边（配置表里进料口压倒性多在 z=D-1 边）。 */
+   角上的接口两条边都算，这里固定取 z 边（配置表里进料口压倒性多在 z=D-1 边）。
+   ⚠ 只对 rot=0 的原始接口坐标有效 —— 旋转后的坐标请用 LportDirRot。 */
 function LportDir(q,W,D){
   const onX=(q.x===0||q.x===W-1), onZ=(q.z===0||q.z===D-1);
   if(onX&&!onZ) return q.x===0?'l':'r';
   if(onZ) return q.z===0?'u':'d';
   return '';
+}
+/* ⭐v122：接口朝向跟着 rot 转，不再对旋转后的格子重新贴边猜。
+   事故（博士实测截图「旋转个方向进出货口就不齐了」）：旧代码对 LportXY 转完的坐标
+   再调 LportDir —— 角上的口两条边都压、固定取 z 边，rot=0 时进料口数据恰好在 z 边
+   所以猜对；机器一转，口的位置被转到了 x 边，贴边猜仍返回 z 边方向 → 朝向全错，
+   「口外那一格」算错，端点吸附 / 从口拉线 / 自动布线全都不齐。
+   修法：rot=0 时对**原始**坐标判一次 base 朝向（口径与旧逻辑完全一致，rot=0 行为不变），
+   之后方向按顺时针步进转 n 次 —— 'd'→'l'→'u'→'r'→'d'，与 LportXY 的 (x,z)->(D-1-z,x)
+   是同一套旋转（底边中点转到左边中点，'d' 的口转完朝 'l'）。
+   顺带考察过配置表 facing 字段：同座精炼炉左墙管道进口与右墙管道出口 facing 都是 90，
+   说明它是模型局部参数、不是「朝外方向」，不可靠，不采用。 */
+const LOGI_PORT_STEP={d:'l', l:'u', u:'r', r:'d'};
+function LportDirRot(p,rot,w0,d0){
+  let dir=LportDir(p,w0,d0);
+  const n=((rot/90)%4+4)%4;
+  for(let k=0;k<n;k++) dir=LOGI_PORT_STEP[dir]||dir;
+  return dir;
 }
 /* 某个接口外侧那一格有没有同类物流件 —— 有就是「接上了」 */
 function LlogiAt(idx,x,y,isPipe){
@@ -2050,14 +2068,15 @@ function LsnapEnd(x,y,which){
     const kind=which==='out'?'output':'input';
     const cands=(b.ports||[]).filter(p=>p.kind===kind);
     if(!cands.length) continue;
-    let best=null, bd=1e9;
+    const fp=Lfp(b);   /* ⭐v122：LportXY 要的是未旋转宽深（原误传旋转后的 o.w,o.d，非正方形建筑会错位） */
+    let best=null, bd=1e9, bp0=null;
     cands.forEach(p=>{
-      const q=LportXY(p,o.rot,o.w,o.d);
+      const q=LportXY(p,o.rot,fp[0],fp[1]);
       const d=Math.abs(o.x+q.x-x)+Math.abs(o.y+q.z-y);
-      if(d<bd){ bd=d; best=q; }
+      if(d<bd){ bd=d; best=q; bp0=p; }
     });
     if(!best) continue;
-    const dir=LportDir(best,o.w,o.d);
+    const dir=LportDirRot(bp0,o.rot,fp[0],fp[1]);   /* ⭐v122：朝向跟 rot 转（原来贴边猜，旋转后全错） */
     if(!dir) continue;
     const DVEC={r:[1,0], l:[-1,0], d:[0,1], u:[0,-1]};
     const v=DVEC[dir];
@@ -2243,12 +2262,13 @@ function LhitPort(o,fx,fy){
   const b=byBp(o.id);
   if(!b||!b.ports||!b.ports.length) return null;
   const cx=Math.floor(fx), cy=Math.floor(fy);
+  const fp=Lfp(b);   /* ⭐v122：未旋转宽深（原误传 o.w,o.d） */
   for(let i=0;i<b.ports.length;i++){
     const p=b.ports[i];
-    const q=LportXY(p,o.rot,o.w,o.d);
+    const q=LportXY(p,o.rot,fp[0],fp[1]);
     const gx=o.x+q.x, gy=o.y+q.z;
     if(gx!==cx||gy!==cy) continue;
-    const dir=LportDir(q,o.w,o.d);
+    const dir=LportDirRot(p,o.rot,fp[0],fp[1]);   /* ⭐v122：朝向跟 rot 转 */
     if(!dir) continue;
     const DV={r:[1,0], l:[-1,0], d:[0,1], u:[0,-1]}[dir];
     return {o:o, b:b, p:p, dir:dir, ox:gx+DV[0], oy:gy+DV[1]};
@@ -3371,7 +3391,7 @@ function RwRoute(placed, res, size, corr, extraBusy){
         if(q.x<0||q.x>=o.w||q.z<0||q.z>=o.d) return;
         const key=uidOf(o)+kind+p.index+(isP?'P':'B');
         if(used[key]) return;
-        out.push({key:key, gx:o.x+q.x, gy:o.y+q.z, dir:LportDir(q,o.w,o.d)});
+        out.push({key:key, gx:o.x+q.x, gy:o.y+q.z, dir:LportDirRot(p,o.rot,fp[0],fp[1])});   /* ⭐v122：朝向跟 rot 转（原来贴边猜，旋转机器后布线全歪） */
       });
       return out;
     };
@@ -5201,7 +5221,7 @@ function renderLayout(){
        [f] 物流汇总 longest      —— 传送带/管道计数与最长连通段
      各层只读 L.objs / DB，渲染顺序即 DOM 顺序；除 cells 外都是「先算字符串、最后统一拼」。
      ================================================================ */
-  /* ---- [a] 接口统计（和下面的逐个渲染同口径：越界的不算、角上取 z 边） ---- */
+  /* ---- [a] 接口统计（和下面的逐个渲染同口径：越界的不算、朝向跟 rot 转 ⭐v122） ---- */
   let pAll=0, pOn=0;
   L.objs.forEach(o=>{
     const b=byBp(o.id); if(!b||b.isLogi) return;
@@ -5209,7 +5229,7 @@ function renderLayout(){
     (b.ports||[]).forEach(p=>{
       const q=LportXY(p,o.rot,fp[0],fp[1]);
       if(q.x<0||q.x>=o.w||q.z<0||q.z>=o.d) return;
-      const dir=LportDir(q,o.w,o.d);
+      const dir=LportDirRot(p,o.rot,fp[0],fp[1]);   /* ⭐v122：朝向跟 rot 转（原贴边猜，旋转后统计与色条全错） */
       const dx=dir==='l'?-1:dir==='r'?1:0, dz=dir==='u'?-1:dir==='d'?1:0;
       pAll++;
       /* ⚠️ 两套方向命名在这汇合：LportDir 给 u/d（上下），色条/flowIn 体系用 t/b —— 必须转译，
@@ -5327,7 +5347,7 @@ function renderLayout(){
          压格线时有一半伸进邻格，邻格一放传送带就互相压字。这里用 padding box 坐标系：
          内框尺寸 = 占地格数×14 - 5（两侧 1.5px 边框 + 2px 的格间隙），marker 半径 3.5，
          再留 0.5px 空隙 → 中心距内沿 4px。 */
-      const dir=LportDir(q,o.w,o.d);
+      const dir=LportDirRot(p,o.rot,fp[0],fp[1]);   /* ⭐v122：朝向跟 rot 转（标记贴边 + on 判定 + tooltip 都靠它，原贴边猜旋转后全错） */
       const dx=dir==='l'?-1:dir==='r'?1:0, dz=dir==='u'?-1:dir==='d'?1:0;
       const INW=o.w*CELL-5, IND=o.d*CELL-5, E=4;
       const pcx=dx?(dx>0?INW-E:E):(q.x*CELL+CELL/2-1.5);

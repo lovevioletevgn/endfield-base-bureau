@@ -1680,6 +1680,55 @@ loReset(50);
       ok3 === null ? 'null ✓' : JSON.stringify(ok3));
 })();
 
+// ⭐v122（博士截图「旋转个方向进出货口就不齐了」）：接口朝向必须跟着 rot 转。
+// 旧逻辑对 LportXY 转完的坐标重新贴边猜朝向，角口永远判成压 z 边 —— rot=0 恰好对、
+// 一旋转全错（端点吸附 / 从口拉线 / 接口已接统计 / 自动布线全歪）。
+// 修法 = rot=0 按原口径判 base，再按 d→l→u→r 步进转 n 次（与 LportXY 同一套旋转）。
+(function () {
+  const g = A.DB.blueprint.buildings.find(b => b.id === 'grinder_1');
+  const fin = g.ports.find(p => p.kind === 'input' && p.index === 1);   // (1,2) 下边中点
+  const fout = g.ports.find(p => p.kind === 'output' && p.index === 1); // (1,0) 上边中点
+  chk('v122 rot=0 进料口朝下（回归不变）', A.LportDirRot(fin, 0, 3, 3) === 'd');
+  chk('v122 rot=0 出料口朝上（回归不变）', A.LportDirRot(fout, 0, 3, 3) === 'u');
+  const q90i = A.LportXY(fin, 90, 3, 3), q90o = A.LportXY(fout, 90, 3, 3);
+  chk('v122 rot=90 进料口位置转到左列 (0,1)', q90i.x === 0 && q90i.z === 1, q90i.x + ',' + q90i.z);
+  chk('v122 rot=90 出料口位置转到右列 (2,1)', q90o.x === 2 && q90o.z === 1, q90o.x + ',' + q90o.z);
+  chk('v122 rot=90 进料口朝向朝左（旧逻辑误判 u）', A.LportDirRot(fin, 90, 3, 3) === 'l',
+      A.LportDirRot(fin, 90, 3, 3));
+  chk('v122 rot=90 出料口朝向朝右（旧逻辑误判 d）', A.LportDirRot(fout, 90, 3, 3) === 'r',
+      A.LportDirRot(fout, 90, 3, 3));
+  chk('v122 rot=180 进料口朝上', A.LportDirRot(fin, 180, 3, 3) === 'u');
+  chk('v122 rot=270 进料口朝右', A.LportDirRot(fin, 270, 3, 3) === 'r');
+  const fc = g.ports.find(p => p.kind === 'input' && p.index === 0);    // (0,2) 角口，两条边都压
+  chk('v122 角口 rot=0 仍判下边（回归不变）', A.LportDirRot(fc, 0, 3, 3) === 'd');
+  chk('v122 角口 rot=90 朝左（旧逻辑误判 u —— 本次事故实锤）', A.LportDirRot(fc, 90, 3, 3) === 'l',
+      A.LportDirRot(fc, 90, 3, 3));
+})();
+
+// v122 端到端：旋转后的机器，带子铺在「真实口外侧」必须被判定接上
+loReset(50);
+(function () {
+  const gb = A.DB.blueprint.buildings.find(b => b.id === 'grinder_1');
+  A.Lpick('grinder_1');
+  A.LO.pickRot = 90;
+  A.Lput(5, 5);   // 占 (5..7, 5..7)，rot=90：进料口在左列、出料口在右列
+  const gi = gb.ports.find(p => p.kind === 'input' && p.index === 1);
+  const qi = A.LportXY(gi, 90, 3, 3);
+  chk('v122 端到端前置：进料口 #1 全局格 = (5,6)', 5 + qi.x === 5 && 5 + qi.z === 6,
+      (5 + qi.x) + ',' + (5 + qi.z));
+  A.Lpick('grid_belt_01');
+  A.LO.pickRot = 0;
+  A.Lput(4, 6);   // 进料口外侧（左）一格放传送带
+  const m = (outEl.innerHTML || '').match(/接口已接 <b>(\d+)<\/b> \/ (\d+)/);
+  chk('v122 rot=90 机器左侧铺带 → 接口已接 ≥1（旧逻辑为 0）', !!m && +m[1] >= 1,
+      m ? m[1] + '/' + m[2] : 'none');
+  const go = gb.ports.find(p => p.kind === 'output' && p.index === 1);
+  const qo = A.LportXY(go, 90, 3, 3);
+  const sn = A.LsnapStart(5 + qo.x, 5 + qo.z);   // 按在出料口格上起手
+  chk('v122 rot=90 出料口起手吸到右侧口外 (8,6)', !!sn && sn.x === 8 && sn.y === 6,
+      sn ? sn.x + ',' + sn.y + '@' + sn.dir : 'null');
+})();
+
 // ⭐v106 弯头格渲染（博士 2026-09-23 游戏截图「一格拐弯画不了」）：
 // 带子 rot 单值推的「进=出的反向」在拐弯处与真实拓扑不同轴 —— 旧版进色条画上边、
 // 弯道弧却从左边绕，自相矛盾。修复 = 进色条与 tooltip 都用 flowIn 反推的真实进边。
