@@ -2042,6 +2042,56 @@ loReset(50);
   chk('v109 浮层里列出的条目数 = 该域可出货件数',
       (hp2.match(/class="it[\s"]/g) || []).length >= A.hubCands(A.hubDomainOf(hub2)).length,
       String((hp2.match(/class="it[\s"]/g) || []).length));
+
+  // ⭐v126 选货浮层搜索 + 稀有度筛选（博士「东西几百个太多了」）。
+  // 上面 L2034 直接设了旧格式 dlvPop={uid,idx}——正好验证读取侧 ||'' 兜底不炸。
+  const hubDom = A.hubDomainOf(hub2);
+  const hubCandsN = A.hubCands(hubDom).length;
+  chk('v126 旧格式 dlvPop（无 q/rare）→ 工具条照常渲染，计数 = 全量',
+      hp2.indexOf('class="ft"') >= 0 && hp2.indexOf('搜物品名') >= 0 &&
+      hp2.indexOf(' / ' + hubCandsN + ' 件') >= 0,
+      (hp2.match(/class="ct">([^<]*)</) || [])[1]);
+  chk('v126 稀有度 chip 齐全（全部 + 按存在的稀有度去重降序）',
+      hp2.indexOf('>全部</button>') >= 0 &&
+      (hp2.match(/data-r="\d+"/g) || []).length >= 2);
+  // 服务端过滤路径（LdlvPick 选中后 render 走的就是它）：
+  A.LO.dlvPop = { uid: hub2.uid, idx: 0, q: '电池', rare: 0 };
+  A.render();
+  const hpQ = outEl.innerHTML || '';
+  const qItems = (hpQ.match(/data-nm="([^"]*)"/g) || []).map(s => s.slice(9, -1));
+  chk('v126 搜索「电池」→ 条目变少且全部命中',
+      qItems.length > 0 && qItems.length < hubCandsN && qItems.every(n => n.indexOf('电池') >= 0),
+      qItems.length + '/' + hubCandsN + ' ' + qItems[0]);
+  const rareN = r => A.hubCands(hubDom).filter(x => x.rarity === r).length;
+  A.LO.dlvPop = { uid: hub2.uid, idx: 0, q: '', rare: 5 };
+  A.render();
+  const hpR = outEl.innerHTML || '';
+  const rItems = (hpR.match(/data-rr="(\d)"/g) || []).map(s => s.slice(9, -1));
+  chk('v126 R5 筛选 → 只剩稀有度 5（或该域无 R5 时空结果文案）',
+      (rItems.length === rareN(5) && rItems.every(x => x === '5')) ||
+      (rareN(5) === 0 && hpR.indexOf('没有匹配') >= 0),
+      rItems.length + ' vs 预期 ' + rareN(5));
+  const qExp = A.hubCands(hubDom).filter(x => x.name.indexOf('电池') >= 0 && x.rarity === 2).length;
+  A.LO.dlvPop = { uid: hub2.uid, idx: 0, q: '电池', rare: 2 };
+  A.render();
+  const hpQR = outEl.innerHTML || '';
+  chk('v126 搜索 + 稀有度叠加 → 与数据侧同口径',
+      (hpQR.match(/data-nm=/g) || []).length === qExp,
+      (hpQR.match(/data-nm=/g) || []).length + ' vs ' + qExp);
+  A.LO.dlvPop = { uid: hub2.uid, idx: 0, q: '绝不存在的物品xyz', rare: 0 };
+  A.render();
+  chk('v126 空结果 → 显示引导文案 + 计数 0',
+      (outEl.innerHTML || '').indexOf('没有匹配') >= 0 &&
+      (outEl.innerHTML || '').indexOf('0 / ' + hubCandsN + ' 件') >= 0);
+  // LdlvOpen 重置筛选；LdlvRefilter 存在（真实浏览器的 oninput 路径，迷你 DOM 不真跑）
+  A.LO.pick = null;
+  A.LdlvOpen(hub2.uid, 0);
+  chk('v126 LdlvOpen 重置筛选（q=空、rare=0）',
+      !!A.LO.dlvPop && (A.LO.dlvPop.q || '') === '' && (A.LO.dlvPop.rare || 0) === 0,
+      JSON.stringify(A.LO.dlvPop && A.LO.dlvPop.q) + '/' + String(A.LO.dlvPop && A.LO.dlvPop.rare));
+  chk('v126 LdlvSetQ/LdlvSetR/LdlvRefilter 都在',
+      typeof A.LdlvSetQ === 'function' && typeof A.LdlvSetR === 'function' &&
+      typeof A.LdlvRefilter === 'function');
   A.LO.dlvPop = null;
 })();
 

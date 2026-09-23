@@ -366,6 +366,17 @@ nav button.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:
 .lo-dlvpop .it .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .lo-dlvpop .it .ck{color:#0F6E56;flex:none;font-size:11px}
 .lo-dlvpop .em{font-size:11.5px;color:var(--ink3);padding:6px 4px}
+/* ⭐v126 选货浮层筛选工具条：搜索框 + 稀有度 chip + 计数（博士「东西几百个太多了」） */
+.lo-dlvpop .ft{display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding:0 2px 5px;
+  border-bottom:1px solid var(--line2);margin-bottom:5px}
+.lo-dlvpop .ft .dlvq{flex:1;min-width:0;font-size:11.5px;padding:2px 6px;
+  border:1px solid var(--line2);border-radius:5px;background:#FFF;color:var(--ink)}
+.lo-dlvpop .ft input:focus{outline:none;border-color:#0F6E56}
+.lo-dlvpop .ft .cbtn{font-size:10.5px;padding:1px 6px;border-radius:9px;flex:none;
+  border:1px solid var(--line2);background:#FFF;color:var(--ink2);cursor:pointer}
+.lo-dlvpop .ft .cbtn.on{background:#0F6E56;border-color:#0F6E56;color:#FFF}
+.lo-dlvpop .ft .ct{font-size:10.5px;color:var(--ink3);flex:none;margin-left:auto;white-space:nowrap}
+.lo-dlvpop .lo-dlvplist{display:block}
 /* 配方选择块（选中生产设施时出现在左栏顶部） */
 .lo-rp{border:1px solid var(--accent-line);background:var(--accent-bg);border-radius:8px;padding:8px;margin-bottom:8px}
 .lo-rp select{width:100%}
@@ -1784,9 +1795,41 @@ function hubStars(r){ r=Math.max(1,Math.min(6,r|0)); return '★'.repeat(r); }
 function LdlvOpen(uid,idx){
   const L=Linit();
   if(L.pick&&L.pick.isLogi) return;
-  L.dlvPop={uid:uid, idx:idx}; render();
+  /* ⭐v126：q=搜索词、rare=稀有度筛选（0=全部）。每次新开浮层重置，LdlvPick 后的
+     render 会保留（连续配货时筛选不丢）。旧数据态没这两字段时读取侧用 ||'' 兜底。 */
+  L.dlvPop={uid:uid, idx:idx, q:'', rare:0}; render();
 }
 function LdlvClose(){ const L=Linit(); L.dlvPop=null; render(); }
+/* ⭐v126 选货浮层搜索 + 稀有度筛选（博士「东西几百个太多了」——281 件翻不动）：
+   oninput / 点 chip 只走轻量 DOM 过滤（LdlvRefilter），**不走 render** —— render
+   重建整个画布 DOM，输入框每敲一个字就丢焦点。状态存 L.dlvPop（q/rare），选中物品
+   后的 render 用同状态服务端过滤重绘，筛选跨 render 保持。 */
+function LdlvRefilter(){
+  const L=Linit(), pop=L.dlvPop; if(!pop) return;
+  const root=document.querySelector('.lo-dlvpop'); if(!root||!root.querySelector) return;
+  const q=String(pop.q||'').trim().toLowerCase(), rr=pop.rare||0;
+  const list=root.querySelector('.lo-dlvplist');
+  if(!list) return;
+  const its=list.querySelectorAll('.it');
+  let n=0;
+  for(let i=0;i<its.length;i++){
+    const el=its[i];
+    const okQ=!q||String(el.getAttribute('data-nm')||'').toLowerCase().indexOf(q)>=0;
+    const okR=!rr||String(el.getAttribute('data-rr')||'')===String(rr);
+    const show=okQ&&okR;
+    el.style.display=show?'':'none';
+    if(show) n++;
+  }
+  const ct=root.querySelector('.ft .ct');
+  if(ct) ct.textContent=n+' / '+its.length+' 件';
+  const btns=root.querySelectorAll('.ft .cbtn');
+  for(let i=0;i<btns.length;i++){
+    const b=btns[i];
+    b.className='cbtn'+((String(rr)===(b.getAttribute('data-r')||'0'))?' on':'');
+  }
+}
+function LdlvSetQ(v){ const L=Linit(); if(!L.dlvPop) return; L.dlvPop.q=v; LdlvRefilter(); }
+function LdlvSetR(v){ const L=Linit(); if(!L.dlvPop) return; L.dlvPop.rare=(parseInt(v,10)||0); LdlvRefilter(); }
 function LdlvPick(uid,idx,itemId){
   const L=Linit();
   const cur=L.hubPicks&&L.hubPicks[uid]?L.hubPicks[uid][idx]:'';
@@ -5302,7 +5345,10 @@ function renderLayout(){
     </div>`;
   })();
   /* ⭐v109 协议核心出货清单浮层：点出料口的内部箭头弹出，浮在该口正上方。
-     清单 = 该核心所属域的可出货物品（DB.hubItems 按 domains 过滤），按稀有度降序。 */
+     清单 = 该核心所属域的可出货物品（DB.hubItems 按 domains 过滤），按稀有度降序。
+     ⭐v126：加搜索框 + 稀有度 chip（博士「东西几百个太多了」）。服务端过滤只渲染
+     匹配项（render 路径保持筛选），oninput/点 chip 走 LdlvRefilter 轻量 DOM 过滤
+     （不 render，防输入框丢焦点）。条目带 data-nm/data-rr 供 DOM 过滤。 */
   const dlvPop=(function(){
     if(!L.dlvPop) return '';
     const o=L.objs.filter(x=>x.uid===L.dlvPop.uid)[0];
@@ -5310,22 +5356,32 @@ function renderLayout(){
     const b=byBp(o.id); if(!hubIsHub(b)) return '';
     const dom=hubDomainOf(o), cands=hubCands(dom);
     const cur=hubPickGet(o,L.dlvPop.idx);
+    const _q=String(L.dlvPop.q||'').trim().toLowerCase(), _r=L.dlvPop.rare||0;
+    const shown=cands.filter(it=>(!_q||String(it.name).toLowerCase().indexOf(_q)>=0)&&(!_r||it.rarity===_r));
     const _lo=4, _hi=Math.max(4,L.size*CELL-234);
     const cx=Math.min(_hi, Math.max(_lo, o.x*CELL+o.w*CELL/2-115));
     const cy=Math.max(4, o.y*CELL-8);
-    const body=cands.length
-      ? cands.map(it=>`<div class="it ${cur===it.id?'on':''}" onclick="LdlvPick('${o.uid}',${L.dlvPop.idx},'${it.id}')"
+    const rrs=[]; cands.forEach(it=>{ if(rrs.indexOf(it.rarity)<0) rrs.push(it.rarity); });
+    rrs.sort((a,b)=>b-a);
+    const chips=`<button class="cbtn${!_r?' on':''}" data-r="0" onclick="LdlvSetR(0)">全部</button>`
+      +rrs.map(r=>`<button class="cbtn${_r===r?' on':''}" data-r="${r}" onclick="LdlvSetR(${r})">R${r}</button>`).join('');
+    const body=shown.length
+      ? shown.map(it=>`<div class="it ${cur===it.id?'on':''}" data-nm="${esc(it.name)}" data-rr="${it.rarity}"
+            onclick="LdlvPick('${o.uid}',${L.dlvPop.idx},'${it.id}')"
             title="${esc(it.name)} · R${it.rarity}">
             <span class="rr">${hubStars(it.rarity)}</span><span class="nm">${esc(it.name)}</span>
             <span class="ck">${cur===it.id?'✓':''}</span></div>`).join('')
-      : '<div class="em">这个方向没有可出货的物品。</div>';
+      : '<div class="em">没有匹配的物品 —— 换个关键词或点「全部」试试。</div>';
     return `<div class="lo-dlvpop" style="left:${cx}px;top:${cy}px" onclick="event.stopPropagation()">
         <div class="hd"><b>出料口 #${L.dlvPop.idx} 出货物品</b>
-          <span class="c-id">${esc(hubDomainName(dom))} · ${cands.length} 件</span>
+          <span class="c-id">${esc(hubDomainName(dom))}</span>
           <span class="x" onclick="LdlvClose()" title="关闭">×</span></div>
+        <div class="ft"><input class="dlvq" value="${esc(L.dlvPop.q||'')}" placeholder="搜物品名…"
+            oninput="LdlvSetQ(this.value)" title="按名字筛选，输入即搜">${chips}
+          <span class="ct">${shown.length} / ${cands.length} 件</span></div>
         ${cur?`<div class="it on" onclick="LdlvPick('${o.uid}',${L.dlvPop.idx},'${cur}')" title="取消这件出货">
             <span class="rr"></span><span class="nm">（取消出货）</span><span class="ck"></span></div>`:''}
-        ${body}
+        <div class="lo-dlvplist">${body}</div>
       </div>`;
   })();
   /* ---- [e] 格子渲染：每个建筑一个 .lo-cell（本段最长，逐件生成 SVG + tooltip） ---- */
