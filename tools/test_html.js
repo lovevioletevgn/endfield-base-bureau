@@ -2092,6 +2092,45 @@ loReset(50);
   chk('v126 LdlvSetQ/LdlvSetR/LdlvRefilter 都在',
       typeof A.LdlvSetQ === 'function' && typeof A.LdlvSetR === 'function' &&
       typeof A.LdlvRefilter === 'function');
+
+  // ⭐v127 瓶罐筛选 + 灌装物标注（博士「你这里全是一样的瓶罐」——紫晶质瓶同名 ×10+，
+  //   只有 content（构建期「装：xxx」字段）能分清装了什么）
+  chk('v127 hubCands 条目带 ct（灌装物标注）',
+      A.hubCands(hubDom).every(x => typeof x.ct === 'string'));
+  const withCt = A.hubCands(hubDom).filter(x => x.ct);
+  const jarN = A.hubCands(hubDom).filter(x => A.LdlvIsJar(x)).length;
+  A.LO.dlvPop = { uid: hub2.uid, idx: 0, q: '', rare: 0, jar: 1 };
+  A.render();
+  const hpJ = outEl.innerHTML || '';
+  const jarItems = (hpJ.match(/data-jar="(\d)"/g) || []).map(s => s.slice(10, -1));
+  chk('v127 瓶罐筛选 → 条目全部 data-jar=1 且数量与数据侧同口径',
+      jarItems.length === jarN && jarN > 0 && jarItems.every(x => x === '1'),
+      jarItems.length + ' vs ' + jarN);
+  chk('v127 瓶罐 chip 渲染且点亮',
+      hpJ.indexOf('>瓶罐</button>') >= 0 && /class="cbtn on" data-j="1"/.test(hpJ));
+  chk('v127 灌装物标注进条目（class="cc"）',
+      withCt.length === 0 || hpJ.indexOf('class="cc"') >= 0,
+      '该域 content 物品 ' + withCt.length + ' 件');
+  if (withCt.length) {
+    // 搜索口径 = 名字 + content：取第一件 content 物品的标注子串当关键词
+    const kw = withCt[0].ct.replace(/^装：/, '').slice(0, 2);
+    const qExp = A.hubCands(hubDom).filter(x =>
+      ((x.name + ' ' + (x.ct || '')).indexOf(kw) >= 0)).length;
+    A.LO.dlvPop = { uid: hub2.uid, idx: 0, q: kw, rare: 0, jar: 0 };
+    A.render();
+    const hpC = outEl.innerHTML || '';
+    chk('v127 搜索「' + kw + '」命中 content（名字或灌装物）',
+        (hpC.match(/data-nm=/g) || []).length === qExp && qExp > 0,
+        (hpC.match(/data-nm=/g) || []).length + ' vs ' + qExp);
+  }
+  A.LO.pick = null;
+  A.LdlvOpen(hub2.uid, 0);
+  chk('v127 LdlvOpen 重置含 jar（q=空、rare=0、jar=0）',
+      !!A.LO.dlvPop && (A.LO.dlvPop.q || '') === '' && (A.LO.dlvPop.rare || 0) === 0 &&
+      (A.LO.dlvPop.jar || 0) === 0,
+      JSON.stringify(A.LO.dlvPop && [A.LO.dlvPop.q, A.LO.dlvPop.rare, A.LO.dlvPop.jar]));
+  chk('v127 LdlvSetJ/LdlvIsJar 都在',
+      typeof A.LdlvSetJ === 'function' && typeof A.LdlvIsJar === 'function');
   A.LO.dlvPop = null;
 })();
 

@@ -364,6 +364,7 @@ nav button.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:
 .lo-dlvpop .it.on{background:#E9F8F1;box-shadow:inset 0 0 0 1px rgba(15,110,86,.32)}
 .lo-dlvpop .it .rr{font-size:10px;color:#C9A227;letter-spacing:-1px;flex:none;width:34px}
 .lo-dlvpop .it .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lo-dlvpop .it .cc{color:var(--ink3);font-size:10px}
 .lo-dlvpop .it .ck{color:#0F6E56;flex:none;font-size:11px}
 .lo-dlvpop .em{font-size:11.5px;color:var(--ink3);padding:6px 4px}
 /* ⭐v126 选货浮层筛选工具条：搜索框 + 稀有度 chip + 计数（博士「东西几百个太多了」） */
@@ -1768,7 +1769,10 @@ function hubCands(domId){
   const all=DB.hubItems||{};
   Object.keys(all).forEach(iid=>{
     const v=all[iid];
-    if((v.domains||[]).indexOf(domId)>=0) out.push({id:iid, name:v.name||iid, rarity:v.rarity||1});
+    /* ⭐v127：ct = 灌装物标注（构建期 content 字段，「装：水蒸气（气态）」/「空容器（可灌装）」）。
+       瓶罐类物品在配置表里全是同一个名字（紫晶质瓶 ×10+），只有 content 能分清装了什么。 */
+    if((v.domains||[]).indexOf(domId)>=0) out.push({id:iid, name:v.name||iid, rarity:v.rarity||1,
+      ct:(DB.items&&DB.items[iid]&&DB.items[iid].content)||''});
   });
   out.sort((a,b)=> (b.rarity-a.rarity)||(a.name<b.name?-1:a.name>b.name?1:0));
   return out;
@@ -1795,28 +1799,33 @@ function hubStars(r){ r=Math.max(1,Math.min(6,r|0)); return '★'.repeat(r); }
 function LdlvOpen(uid,idx){
   const L=Linit();
   if(L.pick&&L.pick.isLogi) return;
-  /* ⭐v126：q=搜索词、rare=稀有度筛选（0=全部）。每次新开浮层重置，LdlvPick 后的
-     render 会保留（连续配货时筛选不丢）。旧数据态没这两字段时读取侧用 ||'' 兜底。 */
-  L.dlvPop={uid:uid, idx:idx, q:'', rare:0}; render();
+  /* ⭐v126：q=搜索词、rare=稀有度筛选（0=全部）。⭐v127：jar=只看瓶罐（0/1）。
+     每次新开浮层重置，LdlvPick 后的 render 会保留（连续配货时筛选不丢）。
+     旧数据态没这些字段时读取侧用 || 兜底。 */
+  L.dlvPop={uid:uid, idx:idx, q:'', rare:0, jar:0}; render();
 }
 function LdlvClose(){ const L=Linit(); L.dlvPop=null; render(); }
 /* ⭐v126 选货浮层搜索 + 稀有度筛选（博士「东西几百个太多了」——281 件翻不动）：
    oninput / 点 chip 只走轻量 DOM 过滤（LdlvRefilter），**不走 render** —— render
-   重建整个画布 DOM，输入框每敲一个字就丢焦点。状态存 L.dlvPop（q/rare），选中物品
-   后的 render 用同状态服务端过滤重绘，筛选跨 render 保持。 */
+   重建整个画布 DOM，输入框每敲一个字就丢焦点。状态存 L.dlvPop（q/rare/jar），选中
+   物品后的 render 用同状态服务端过滤重绘，筛选跨 render 保持。
+   ⭐v127（博士「你这里全是一样的瓶罐」）：搜索口径扩到灌装物标注 ct —— 「紫晶质瓶」
+   同名 ×10+ 只有 content 能分清，搜「息壤」要能命中「装：息壤液」的那瓶。 */
 function LdlvRefilter(){
   const L=Linit(), pop=L.dlvPop; if(!pop) return;
   const root=document.querySelector('.lo-dlvpop'); if(!root||!root.querySelector) return;
-  const q=String(pop.q||'').trim().toLowerCase(), rr=pop.rare||0;
+  const q=String(pop.q||'').trim().toLowerCase(), rr=pop.rare||0, jr=pop.jar||0;
   const list=root.querySelector('.lo-dlvplist');
   if(!list) return;
   const its=list.querySelectorAll('.it');
   let n=0;
   for(let i=0;i<its.length;i++){
     const el=its[i];
-    const okQ=!q||String(el.getAttribute('data-nm')||'').toLowerCase().indexOf(q)>=0;
+    const _nm=String(el.getAttribute('data-nm')||''), _ct=String(el.getAttribute('data-ct')||'');
+    const okQ=!q||(_nm+' '+_ct).toLowerCase().indexOf(q)>=0;
     const okR=!rr||String(el.getAttribute('data-rr')||'')===String(rr);
-    const show=okQ&&okR;
+    const okJ=!jr||el.getAttribute('data-jar')==='1';
+    const show=okQ&&okR&&okJ;
     el.style.display=show?'':'none';
     if(show) n++;
   }
@@ -1825,11 +1834,17 @@ function LdlvRefilter(){
   const btns=root.querySelectorAll('.ft .cbtn');
   for(let i=0;i<btns.length;i++){
     const b=btns[i];
-    b.className='cbtn'+((String(rr)===(b.getAttribute('data-r')||'0'))?' on':'');
+    const r=b.getAttribute('data-r');
+    if(r!=null) b.className='cbtn'+((String(rr)===r)?' on':'');
+    else if(b.getAttribute('data-j')!=null) b.className='cbtn'+((jr?' on':''));
   }
 }
 function LdlvSetQ(v){ const L=Linit(); if(!L.dlvPop) return; L.dlvPop.q=v; LdlvRefilter(); }
 function LdlvSetR(v){ const L=Linit(); if(!L.dlvPop) return; L.dlvPop.rare=(parseInt(v,10)||0); LdlvRefilter(); }
+function LdlvSetJ(v){ const L=Linit(); if(!L.dlvPop) return; L.dlvPop.jar=v?1:0; LdlvRefilter(); }
+/* ⭐v127 瓶罐判定：名字含瓶/罐（药品瓶、罐头）**或**有灌装物标注（气罐/灌装瓶）。
+   单用名字会漏 content 系（部分耐压罐命名不含罐字时），单用 content 会漏药品瓶。 */
+function LdlvIsJar(it){ return !!(it&&(String(it.name).indexOf('瓶')>=0||String(it.name).indexOf('罐')>=0||it.ct)); }
 function LdlvPick(uid,idx,itemId){
   const L=Linit();
   const cur=L.hubPicks&&L.hubPicks[uid]?L.hubPicks[uid][idx]:'';
@@ -5356,20 +5371,25 @@ function renderLayout(){
     const b=byBp(o.id); if(!hubIsHub(b)) return '';
     const dom=hubDomainOf(o), cands=hubCands(dom);
     const cur=hubPickGet(o,L.dlvPop.idx);
-    const _q=String(L.dlvPop.q||'').trim().toLowerCase(), _r=L.dlvPop.rare||0;
-    const shown=cands.filter(it=>(!_q||String(it.name).toLowerCase().indexOf(_q)>=0)&&(!_r||it.rarity===_r));
+    const _q=String(L.dlvPop.q||'').trim().toLowerCase(), _r=L.dlvPop.rare||0, _j=L.dlvPop.jar||0;
+    /* ⭐v127 搜索口径 = 名字 + 灌装物标注（搜「息壤」命中「紫晶质瓶·装：息壤液」） */
+    const shown=cands.filter(it=>(!_q||(String(it.name)+' '+(it.ct||'')).toLowerCase().indexOf(_q)>=0)
+      &&(!_r||it.rarity===_r)&&(!_j||LdlvIsJar(it)));
     const _lo=4, _hi=Math.max(4,L.size*CELL-234);
     const cx=Math.min(_hi, Math.max(_lo, o.x*CELL+o.w*CELL/2-115));
     const cy=Math.max(4, o.y*CELL-8);
     const rrs=[]; cands.forEach(it=>{ if(rrs.indexOf(it.rarity)<0) rrs.push(it.rarity); });
     rrs.sort((a,b)=>b-a);
     const chips=`<button class="cbtn${!_r?' on':''}" data-r="0" onclick="LdlvSetR(0)">全部</button>`
-      +rrs.map(r=>`<button class="cbtn${_r===r?' on':''}" data-r="${r}" onclick="LdlvSetR(${r})">R${r}</button>`).join('');
+      +rrs.map(r=>`<button class="cbtn${_r===r?' on':''}" data-r="${r}" onclick="LdlvSetR(${r})">R${r}</button>`).join('')
+      +`<button class="cbtn${_j?' on':''}" data-j="1" onclick="LdlvSetJ(${_j?0:1})"
+          title="只看瓶罐装的物品（灌装瓶 / 气罐 / 药品瓶 · 罐头）">瓶罐</button>`;
     const body=shown.length
       ? shown.map(it=>`<div class="it ${cur===it.id?'on':''}" data-nm="${esc(it.name)}" data-rr="${it.rarity}"
+            data-ct="${esc(it.ct||'')}" data-jar="${LdlvIsJar(it)?1:0}"
             onclick="LdlvPick('${o.uid}',${L.dlvPop.idx},'${it.id}')"
-            title="${esc(it.name)} · R${it.rarity}">
-            <span class="rr">${hubStars(it.rarity)}</span><span class="nm">${esc(it.name)}</span>
+            title="${esc(it.name)} · R${it.rarity}${it.ct?' · '+esc(it.ct):''}">
+            <span class="rr">${hubStars(it.rarity)}</span><span class="nm">${esc(it.name)}${it.ct?` <span class="cc">${esc(it.ct)}</span>`:''}</span>
             <span class="ck">${cur===it.id?'✓':''}</span></div>`).join('')
       : '<div class="em">没有匹配的物品 —— 换个关键词或点「全部」试试。</div>';
     return `<div class="lo-dlvpop" style="left:${cx}px;top:${cy}px" onclick="event.stopPropagation()">
