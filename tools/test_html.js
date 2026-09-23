@@ -1733,8 +1733,10 @@ loReset(50);
 // v109 的出货箭头 .lo-dlv 压在口格上，LonMouseDown 对它无条件放行 → 手拿物流件点口
 // 永远弹选货浮层，v108「从口格拉线」起不来。修复 = 手拿物流件时不放行（走 portpend：
 // 原地松手=拉线、拖动=移机器），空手点箭头才开浮层；LdlvOpen 加「手里有东西不开」守卫
-// 兜住 mouseup 后仍会派发到箭头 onclick 的 click。沙箱没有真实 DOM 树，事件对象手工造
-// （closest 按选择器映射，Lxy 用假 getBoundingClientRect）。
+// 兜住 mouseup 后仍会派发到箭头 onclick 的 click。
+// ⭐v124（博士「把选择物品的模块移到里面，外侧像其他基建一样是货品进出口」）：箭头内移
+// 一格、口格留白 —— 拉线主路径的 target 变成格子本体，点内部箭头=普通移动。
+// 沙箱没有真实 DOM 树，事件对象手工造（closest 按选择器映射，Lxy 用假 getBoundingClientRect）。
 (function () {
   loReset(50);
   A.Lpick('sp_hub_1'); A.Lput(5, 5);   // 9×9 占 (5..13, 5..13)
@@ -1754,14 +1756,15 @@ loReset(50);
   if (!cand.length) return;
   const P = cand[0];
 
-  function fakeEv(hitDlv) {
+  function fakeEv(hitDlv, gx, gy) {
     const CELL = A.LOCELL;
+    const X = gx === undefined ? P.gx : gx, Y = gy === undefined ? P.gy : gy;
     const canvas = { getBoundingClientRect() {
         return { left: 0, top: 0, width: A.LO.size * CELL, height: A.LO.size * CELL }; },
       querySelectorAll() { return []; } };   // LpaintSel 只遍历 .lo-cell，空表即可
     const cell = { dataset: { uid: hub.uid } };
     return { button: 0, preventDefault() {},
-      clientX: (P.gx + 0.5) * CELL, clientY: (P.gy + 0.5) * CELL,
+      clientX: (X + 0.5) * CELL, clientY: (Y + 0.5) * CELL,
       target: { closest(sel) {
         if (sel === '.lo-gasbar' || sel === '.lo-dlvpop') return null;
         if (sel === '.lo-dlv') return hitDlv ? { stub: true } : null;
@@ -1770,16 +1773,24 @@ loReset(50);
         return null; } } };
   }
 
-  // ① 空手点箭头：仍放行（v109 行为保留）→ 不进任何拖拽态，交给 onclick 开选货
+  // ① 空手点内部箭头（⭐v124 起箭头在口内侧一格）：仍放行 → 交给 onclick 开选货
   A.LO.pick = null; A.LODRAG = null;
   A.LonMouseDown(fakeEv(true));
   chk('v123 空手点出货箭头 → 放行（不起 portpend，交给 onclick 选货）',
       A.LODRAG === null, String(A.LODRAG && A.LODRAG.mode));
 
-  // ② 手拿传送带点箭头：不放行 → 进 portpend 待决态（v108 拉线复活的实锤）
+  // ②a 手拿传送带点**内部箭头**（v124 起箭头内移一格，点击坐标不在口上）→ 普通移动：
+  //    不误进拉线待决态；click 链由 LdlvOpen 守卫拦住不开浮层
   A.Lpick('grid_belt_01'); A.LODRAG = null;
-  A.LonMouseDown(fakeEv(true));
-  chk('v123 手拿传送带点出料口箭头 → 进 portpend 待决态',
+  A.LonMouseDown(fakeEv(true, P.gx - dvq[P.dir][0], P.gy - dvq[P.dir][1]));
+  chk('v124 手拿传送带点内部箭头 → 普通移动（不误拉线）',
+      !!A.LODRAG && A.LODRAG.mode === 'move', A.LODRAG ? A.LODRAG.mode : 'null');
+  A.LODRAG = null;
+
+  // ②b 手拿传送带点**口格**本体（v124 起口格上没有箭头，target 是格子）→ 进 portpend
+  A.LODRAG = null;
+  A.LonMouseDown(fakeEv(false));
+  chk('v124 手拿传送带点出料口格 → 进 portpend 待决态（口格拉线主路径）',
       !!A.LODRAG && A.LODRAG.mode === 'portpend', A.LODRAG ? A.LODRAG.mode : 'null');
 
   // ③ 原地松手 = 从口外一格起手拉线
@@ -1948,6 +1959,18 @@ loReset(50);
   const inside = hp.filter(p => p.left - HALF >= -0.5 && p.left + HALF <= hubW + 0.5 &&
                                 p.top - HALF >= -0.5 && p.top + HALF <= hubD + 0.5).length;
   chk('v109 6 个箭头全部落在核心格内（不越界）', inside === 6, inside + '/6  范围 ' + hubW + '×' + hubD);
+
+  // ⭐v124 箭头内移一格：每个箭头 = 口格中心 − 朝外方向×1 格（不再压口格，口留白给物流交互）
+  const dvq124 = { r: [1, 0], l: [-1, 0], d: [0, 1], u: [0, -1] };
+  const inner124 = hubBp.ports.filter(p => p.kind === 'output').map(p => {
+    const q = A.LportXY(p, 0, 9, 9);
+    const dv = dvq124[A.LportDirRot(p, 0, 9, 9)] || [0, 0];
+    return { x: q.x * A.LOCELL + A.LOCELL / 2 - dv[0] * A.LOCELL,
+             y: q.z * A.LOCELL + A.LOCELL / 2 - dv[1] * A.LOCELL };
+  });
+  const moved124 = hp.filter(p => inner124.some(
+      q => Math.abs(q.x - p.left) < 0.6 && Math.abs(q.y - p.top) < 0.6)).length;
+  chk('v124 6 个箭头全部内移到口内侧一格（不压口格）', moved124 === 6, moved124 + '/6');
 
   // 选中态：选了货 → 该口箭头 .set + 名字标签；另一口保持未选
   const hubObj = A.LO.objs.filter(o => o.id === 'sp_hub_1')[0];

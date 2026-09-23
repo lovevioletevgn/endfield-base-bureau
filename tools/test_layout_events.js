@@ -623,9 +623,10 @@ A.LO.pick = null;
 
 // ---------- v109 第二半：协议核心出货箭头（博士：「出货口可以点击选择物品出货」+「内部给个箭头」）----------
 // 箭头 .lo-dlv 是画布内的可点浮层，空手点击必须放行给选货。⭐v123（博士「手拿传送带
-// 一移到口上就只能选货」）：手拿**物流件**时不再放行 —— 箭头压在口格上，v109 的无条件
-// 放行把 v108「从口格拉线」挡死了。新分流：拿件点口=待决态（原地松手=拉线、拖动=移动），
-// 空手点口=选货浮层；click 链由 LdlvOpen 的「手里有东西不开」守卫兜底。
+// 一移到口上就只能选货」）：手拿**物流件**时不再放行 —— 新分流：拿件点口=待决态
+// （原地松手=拉线、拖动=移动），空手点口=选货浮层；click 链由 LdlvOpen 的
+// 「手里有东西不开」守卫兜底。⭐v124（博士「把选择物品的模块移到里面」）：箭头内移一格、
+// 口格留白给物流交互 —— 拉线主路径 target 变成格子本体，点内部箭头=普通移动。
 resetCanvas(40);
 (function () {
   A.Lpick('sp_hub_1'); A.Lput(4, 4);
@@ -634,14 +635,14 @@ resetCanvas(40);
   A.render();
   chk('事件层：协议核心渲染出 6 个出货箭头', canvas._dlvs.length === 6, String(canvas._dlvs.length));
 
-  // 1) 手里拿着物流件点箭头 → 不放行：进「口格拉线」待决态（不误摆件、不清选中）
+  // 1a) 手里拿着物流件点**内部箭头**（⭐v124 起箭头内移一格、不在口格上）→ 普通移动：
+  //     不误摆件、不清选中、不误进拉线待决态；click 链由 LdlvOpen 守卫拦住不开浮层
   A.Lpick('grid_belt_01');
   const nBefore = A.LO.objs.filter(o => o.id === 'grid_belt_01').length;
   const selBefore = A.LO.sel.slice();
   const arrow = canvas._dlvs[0];
-  // 坐标从数据侧算（渲染层同款 LportXY/LportDirRot）—— v123 起不放行，链路要 LhitPort
-  // 真命中口格。⚠️ 事件坐标是 canvas 绝对系；dlv 的 style left/top 是 cell 相对系，
-  // 直接拿来发事件会偏掉一个建筑原点（2026-09-23 实测：点成了核心内部的普通格 → move）。
+  // 口格坐标从数据侧算（渲染层同款 LportXY/LportDirRot）。⚠️ 事件坐标是 canvas 绝对系，
+  // 渲染 style 是 cell 相对系，别混用 —— 2026-09-23 实测混用会偏掉一个建筑原点。
   const hbp = A.DB.blueprint.buildings.find(b => b.id === 'sp_hub_1');
   const dvq = { r: [1, 0], l: [-1, 0], d: [0, 1], u: [0, -1] };
   const pc = hbp.ports.filter(p => p.kind === 'output').map(p => {
@@ -649,21 +650,29 @@ resetCanvas(40);
     const gx = 4 + q.x, gy = 4 + q.z;
     const dir = A.LportDirRot(p, 0, 9, 9);
     const dv = dvq[dir] || [0, 0];
-    return { gx, gy, ox: gx + dv[0], oy: gy + dv[1] };
+    return { gx, gy, dir, ox: gx + dv[0], oy: gy + dv[1] };
   }).filter(c => c.ox >= 0 && c.oy >= 0 && c.ox < 40 && c.oy < 40 &&
       !A.LO.objs.some(o => c.ox >= o.x && c.ox < o.x + o.w && c.oy >= o.y && c.oy < o.y + o.d));
   chk('事件层：数据侧能算出核心的口外空格（探针前置）', pc.length > 0, String(pc.length));
   const P = pc[0];
-  A.LonMouseDown(ev(arrow, px(P.gx), px(P.gy)));
-  chk('事件层：手拿物流件点出货箭头 → 进「口格拉线」待决态（v123 拉线优先于选货）',
-      !!A.LODRAG && A.LODRAG.mode === 'portpend', A.LODRAG ? A.LODRAG.mode : 'null');
-  chk('事件层：手拿物流件点出货箭头不误摆新件',
+  // 内部箭头所在格 = 口格 − 朝外方向×1（v124 渲染同款内移）
+  A.LonMouseDown(ev(arrow, px(P.gx - dvq[P.dir][0]), px(P.gy - dvq[P.dir][1])));
+  chk('事件层：手拿物流件点内部箭头 → 普通移动（不误拉线）',
+      !!A.LODRAG && A.LODRAG.mode === 'move', A.LODRAG ? A.LODRAG.mode : 'null');
+  chk('事件层：手拿物流件点内部箭头不误摆新件',
       A.LO.objs.filter(o => o.id === 'grid_belt_01').length === nBefore,
       nBefore + ' → ' + A.LO.objs.filter(o => o.id === 'grid_belt_01').length);
-  chk('事件层：手拿物流件点出货箭头不清掉选中', A.LO.sel.join() === selBefore.join(),
+  chk('事件层：手拿物流件点内部箭头不清掉选中', A.LO.sel.join() === selBefore.join(),
       A.LO.sel.join() + ' vs ' + selBefore.join());
+  A.LODRAG = null;   // move 态手势不收尾，清掉防泄漏
 
-  // 1b) 待决态原地松手 = 从口外一格起手铺带（v108 拉线复活）
+  // 1b) 手拿物流件点**口格**本体（v124 起口格上没有箭头，target 是格子）→
+  //     进「口格拉线」待决态（拉线主路径，与其他基建的口交互同款）
+  A.LonMouseDown(ev(cellEl(hub.uid), px(P.gx), px(P.gy)));
+  chk('事件层：手拿物流件点出料口格 → 进「口格拉线」待决态（主路径）',
+      !!A.LODRAG && A.LODRAG.mode === 'portpend', A.LODRAG ? A.LODRAG.mode : 'null');
+
+  // 1c) 待决态原地松手 = 从口外一格起手铺带（v108 拉线复活）
   A.LonMouseUp();
   const nb1 = A.LO.objs.filter(o => o.id === 'grid_belt_01');
   chk('事件层：口上原地松手 → 从口外起手铺带（拉线复活）',

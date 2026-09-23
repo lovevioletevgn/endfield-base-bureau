@@ -1153,7 +1153,8 @@ const LOGI_FLOW={0:'b', 90:'r', 180:'t', 270:'l'};    // rotation.y → 流向
 const LOGI_OPP={t:'b', b:'t', l:'r', r:'l'};
 const LOGI_STEP={r:'b', b:'l', l:'t', t:'r'};         // 与画布顺时针旋转同向（0°=右）
 const LGNAME={t:'上', b:'下', l:'左', r:'右'};
-/* ⭐v109 协议核心出货箭头：画在出料口格内侧、**朝外指**（口朝哪边就指哪边）。
+/* ⭐v109 协议核心出货箭头：画在出料口**内侧一格**（⭐v124 自口格内移，口格留白给物流
+   交互）、**朝外指**（口朝哪边就指哪边，视觉上对应它的口）。
    用 Lo 的 u/d/l/r 那套方向命名（LportDir 的返回值），不是 LOGI 的 t/b/l/r。 */
 const LO_DLVARROW={
   r:'<svg viewBox="0 0 12 12"><path d="M1 6h7M6 3l3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
@@ -5381,21 +5382,18 @@ function renderLayout(){
         +' · '+(lk?'外侧已接同类物流件':'外侧还没有接')
         +(rp?(' · 本配方：'+(pu==='use'?('走这里（'+(p.isPipe?'流体料':'固态料')+'）'):'不走这个口')):'');
       ports+=`<div class="lo-port ${p.isPipe?'pipe':''} ${lk?'on':''} ${pu}" style="left:${pcx}px;top:${pcy}px;background:${col}" title="${ttl}"></div>`;
-      /* ⭐v109 协议核心出货：出料口格**内侧**再放一个可点的指向箭头 ——
-         口本身只有 7px，面积太小不好点；博士也说「内部空白面积大」，那就把交互放到里面。
-         箭头就在口那一格、朝外指（离边框 11px 处），点它开选货清单；选了货就变绿、旁边标名字。 */
+      /* ⭐v109 协议核心出货：可点的指向箭头 + 选货清单；选了货变绿、旁边标名字。
+         ⭐v124（博士截图红圈「把选择物品的模块移到里面，外侧像其他基建一样是货品进出口」）：
+         箭头不再压在口格上 —— 口格留白给物流交互（手拿件点口=拉线、空手点口=选中/拖动，
+         与其他基建同款）。选货入口挪到核心**内侧一格**、仍朝外指对应它的口；
+         名字标签跟在箭头内侧。坐标教训（v109 两版踩坑：边缘列没有余量可推）在这里
+         反而成了正解 —— 内移整格是唯一任何格尺寸都不越界的放法。 */
       if(hubIsHub(b)&&p.kind==='output'){
-        /* ⚠️ 坐标踩坑两版（探针实测，别再回头）：
-           ① 按格中心 + 内推 11px → 9×9 核心在 20px 格下左口格中心才 10px，left=-1；
-           ② 按接口标记的内沿 pcx（左侧恒 =4）+ 内推 11px → left=-7，更糟。
-           根因：左边那一列只有 20px 宽，扣掉边框后没有 22px 的余量可推。
-           → 改成**压在口格中心**、箭头缩到 12px：视觉上是「口 + 朝外箭头」的组合图标，
-             两样都在同一格里，任何格尺寸下都不会溢出。 */
-        const gcx=q.x*CELL+CELL/2, gcy=q.z*CELL+CELL/2;
+        const gcx=q.x*CELL+CELL/2 - dx*CELL, gcy=q.z*CELL+CELL/2 - dz*CELL;
         const it=hubPickItem(o,p.index);
-        const px2=gcx+dx*13, py2=gcy+dz*13;
+        const px2=gcx - dx*13, py2=gcy - dz*13;
         ports+=`<div class="lo-dlv${it?' set':''}" style="left:${gcx}px;top:${gcy}px"
-            title="${esc(b.name)} 出料口 #${p.index} —— 点这里选这件货${it?('（当前：'+esc(it.name)+'，再点同类可取消）'):''}"
+            title="${esc(b.name)} 出料口 #${p.index}（口内侧）—— 点这里选这件货${it?('（当前：'+esc(it.name)+'，再点同类可取消）'):''}"
             onclick="LdlvOpen('${o.uid}',${p.index})">${LO_DLVARROW[dir]||''}</div>`;
         if(it) ports+=`<div class="lo-dlvt" style="left:${px2}px;top:${py2}px" title="${esc(it.name)}">${esc(it.name)}</div>`;
       }
