@@ -48,7 +48,7 @@ def _find_git():
     return 'git'   # 交给 PATH 解析，跑不通时由调用处报错
 
 GIT = _find_git()
-OWNER = '1595745135'
+OWNER = 'lovevioletevgn'
 REPO = 'endfield-base-bureau'
 BRANCH = 'main'
 COMMIT_MSG = 'v110 版权隔离：raw 依赖烘焙化 + git 仓库初始化'
