@@ -4084,7 +4084,9 @@ function RwRoute(placed, res, size, corr, extraBusy){
     if(!j.intoMerge && !j.intoSplit){
       linked.set(j.child, (linked.get(j.child)||0)+1);
       links.push({item:j.child.name, perMin:j.child.demand, from:j.child.machineName,
-        to:j.parent.machineName, isPipe:j.isP, cells:path.length, lines:RwLines(j.child.demand, j.isP),
+        to:j.parent.machineName, isPipe:j.isP, cells:path.length,
+        /* ⭐v143 P3：存路径格（'x,y' 列表）—— 报告用它把画布上的准入口按格匹配到依赖 */
+        path:path.map(c=>c.x+','+c.y), lines:RwLines(j.child.demand, j.isP),
         viaMerge:!!j.fromMerge, viaSplit:!!j.fromSplit});
     }
   });
@@ -5458,6 +5460,31 @@ function Rreport(P, pw, bw, th, lim, st, rawNeed, sc){
   const r1=x=>Math.round(x*10)/10;
   const wAll=P.res.warns.concat(P.route.warns);
   const loads=P.route.loads||[];
+  /* ⭐v143 P3 准入口限速联动（博士 2026-09-24：「看看这对排布器计算有什么影响」）：
+     线上装了准入口且设了限速 → 该段上限 = min(线速, 限速)，原 cap 判定会**低估堵塞**。
+     实现：扫描画布上的准入口（x,y → 限速），按格匹配每条依赖的路径，
+     命中就**就地修正**该条 loads 的 cap/state，并在报告里点名。每次渲染重算（准入口随时可加可改）。 */
+  const _valves={};
+  (Linit().objs||[]).forEach(o=>{ const b=byBp(o.id);
+    if(b&&(b.lgType==='BoxValve'||b.lgType==='FluidValve')&&+o.vRate>0) _valves[o.x+','+o.y]=+o.vRate; });
+  const _vNotes=[];
+  if(Object.keys(_valves).length && P.route.links){
+    P.route.links.forEach(lk=>{
+      if(!lk.path||!lk.path.length) return;
+      let v=null;
+      lk.path.forEach(k=>{ if(_valves[k]!=null) v=(v==null)?_valves[k]:Math.min(v,_valves[k]); });
+      if(v==null) return;
+      const ld=(loads||[]).find(x=>x.item===lk.item&&x.from===lk.from&&x.to===lk.to&&x.isPipe===lk.isPipe);
+      if(!ld||ld.cap<=v) return;
+      ld.cap=v; ld.valveLimited=v;
+      ld.state=(!ld.lines?'none':(ld.per>v+1e-6?'jam':(ld.per>v*0.9?'tight':'ok')));
+      _vNotes.push(esc(lk.item)+'（'+esc(lk.from)+' → '+esc(lk.to)+'）被准入口限到 <b>'+v+'/分</b>'
+        +(ld.state==='jam'?' —— <b style="color:'+RW_COL.bad+'">这条线会堵（负荷 '+_r1(ld.per)+'/分 超上限）</b>'
+          :(ld.state==='tight'?' —— 接近上限':'')));
+    });
+  }
+  const valveLine=_vNotes.length?`
+      <div class="c-sub" style="margin-top:2px"><span><b>准入口限速</b> <span class="lo-tag">v143 · 计算联动</span>：${_vNotes.join('；')}</span></div>`:'';
   const jam=loads.filter(x=>x.state==='jam').length;
   const tight=loads.filter(x=>x.state==='tight').length;
   const stations=RstationCount(Linit().objs);
@@ -5479,7 +5506,7 @@ function Rreport(P, pw, bw, th, lim, st, rawNeed, sc){
         <span>${P.res.targets
           ?('目标 '+P.res.targets.map(t=>'<b>'+esc(t.name)+'</b> '+t.perMin+'/分').join(' ＋ '))
           :('目标 <b>'+esc(P.res.targetName)+'</b> '+P.res.perMin+'/分')} · 机器 <b>${P.res.totalMachines}</b> 台（${P.res.machines.length} 种）· 管线 <b>${P.route.belts.length}</b> 格 · 占 <b>${P.plan.height}</b> 行</span>
-      </div>${machLine}
+      </div>${machLine}${valveLine}
       ${P.res.poolMerge?`
       <div class="c-sub" style="margin-top:2px"><span><b>扩容反应池同池并行</b> <span class="lo-tag">v133 · 官方文案+实机核实</span>：${P.res.poolMerge.map(g=>'一栋跑 <b>'+g.members.length+'</b> 条反应（'+g.members.map(esc).join('、')+'）· 占 '+g.slots+'/'+RW_POOL_SLOTS+' 格'+(g.saved?('，比一条一栋省 <b>'+g.saved+'</b> 栋'):'')).join('；')}　<span class="c-id">同池并行不提速：每条反应各跑各的额定速度</span></span></div>`:''}
       ${sc?`

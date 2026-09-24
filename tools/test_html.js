@@ -3231,6 +3231,24 @@ chk('v139 准入口标红：孤立 = 标红 / 拐角 = 标红 / 直线 = 放行'
     })(),
     'vbad 计数三态：孤立应>=1 / 拐角应>=1 / 直线应=0');
 
+// ---- v143 P3：吞吐体检联动准入口限速（该段上限 = min(线速, 限速)）----
+chk('v143 P3：路径上的准入口限速会修正该段 cap 并在报告点名',
+    (() => {
+      tab = 'layout'; A.Linit(); A.LO.objs = []; A.LO.sel = []; A.LO.size = 80; A.LO.mt = [];
+      A.LawRun('item_copper_nugget', 10);
+      const links = (A.LO.plan.route.links || []).filter(l => l.path && l.path.length);
+      if (!links.length) return false;
+      const lk = links[0];
+      const mid = lk.path[Math.floor(lk.path.length / 2)].split(',');
+      const pr = A.byBp(lk.isPipe ? 'log_pipe_conditioner' : 'log_conditioner');
+      const v = A.Lmk(pr, +mid[0], +mid[1], 0); v.planRole = 'link'; v.vRate = 6; A.LO.objs.push(v);
+      A.render();
+      const h = outEl.innerHTML || '';
+      return h.indexOf('被准入口限到') >= 0 &&
+             (A.LO.plan.route.loads || []).some(x => x.valveLimited === 6);
+    })(),
+    'cap 修正与报告点名');
+
 // ---- ⑥-2 × ⑥-1 组合：多目标 + 跨地区收货同时开 ----
 // 要守住的：收货判定吃的是**合并后的原料并集与合并后的需求**（两条链的赤铜矿需求 20+20=40/分），
 // 共用段照常渲染，本地冶炼（赤铜块）照建 —— 收货只改「料从哪来」。
