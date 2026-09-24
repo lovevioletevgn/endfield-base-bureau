@@ -5634,6 +5634,107 @@ function planCompareHTML(){
   </div>`;
 }
 /* 产线报告（① 评价函数 + ② 吞吐体检 + 第 1 层约束校验）—— 抽成函数，渲染层只管调用 */
+/* ⭐C6「物品必须有去路」去路体检（2026-09-24 博士拍板「加」）—————————————————————————
+   为什么要有它：游戏里物品有硬顶（社区口径「库存 50 + 在制 1」），某物品净产出 > 0 且没有去路时
+   **必然**满仓（只是时间问题，不是概率问题）→ 满仓后在制格卡死 → 该机停机 →
+   沿产线**反向逐级堵死** → 整条支线停产；而且会跨线连锁
+   （社区实例：赤铜块爆仓 → 污水断供 → 电池线停转 → 断电 → 全基地停摆）。
+   → 「最优排布」必须把「有没有去路」当**硬约束**：C1 管「产得够」，C6 管「排得出去」，
+     没有 C6 则 C1 只在时间零点成立（详见 docs/最优排布-设计规格.md 的 C6）。
+   ⚠️ 为什么必须**独立扫配方**、不能只看产线图：`Rexplode.build()` 只递归 `ingredients`，
+      配方的**副产物根本不进产线图**（317 条配方里 84 条是双产出，其中 11 条产污水）——
+      而漏掉的恰好是最致命的那些。副产物 = 没有下游的净产出，是爆仓第一来源。
+   本函数**只读不写**：不改图结构 / 布局 / 路由 → 对既有回归锁零影响（C6-a 体检档）。 */
+function RflowAudit(res){
+  const r3=x=>Math.round(x*1000)/1000;
+  const out={items:[], targets:[], ok:true};
+  if(!res||!res.machines) return out;
+  /* 主产物数量口径与 build()/RwPerMin 一致（别用 outcomes[0] 硬猜） */
+  const ocOf=(r,iid)=>{ const o=(r.outcomes||[]).filter(x=>x.id===iid)[0]||(r.outcomes||[])[0]||{}; return o.count||1; };
+  const made={}, used={};                     /* itemId -> {rate, by:[机器名], byp:有无副产物来源} */
+  const add=(bag,id,rate,who,byp)=>{
+    const e=bag[id]=bag[id]||{rate:0,by:[],byp:false};
+    e.rate+=rate; if(byp) e.byp=true;
+    if(who&&e.by.indexOf(who)<0) e.by.push(who);
+  };
+  res.machines.forEach(n=>{
+    const r=RbyId(n.recipeId); if(!r||!(n.actualOut>0)) return;
+    const oc=ocOf(r,n.itemId);
+    (r.outcomes||[]).forEach(o=>{
+      add(made, o.id, n.actualOut*(o.count/oc), n.machineName, o.id!==n.itemId);
+    });
+    const carriers=RwCarrierIds(r);
+    (r.ingredients||[]).forEach(i=>{
+      /* 载体（原料 id 也出现在产物里）净消耗 0 → 不是去路，别拿它抵账（拆解机的罐子/瓶子就是这种） */
+      if(carriers.indexOf(i.id)>=0) return;
+      add(used, i.id, n.actualOut*(i.count/oc), n.machineName, false);
+    });
+  });
+  const tgs={};
+  (((res.targets&&res.targets.length)?res.targets:[{id:res.target}])||[]).forEach(t=>{ if(t&&t.id) tgs[t.id]=1; });
+  Object.keys(made).forEach(id=>{
+    const m=made[id];
+    const o=r3(m.rate), u=r3((used[id]||{}).rate||0), ov=r3(o-u);
+    if(ov<=1e-6) return;                      /* 产出的都被下游吃掉了 → 有去路 */
+    const nm=RwItemName(id);
+    const row={id:id, name:nm, out:o, used:u, over:ov, by:m.by,
+               consumers:((used[id]||{}).by)||[], fromByproduct:!!m.byp,
+               isTarget:!!tgs[id], isBattery:/电池/.test(nm)};
+    if(row.isTarget) out.targets.push(row);   /* 目标产物：靠卖货/收走，单列不算必爆 */
+    else { out.items.push(row); out.ok=false; }
+  });
+  out.items.sort((a,b)=>b.over-a.over);
+  out.targets.sort((a,b)=>b.over-a.over);
+  return out;
+}
+/* C6 体检的报告区块（渲染与判定分开：判定是纯函数，好写回归锁） */
+function RflowAuditHtml(P){
+  const r1=x=>Math.round(x*10)/10;
+  const A=RflowAudit(P.res);
+  const bad=RW_COL.bad, okc=RW_COL.ok, warn=RW_COL.warn;
+  const n=A.items.length;
+  let h='<div class="c-sub" style="margin-top:8px"><span><b>♻️ 去路体检（C6）</b> '
+      +'<span class="lo-tag">爆仓销毁 · 2026-09-24 加</span> ';
+  h+= n ? ('<b style="color:'+bad+'">'+n+' 项净产出没有去路 —— 会爆仓并把产线堵停</b>')
+        : ('<b style="color:'+okc+'">每个物品都有去路 ✓ 不会爆仓停产</b>');
+  h+='</span></div>';
+  A.items.forEach(r=>{
+    /* 去路建议：电池可以烧进热能池（唯一「销毁即发电」），其余走扩容反应池堵塞清空 */
+    const way = r.isBattery
+      ? '去路建议：<b>溢流进热能池烧掉</b> —— 唯一「不浪费」的路子（销毁的同时发电）'
+      : '去路建议：<b>溢流进扩容反应池</b>销毁（注意：需 <b>2 条配方同时堵塞</b>才触发清空，'
+        +'单条堵着它什么都不做 → 得常驻 2 条「垫子」配方）';
+    /* 速率对不上单池上限时要点出来 —— 否则博士会以为「有池子就万事大吉」 */
+    const cap = (!r.isBattery && r.over>30)
+      ? ('　<b style="color:'+bad+'">'+r1(r.over)+'/分 &gt; 社区口径单池约 30/分，一个池子吃不下 —— 要么并几个，要么从源头减量</b>')
+      : '';
+    h+='<div class="c-sub" style="margin-top:2px"><span>· <b>'+esc(r.name)+'</b> 净溢出 '
+      +'<b style="color:'+bad+'">'+r1(r.over)+'/分</b>'
+      +'<span class="c-id">（产出 '+r1(r.out)+' − 下游用掉 '+r1(r.used)+'）</span>'
+      +(r.by.length?('　来源：'+esc(r.by.join('、'))):'')
+      +(r.fromByproduct?'　<span class="c-id">配方副产物 —— 不接销毁线就会一直堆</span>':'')
+      +'<br>　　'+way+cap+'</span></div>';
+  });
+  A.targets.forEach(r=>{
+    h+='<div class="c-sub" style="margin-top:2px"><span>· <b>'+esc(r.name)+'</b> 产出 '+r1(r.out)+'/分 '
+      +'<span class="c-id">（这是你要的目标产物，没有下游 —— 靠<b>卖货到据点</b>或手动取走；'
+      +'放着不管一样会满仓，但这是预期行为，不算必爆项）</span></span></div>';
+  });
+  h+='<div class="c-sub" style="margin-top:2px"><span class="c-id">判定口径：'
+    +'对每个物品算「实际产出 − 下游需求」，净溢出 &gt; 0 就是必爆项。'
+    +'<b>副产物是这里的主要检出对象</b> —— 排布器的产线图只沿主产物展开，'
+    +'配方副产物（317 条配方里 84 条是双产出，其中 11 条产污水）不在图里，'
+    +'所以本体检直接扫<b>每台机器所选配方的全部产出</b>。'
+    +'⚠️ <b>协议储存箱不是去路</b>（只缓冲不销毁，自己满了后面照样堵）；'
+    +'PAC 离线 7 天关物流是逃生阀，也不是去路。'
+    +'机制出处：<code>docs/数据手册-玩法与物流.md</code>「♻️ 爆仓与物品销毁」节。</span></div>';
+  if(n){
+    h+='<div class="c-sub" style="margin-top:2px"><span style="color:'+warn+'">'
+      +'这一版<b>只体检、不自动补销毁支线</b>（C6-a）：自动入图与自动摆 sink 会改图结构，'
+      +'牵动台数/布局/路由/评分，得单独一期做。</span></div>';
+  }
+  return h;
+}
 function Rreport(P, pw, bw, th, lim, st, rawNeed, sc){
   const r1=x=>Math.round(x*10)/10;
   const wAll=P.res.warns.concat(P.route.warns);
@@ -5775,6 +5876,7 @@ function Rreport(P, pw, bw, th, lim, st, rawNeed, sc){
       <div class="c-sub" style="margin-top:6px"><span><b>吞吐体检</b> <span class="lo-tag">路线图 ②a · 真并联</span> —— 每条依赖要几条线 / 实际连了几条 / 单线负荷${jam?('　<b style="color:'+RW_COL.bad+'">'+jam+' 段会堵</b>'):''}${tight?('　<b style="color:'+RW_COL.warn+'">'+tight+' 段没余量</b>'):''}</span></div>
       ${loads.map(k=>`<div class="c-sub" style="margin-top:2px"><span>· ${esc(k.item)} ${k.demand}/分：${esc(k.from)} → ${esc(k.to)} · ${k.isPipe?'管道':'传送带'} <b>${k.lines}</b> 条（上限算下来要 ${k.need} 条）· 单线 <b>${k.perLine}</b>/${k.cap} 个每分 → ${lstate[k.state]||''}</span></div>`).join('')}
       <div class="c-sub" style="margin-top:2px"><span class="c-id">判定：单线负荷 &gt; 载具上限（带 30/分 · 管 120/分）会堵；≥ 90% 算「紧」（加一点需求就堵）。线数不够时是端口/走线被占了 —— 原因见下面的提醒。</span></div>`:''}
+      ${RflowAuditHtml(P)}
       ${wAll.length?`<div class="c-sub" style="margin-top:6px"><span><b style="color:${RW_COL.warn}">提醒 ${wAll.length} 条</b></span></div>
       ${wAll.map(x=>`<div class="c-sub" style="margin-top:2px"><span>· ${esc(x)}</span></div>`).join('')}`:''}
       <div class="c-sub" style="margin-top:8px"><span><b>⚠️ 约束校验</b>（硬校验；协议容量 · 建造上限 · 用电取配置表，发电量 · 矿点数 · 存电取社区实测）</span></div>

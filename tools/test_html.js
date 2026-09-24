@@ -3797,4 +3797,53 @@ chkHeavy('⑥-4+v99 端到端（重）：膨地啪@30（12 炉 = 游戏上限满
   }
 })();
 
+// ---- C6 去路体检（2026-09-24 博士拍板「加」）----
+// ---- C6 去路体检（2026-09-24 博士拍板「加」）----
+// 背景：游戏里物品有硬顶（社区口径「库存 50 + 在制 1」），净产出 > 0 且没有去路的物品**必然**满仓 →
+// 在制格卡死 → 该机停机 → 沿产线**反向逐级堵死** → 整条支线停产，并会跨线连锁
+//（社区实例：赤铜块爆仓 → 污水断供 → 电池线停转 → 断电 → 全基地停摆）。
+// 判据：对每个物品算「实际产出 − 下游需求」，净溢出 > 0 = 必爆项；目标产物归 targets（靠卖货，不算必爆）。
+// ⚠️ 为什么必须独立扫配方：`Rexplode.build()` 只递归 ingredients，**配方副产物不进产线图**
+//（317 条配方里 84 条双产出，其中 11 条产污水）—— 漏掉的恰好是最致命的那些。
+chk('C6 体检：函数已在页面作用域导出（RflowAudit 判定 / RflowAuditHtml 渲染）',
+    typeof A.RflowAudit === 'function' && typeof A.RflowAuditHtml === 'function',
+    typeof A.RflowAudit + ' / ' + typeof A.RflowAuditHtml);
+
+chk('C6 体检：赤铜块链检出「壤晶废液 50/分」必爆项（配方副产物 + 零下游 → 产线图里根本看不见）',
+    (() => {
+      const au = A.RflowAudit(A.Rexplode('item_copper_nugget', 10, {}));
+      const hit = au.items.filter(x => x.id === 'item_liquid_xiranite_poly')[0];
+      return !!hit && hit.over === 50 && hit.used === 0 && hit.fromByproduct === true;
+    })(),
+    JSON.stringify(A.RflowAudit(A.Rexplode('item_copper_nugget', 10, {})).items.map(x => x.name + ' over=' + x.over + ' used=' + x.used + ' byp=' + x.fromByproduct)));
+
+chk('C6 体检反向锁：污水「产 10 / 链上反应池用 10」→ 有去路，**不得**误报为必爆项'
+    + '（证明判定是真算净溢出，不是「见副产物就报警」）',
+    (() => {
+      const au = A.RflowAudit(A.Rexplode('item_copper_nugget', 10, {}));
+      return !au.items.some(x => x.id === 'item_liquid_sewage') && !au.targets.some(x => x.id === 'item_liquid_sewage');
+    })(),
+    JSON.stringify(A.RflowAudit(A.Rexplode('item_copper_nugget', 10, {})).items.map(x => x.name)));
+
+chk('C6 体检：目标产物（赤铜块）归 targets，不算必爆项',
+    (() => {
+      const au = A.RflowAudit(A.Rexplode('item_copper_nugget', 10, {}));
+      return au.targets.some(x => x.id === 'item_copper_nugget')
+          && !au.items.some(x => x.id === 'item_copper_nugget');
+    })(),
+    JSON.stringify(A.RflowAudit(A.Rexplode('item_copper_nugget', 10, {})).targets.map(x => x.name + ' ' + x.over)));
+
+chk('C6 体检边界：空 res / 无产线 → 不抛错且判为「有去路」',
+    (() => { const au = A.RflowAudit(null); return au.ok === true && au.items.length === 0 && au.targets.length === 0; })(),
+    JSON.stringify(A.RflowAudit(null)));
+
+chk('C6 报告区块：渲染出体检标题 + 必爆项名 + 去路建议 + 「超单池上限」提示（50/分 > 社区口径 30/分）',
+    (() => {
+      const h = A.RflowAuditHtml({ res: A.Rexplode('item_copper_nugget', 10, {}) });
+      return h.indexOf('去路体检（C6）') >= 0 && h.indexOf('壤晶废液') >= 0 &&
+             h.indexOf('扩容反应池') >= 0 && h.indexOf('30/分') >= 0 &&
+             h.indexOf('协议储存箱不是去路') >= 0;
+    })(),
+    (function () { const h = A.RflowAuditHtml({ res: A.Rexplode('item_copper_nugget', 10, {}) }); return 'len=' + h.length + ' has=' + ['去路体检（C6）', '壤晶废液', '扩容反应池', '30/分', '协议储存箱不是去路'].filter(k => h.indexOf(k) < 0).join(','); })());
+
 report();
