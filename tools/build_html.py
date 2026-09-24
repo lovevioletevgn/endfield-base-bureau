@@ -2296,11 +2296,29 @@ function LlayTo(ex,ey){
   /* 先把本手势上一帧铺的格摘掉，再整体重铺 —— 逐格 push 会让判定把自己的格子当障碍 */
   if(st.uids&&st.uids.length) L.objs=L.objs.filter(o=>st.uids.indexOf(o.uid)<0);
   const base=L.objs.slice(), added=[];
+  /* ⭐v136 相交自动建桥（博士 2026-09-24：「游戏里两条传送带相交后会自动建物流桥，试摆里没有」）：
+     连铺时目标格被**同类介质的普通带/管**占着 → 不再跳过，而是在那格叠一座桥
+     （传送带 → log_connector 物流桥；管道 → log_pipe_connector 管道桥）—— 与游戏同款行为。
+     其他占用（建筑 / 分汇流器 / 已有桥 / 异类介质）仍按原样跳过。 */
+  const _myMed=L.pick.lgMedium;
+  const _bridgeId=(_myMed==='管道')?'log_pipe_connector':'log_connector';
+  const _occAt=(arr,x,y)=>arr.filter(o=>x>=o.x&&x<o.x+(o.w||1)&&y>=o.y&&y<o.y+(o.d||1))[0];
   ln.cells.forEach((c,i)=>{
-    if(!LfreeIn(base,c[0],c[1])||!LfreeIn(added,c[0],c[1])) return; /* 压到建筑或自己重叠的格跳过 */
     const nxt=ln.cells[i+1];
     /* 每格朝下一格；末格沿用前一格走向（游戏里拉带子收尾也是这个手感） */
     const rot=nxt?LrotFrom(c,nxt):(i>0?LrotFrom(ln.cells[i-1],c):L.pickRot);
+    const occ=_occAt(base,c[0],c[1])||_occAt(added,c[0],c[1]);
+    if(occ){
+      const ob=byBp(occ.id);
+      if(ob&&ob.isLogi&&(ob.lgType==='Belt'||ob.lgType==='Pipe')&&ob.lgMedium===_myMed
+         &&(occ.w||1)===1&&(occ.d||1)===1){   /* 只有 1×1 的普通带/管才叠桥；建筑一律跳过 */
+        const cb=byBp(_bridgeId);
+        if(cb&&!_occAt(added,c[0],c[1])) added.push(Lmk(cb,c[0],c[1],rot));
+        L.msg='已在相交处叠了一座'+(cb?cb.name:'桥')+'（原线保留）';
+      }
+      return;                       /* 桥已处理 / 非同类 → 该格不再铺 */
+    }
+    if(!LfreeIn(added,c[0],c[1])) return;   /* 自己重叠的格跳过 */
     added.push(Lmk(L.pick,c[0],c[1],rot));
   });
   /* ⭐v128（博士 2026-09-24「连续放传送带时，在上一条传送带的末尾拐弯放置，

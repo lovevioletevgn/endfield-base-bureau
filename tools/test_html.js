@@ -3142,6 +3142,35 @@ chk('v136 B：同物品多配方按「单位成本 → 耗电」分层 —— �
     })(),
     JSON.stringify((A.Rexplode('item_glass_bottle', 10, {}).machines || []).filter(x => x.itemId === 'item_glass_bottle').map(x => x.recipeId + '/' + x.machineName)));
 
+// ---- v137 手动连铺十字相交自动建桥（博士：「游戏里两条传送带相交后会自动建物流桥」）----
+chk('v137 传送带十字相交 → 交叉格叠物流桥（原线保留）',
+    (() => {
+      tab = 'layout'; A.Linit(); A.LO.objs = []; A.LO.sel = []; A.LO.size = 40;
+      A.LO.pick = A.byBp('grid_belt_01');
+      A.LODRAG = { mode: 'lay', sx: 2, sy: 5, ex: 2, ey: 5, uids: [], hist: [[2, 5]] };
+      for (let x = 3; x <= 12; x++) A.LlayTo(x, 5);
+      A.LODRAG = null; A.render();
+      A.LODRAG = { mode: 'lay', sx: 7, sy: 2, ex: 7, ey: 2, uids: [], hist: [[7, 2]] };
+      for (let y = 3; y <= 12; y++) A.LlayTo(7, y);
+      A.LODRAG = null; A.render();
+      const ids = A.LO.objs.filter(o => o.x === 7 && o.y === 5).map(o => o.id);
+      return ids.indexOf('grid_belt_01') >= 0 && ids.indexOf('log_connector') >= 0;
+    })(),
+    JSON.stringify(A.LO.objs.filter(o => o.x === 7 && o.y === 5).map(o => o.id)));
+chk('v137 管道十字相交 → 交叉格叠管道桥',
+    (() => {
+      A.Linit(); A.LO.objs = []; A.LO.sel = []; A.LO.size = 40;
+      A.LO.pick = A.byBp('log_pipe_01');
+      A.LODRAG = { mode: 'lay', sx: 2, sy: 20, ex: 2, ey: 20, uids: [], hist: [[2, 20]] };
+      for (let x = 3; x <= 12; x++) A.LlayTo(x, 20);
+      A.LODRAG = null; A.render();
+      A.LODRAG = { mode: 'lay', sx: 7, sy: 17, ex: 7, ey: 17, uids: [], hist: [[7, 17]] };
+      for (let y = 18; y <= 25; y++) A.LlayTo(7, y);
+      A.LODRAG = null; A.render();
+      const ids = A.LO.objs.filter(o => o.x === 7 && o.y === 20).map(o => o.id);
+      return ids.indexOf('log_pipe_01') >= 0 && ids.indexOf('log_pipe_connector') >= 0;
+    })());
+
 // ---- ⑥-2 × ⑥-1 组合：多目标 + 跨地区收货同时开 ----
 // 要守住的：收货判定吃的是**合并后的原料并集与合并后的需求**（两条链的赤铜矿需求 20+20=40/分），
 // 共用段照常渲染，本地冶炼（赤铜块）照建 —— 收货只改「料从哪来」。
