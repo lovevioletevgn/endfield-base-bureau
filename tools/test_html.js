@@ -875,6 +875,27 @@ chk('v145 自由模式不出基地页签', tabsOf(outEl.innerHTML || '') === 0);
 loReset(50);
 A.render();
 
+// ---- 5d-7c. v148 供电范围层（博士：「画布里供电桩也不显示供电范围，放的时候怎么确定设备在不在供电范围里」）----
+// 数据：raw/FactoryPowerPoleTable.json 的 rangeExtend（与气体散布机同字段同口径）。
+// 供电桩/息壤供电桩本体 2×2 外扩 5 → 12×12；中继器/息壤中继器本体 3×3 外扩 2 → 7×7。
+chk('v148 供电范围：数据注入（powerPole 字段挂到蓝图建筑）',
+    (() => { const d = A.byBp('power_diffuser_1'), p = A.byBp('power_pole_2');
+      return !!(d && d.powerPole && d.powerPole.rangeExtend && p && p.powerPole && p.powerPole.rangeExtend); })());
+chk('v148 供电范围：外扩口径（供电桩 5 / 中继器 2）',
+    (() => { return A.byBp('power_diffuser_1').powerPole.rangeExtend.x === 5
+      && A.byBp('power_pole_2').powerPole.rangeExtend.x === 2; })());
+chk('v148 供电范围：放一台供电桩 → 画布渲染 .lo-pwr 层（本体 2×2 外扩 5 → 12 格见方）',
+    (() => {
+      A.Linit().showPwr = true; A.LO.objs = []; A.LO.sel = [];
+      A.Lpick('power_diffuser_1'); A.Lput(10, 10); A.render();
+      const seg = (outEl.innerHTML || '').match(/class="lo-pwr[^"]*" style="left:(\d+)px;top:(\d+)px;width:(\d+)px/);
+      const ok = !!seg && +seg[1] === 5 * 20 && +seg[3] === 12 * 20;
+      loReset(50); A.render();
+      return ok;
+    })());
+chk('v148 供电范围：工具行有「供电范围」开关（LtogglePwr，默认显示）',
+    html.indexOf('LtogglePwr') >= 0 && /供电范围 ${''}显示中/.test(outEl.innerHTML || '') || html.indexOf('供电范围 ') >= 0);
+
 // ---- 5d-8. 生产配方：设施选物品 + 产能配比（博士 2026-09-21）----
 // 317 条配方靠 machineId 挂到设施；选中设施后左栏出现配方下拉；产能用**纯函数**算（给以后排布器打地基）。
 const recs = A.DB.machine_recipes || [];

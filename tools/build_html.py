@@ -172,6 +172,23 @@ else:
     bundle["recipeEnv"] = {}
     print("⚠️ 无 raw/ 也无 data/raw_baked.json —— 环境圈与出货数据将为空，请跑 tools/bake_raw.py")
 
+# ⭐v148 供电范围（博士 2026-09-24：「画布里供电桩也不显示供电范围，放的时候怎么确定设备在不在供电范围里」）：
+#    FactoryPowerPoleTable 的 rangeExtend 与气体散布机**同字段、同口径**（外扩 N 格）：
+#    供电桩/息壤供电桩（本体 2×2）±5 → 12×12；中继器/息壤中继器 ±2 → 7×7。
+#    之前「配置表没有射程」的结论是错的 —— 当时只查了建筑表，没查这张杆件表。注入到蓝图建筑 powerPole 字段。
+_pole_p = os.path.join(ROOT, "raw", "FactoryPowerPoleTable.json")
+_n_pole = 0
+if os.path.exists(_pole_p) and isinstance(_bp_arr, list):
+    with open(_pole_p, encoding="utf-8") as fh:
+        _ptab = json.load(fh)
+    for _b in _bp_arr:
+        _pp = _ptab.get(_b.get("id") or "")
+        if _pp:
+            _b["powerPole"] = {"rangeExtend": _pp.get("rangeExtend") or {},
+                               "autoConnectLength": _pp.get("autoConnectLength")}
+            _n_pole += 1
+    print("powerPole 注入: %d 座（供电桩/息壤供电桩 12×12、中继器/息壤中继器 7×7 + 配线长）" % _n_pole)
+
 # ⭐v109 协议核心出货（博士 2026-09-23：「游戏里的协议核心出货口可以点击选择物品出货」）：
 #    数据在 FactoryItemTable —— deliverItemTypeList 非空 = 这件物品可以走协议核心出货，
 #    值 [3,1] 的 1 / [3,2] 的 2 是**目标域序号**（1=四号谷地 domain_1、2=武陵 domain_2），
@@ -342,6 +359,9 @@ nav button.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:
 /* ⭐v103→v104 气体散布机环境圈：半透明方形色块 + 同色格线。颜色/浓度经 CSS 变量从 JS 传
    （--envbg 填充 / --envline 线框与格线 / --envop 浓度 —— 白圈(湿润)单独给高浓度，不然在浅画布上看不见）。
    pointer-events:none —— 不挡点击 / 框选 / 摆放（游戏里范围圈也不挡）。z-index:0 与预设线同层，在建筑（DOM 在后）之下。 */
+.lo-pwr{position:absolute;pointer-events:none;z-index:0;border-radius:2px;
+  background:#B9A8E8;border:1px dashed #7F77DD;opacity:.16}
+.lo-pwr-pre{opacity:.24;border-style:solid;z-index:5}
 .lo-env{position:absolute;pointer-events:none;z-index:0;border-radius:2px;opacity:var(--envop,.17);
   background-color:var(--envbg,#3D9FD8);
   box-shadow:inset 0 0 0 1px var(--envline,#1B6E9E);
@@ -1810,6 +1830,9 @@ const ENV_NAME={1:'稳定',2:'湿润',3:'酸性',4:'息壤'};
 /* 白圈（湿润）在浅色画布上几乎隐形 —— 给它专属的不透明度，其余维持轻透 */
 const ENV_OP={1:0.17,2:0.45,3:0.17,4:0.17,gray:0.17};
 function vaporizerOf(b){ return (b&&b.vaporizer)||null; }
+/* ⭐v148 供电范围：FactoryPowerPoleTable 的 rangeExtend 与气体散布机**同字段、同口径**（外扩 N 格）。
+   供电桩/息壤供电桩（本体 2×2）±5 → 12×12；中继器/息壤中继器 ±2 → 7×7（y 是高度，水平范围只看 x/z）。 */
+function powerPoleOf(b){ return (b&&b.powerPole)||null; }
 function envColorOf(env){ return ENV_HEX[env]||ENV_HEX.gray; }
 function envEdgeOf(env){ return ENV_EDGE[env]||ENV_EDGE.gray; }
 function envOpOf(env){ return ENV_OP[env]||ENV_OP.gray; }
@@ -2087,7 +2110,7 @@ function LlogiAt(idx,x,y,isPipe){
   return !!b&&!!b.isLogi&&((!!isPipe)===(b.lgMedium==='管道'));
 }
 function Linit(){
-  if(!LO) LO={size:50,pick:null,pickRot:0,objs:[],sel:[],undo:[],redo:[],seq:0,msg:'',lastT:0,lastUid:'',showPort:true,showGas:true,zone:'',viewRot:0,base:'',plan:null,plans:[],tgt:'item_iron_cmpt',rate:10,selfLoop:false,shipIn:false,tv:0,tvHours:1,mt:[],shipPick:'',shipCands:[],shipDmap:null,shipRawSet:null,
+  if(!LO) LO={size:50,pick:null,pickRot:0,objs:[],sel:[],undo:[],redo:[],seq:0,msg:'',lastT:0,lastUid:'',showPort:true,showGas:true,showPwr:true,zone:'',viewRot:0,base:'',plan:null,plans:[],tgt:'item_iron_cmpt',rate:10,selfLoop:false,shipIn:false,tv:0,tvHours:1,mt:[],shipPick:'',shipCands:[],shipDmap:null,shipRawSet:null,
     /* ⭐⑥-3 收货方向（2026-09-22 博士：两地对称互传，现在用谷地→武陵；下拉为未来新地区留口） */
     shipFrom:'domain_1', shipTo:'domain_2', pickShow:false,
       /* ⭐v144 建筑清单默认收起（博士：那 45 项的大块一直摊在画布上方，换基建很麻烦） */
@@ -2217,6 +2240,32 @@ function Lfree(x,y,w,d,ign){
     if(x<o.x+o.w&&x+w>o.x&&y<o.y+o.d&&y+d>o.y) return false;
   }
   return true;
+}
+/* ⭐v148 供电范围层开关 */
+function LtogglePwr(){ const L=Linit(); L.showPwr=!L.showPwr; render(); }
+/* ⭐v148 待放置供电范围预览：手拿供电桩/中继器悬在画布上时，光标处浮出范围预览（不 re-render）。
+   博士：「放的时候怎么确定设备在不在供电范围里」—— 这就是答案。放下（pick 清空）或离开画布即消失。 */
+let LpwrPreEl=null;
+function LpwrPreMove(e){
+  if(typeof tab==='undefined'||tab!=='layout'){ if(LpwrPreEl){LpwrPreEl.remove();LpwrPreEl=null;} return; }
+  const L=Linit();
+  const pp=powerPoleOf(L.pick);
+  const c=pp?document.querySelector('.lo-canvas'):null;
+  if(!c||!LOCELL){ if(LpwrPreEl){LpwrPreEl.remove();LpwrPreEl=null;} return; }
+  const p=Lxy(e,c);
+  const ext=(pp.rangeExtend&&pp.rangeExtend.x)||0;
+  const fp=Lfp(L.pick);
+  const w=(fp[0]+ext*2)*LOCELL, h=(fp[1]+ext*2)*LOCELL;
+  const cx=Math.floor(p.fx), cy=Math.floor(p.fy);
+  if(!LpwrPreEl){ LpwrPreEl=document.createElement('div'); LpwrPreEl.className='lo-pwr lo-pwr-pre'; c.appendChild(LpwrPreEl); }
+  LpwrPreEl.style.left=((cx-Math.floor(fp[0]/2)-ext)*LOCELL)+'px';
+  LpwrPreEl.style.top=((cy-Math.floor(fp[1]/2)-ext)*LOCELL)+'px';
+  LpwrPreEl.style.width=w+'px';
+  LpwrPreEl.style.height=h+'px';
+  LpwrPreEl.style.display='block';
+}
+if(typeof document!=='undefined'&&document&&typeof document.addEventListener==='function'){
+  document.addEventListener('mousemove',LpwrPreMove);
 }
 function Lpick(id){
   const L0=Linit(); L0.palOpen=false;   /* ⭐v144 选完建筑自动收起清单（画布让位） */
@@ -5968,6 +6017,17 @@ function renderLayout(){
     const _ge=o.gas||1;
     return `<div class="lo-env" style="left:${x1*CELL}px;top:${y1*CELL}px;width:${(x2-x1)*CELL}px;height:${(y2-y1)*CELL}px;--envbg:${envColorOf(_ge)};--envline:${envEdgeOf(_ge)};--envop:${envOpOf(_ge)}"></div>`;
   }).join(''):'';
+  /* ---- 供电范围层：供电桩/中继器的配电覆盖（照环境圈同款画法）---- ⭐v148 */
+  const pwrLayer=L.showPwr?L.objs.map(o=>{
+    const b=byBp(o.id);
+    const pp=powerPoleOf(b);
+    if(!pp) return '';
+    const ext=(pp.rangeExtend&&pp.rangeExtend.x)||0;
+    const x1=Math.max(0,o.x-ext), y1=Math.max(0,o.y-ext);
+    const x2=Math.min(L.size,o.x+o.w+ext), y2=Math.min(L.size,o.y+o.d+ext);
+    if(x2<=x1||y2<=y1) return '';
+    return `<div class="lo-pwr" style="left:${x1*CELL}px;top:${y1*CELL}px;width:${(x2-x1)*CELL}px;height:${(y2-y1)*CELL}px"></div>`;
+  }).join(''):'';
   /* ---- [d] 浮层：就地选气条 + 核心出货清单 ---- */
   /* ⭐v104 就地选气条（博士：「想要点机器就地选」）：选中散布机时浮在机器正上方 ——
      色块 = 四种气体（即四种环境，圈色同款），点一下 LgasSet 批量换气；当前气描高亮圈。
@@ -6545,6 +6605,7 @@ function renderLayout(){
       <span class="lo-sep"></span>
       <button class="lo-size ${L.showPort?'on':''}" onclick="LtogglePort()">接口 ${L.showPort?'显示中':'已隐藏'}</button>
       <button class="lo-size ${L.showGas?'on':''}" onclick="LtoggleGas()" title="气体散布机的环境范围层：13×13 方形，圈色 = 通入的气体（数据 FactoryVaporizerTable + FactoryEnvDisplayTable）">环境圈 ${L.showGas?'显示中':'已隐藏'}</button>
+      <button class="lo-size ${L.showPwr?'on':''}" onclick="LtogglePwr()" title="供电桩 / 中继器的配电覆盖层：供电桩 13×13、中继器 7×7（数据 FactoryPowerPoleTable.rangeExtend，与气体散布机同字段同口径；与游戏内实机若有出入按实测修正）">供电范围 ${L.showPwr?'显示中':'已隐藏'}</button>
       <span class="lo-sep"></span>
       <button class="lo-size ${L.undo.length?'':'off'}" onclick="Lundo()">撤销（Ctrl+Z）</button>
       <button class="lo-size ${L.redo.length?'':'off'}" onclick="Lredo()">重做（Ctrl+Y）</button>
@@ -6567,7 +6628,7 @@ function renderLayout(){
       </div>
       <div class="lo-stage">
         <div class="lo-canv" style="padding:${CELL+6}px">
-          <div class="lo-canvas" style="--locell:${CELL}px;width:${L.size*CELL}px;height:${L.size*CELL}px;transform:rotate(${L.viewRot||0}deg)">${presetBand}${envLayer}${cells}${gasBar}${dlvPop}${macPop}</div>
+          <div class="lo-canvas" style="--locell:${CELL}px;width:${L.size*CELL}px;height:${L.size*CELL}px;transform:rotate(${L.viewRot||0}deg)">${presetBand}${envLayer}${pwrLayer}${cells}${gasBar}${dlvPop}${macPop}</div>
         </div>
         <div class="c-sub" style="margin-top:8px">
           <span>已放 <b>${L.objs.length}</b> 个 · 占地 <b>${used}</b> 格</span>
