@@ -5069,14 +5069,14 @@ function RxlHtml(){
   let head='';
   if(!b || b.cost===Infinity){
     head='<div class="c-sub" style="margin-top:2px"><span style="color:'+B+'">所有分配组合都不可行 —— 每个目标的硬否决理由：</span></div>'
-      +ts.map(t=>'<div class="c-sub" style="margin-top:1px"><span>· <b>'+esc(RwItemName(t.id))+'</b>：'
+      +ts.map(t=>'<div class="c-sub" style="margin-top:1px"><span>· <b>'+esc((t.name||RwItemName(t.id)))+'</b>：'
         +best.regions.map(r=>{
           const a=RxlAnalyze(t.id,t.rate,r);
           return esc(r)+'：'+(a.ok?'可行':a.blocked.join('；'));
         }).join('　')+'</span></div>').join('');
   }else{
     head='<div class="c-sub" style="margin-top:2px"><span>推荐分配（'+(1<<ts.length)+' 种组合穷举，成本口径：硬否决 &gt; 同方向多种收货物 &gt; 口径①喂不饱 &gt; 分两地重复建共享料 &gt; 矿缺口量）：'
-      +ts.map((t,ix)=>'<b>'+esc(RwItemName(t.id))+'</b> → <b style="color:#185FA5">'+esc(b.assign[ix])+'</b>').join(' · ')
+      +ts.map((t,ix)=>'<b>'+esc((t.name||RwItemName(t.id)))+'</b> → <b style="color:#185FA5">'+esc(b.assign[ix])+'</b>').join(' · ')
       +'</span></div>'
       +(b.conflicts?'<div class="c-sub" style="margin-top:1px"><span style="color:'+W+'">⚠ 有 '+b.conflicts+' 处「同一方向要收多种料」—— 每方向每批只能传一种，多出的要本地自产或改分配</span></div>':'')
       +(b.dupNames&&b.dupNames.length?'<div class="c-sub" style="margin-top:1px"><span style="color:'+W+'">⚠ 分开两地的目标对要重复建的共享料：'+esc(b.dupNames.join('；'))+'</span></div>':'');
@@ -5097,7 +5097,7 @@ function RxlHtml(){
   const doms=Ldomains();
   const pick=(b&&b.assign)?best.regions.map(r=>{
     const dom=doms.filter(d=>d.name===r)[0];
-    const used=ts.filter((t,ix)=>b.assign[ix]===r).map(t=>esc(RwItemName(t.id))).join('、');
+    const used=ts.filter((t,ix)=>b.assign[ix]===r).map(t=>esc((t.name||RwItemName(t.id)))).join('、');
     const bases=(DB.bases.maxBases||[]).filter(x=>x.domainName===r&&(x.area&&x.area.side));
     const measured=(r==='四号谷地');
     return '<div class="c-sub" style="margin-top:2px"><span>· <b>'+esc((dom&&dom.storageName)||r+'仓库')+'</b> 供：'+(used||'（无目标落在此地）')+'</span></div>'
@@ -5113,10 +5113,22 @@ function RxlHtml(){
 /* 可排产的物品清单（有机器配方的），按名字排 */
 function RwTargets(){
   const m=RwMade(), out=[];
+  /* ⭐v146 同名物品区分（博士 2026-09-24：目标下拉里「赤铜瓶（灌装机）」重复了 12 条）：
+     根因不是重复 —— 是 12 个不同的物品 id 都叫「赤铜瓶」（灌装机把不同液体/气体灌进瓶里，
+     灌水/酸液/息壤气各是独立物品），只显示物品名自然分不出来。
+     修法：同名多 id 时，从该配方原料里挑「非容器本身」的那个名字缀上 ——「赤铜瓶·水（灌装机）」。 */
+  const nameCnt={};
+  Object.keys(m).forEach(id=>{ if((DB.items||{})[id]){ const n=RwItemName(id); nameCnt[n]=(nameCnt[n]||0)+1; } });
   Object.keys(m).forEach(id=>{
     if(!(DB.items||{})[id]) return;
     const r=m[id][0];
-    out.push({id:id, name:RwItemName(id), machine:r.machineName, ways:m[id].length});
+    const base=RwItemName(id);
+    let name=base;
+    if(nameCnt[base]>1){
+      const ing=(r.ingredients||[]).map(x=>RwItemName(x.id)).filter(n=>n&&n!==base);
+      if(ing.length) name=base+'·'+ing[0];
+    }
+    out.push({id:id, name:name, machine:r.machineName, ways:m[id].length});
   });
   out.sort((a,b)=>a.name<b.name?-1:a.name>b.name?1:0);
   return out;

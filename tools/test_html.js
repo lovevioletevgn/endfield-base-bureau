@@ -2569,7 +2569,8 @@ loReset(50); A.render();
 
 function splitRun(targetName, rate, size) {
   /* ⚠️ LawRun 收的是**物品 id**，不是中文名 —— 直接塞名字会静默变成"没有机器配方"（本轮踩过） */
-  const t = A.RwTargets().filter(x => x.name === targetName)[0];
+  /* ⭐v146：兼容 id 或名字 —— 同名物品加缀后，用 id 找最稳 */
+  const t = A.RwTargets().filter(x => x.name === targetName || x.id === targetName)[0];
   loReset(size);
   A.LO.size = size;
   chk('⑤-2 前提：目标物品「' + targetName + '」在目标清单里', !!t);
@@ -2804,7 +2805,9 @@ chk('⑥-1 判定函数：RwCanReceive 认「能传的物品」，RwCanShip 认�
 //   惰气 + 惰性壤晶废液（野外气体/废液，不在清单里 → 传不了，只能本地开采）
 // ⚠️ 注意：展开后最底层是**赤铜矿**而不是赤铜块 —— 赤铜块自己有产线，会被继续往下展开
 const ship0 = (() => {
-  const t = A.RwTargets().filter(x => x.name === '赤铜耐压罐')[0];
+  /* ⭐v146：按 id 找 —— RwTargets 的同名物品现在带灌装物缀（赤铜耐压罐有 10 个同名 id），
+     按 name 找不到本体了。item_copper_jar = 赤铜耐压罐本体（塑形机造 / 拆解机拆那组做法）。 */
+  const t = A.RwTargets().filter(x => x.id === 'item_copper_jar')[0];
   A.Linit(); A.LO.objs = []; A.LO.sel = []; A.LO.size = 70; A.LO.shipIn = false;
   A.LawRun(t.id, 10);
   return { id: t.id, res: A.LO.plan.res, html: outEl.innerHTML || '' };
@@ -3761,7 +3764,7 @@ chkHeavy('⑥-4+v99 端到端（重）：膨地啪@30（12 炉 = 游戏上限满
      "Linit(); LO.objs=[]; LO.sel=[]; LO.size=50; var _t=RwTargets().filter(function(x){return x.name==='工业爆炸物';})[0]; LawRun(_t.id,5); if(!LO.plan || !LO.plan.route.stats || LO.plan.route.stats.split<1) throw new Error('分流器分支没走到');"],
     ['render() 走一遍（含锁定态与工具条）', "render();"],
     ['⑥-1 跨地区收货：赤铜耐压罐@10（开开关 → 赤铜块变收货、惰气照旧）',
-     "Linit(); LO.objs=[]; LO.sel=[]; LO.size=70; LO.shipIn=true; var _t3=RwTargets().filter(function(x){return x.name==='赤铜耐压罐';})[0]; LawRun(_t3.id,10); if(!LO.plan.res.shipIn.length) throw new Error('没识别出可收货的原料'); render();"],
+     "Linit(); LO.objs=[]; LO.sel=[]; LO.size=70; LO.shipIn=true; var _t3=RwTargets().filter(function(x){return x.id==='item_copper_jar';})[0]; LawRun(_t3.id,10); if(!LO.plan.res.shipIn.length) throw new Error('没识别出可收货的原料'); render();"],
     ['⑥-2 多目标：赤铜耐压罐@10 ＋ 赤铜瓶@10 一图展开（共享赤铜块）',
      "Linit(); LO.objs=[]; LO.sel=[]; LO.size=80; LO.mt=[{id:'item_copper_bottle',rate:10}]; LawRun('item_copper_jar',10); if(!LO.plan.res.targets) throw new Error('没走多目标路径'); if(!LO.plan.res.shared.length) throw new Error('没有共享中间料'); render();"],
     ['⑥-3 换向 + RxlHtml 可达（⚡v94 走空目标分支：完整渲染主节已验，这里不付 6s 选点计算）',
