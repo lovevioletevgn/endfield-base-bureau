@@ -3212,7 +3212,23 @@ function Rexplode(targetId, perMin, opt){
       return (r.ingredients||[]).reduce((s,i)=>s+((carriers.indexOf(i.id)>=0)
         ? RW_COST_CARRIER : RwCost(i.id, path.concat([iid]), 1, b)), 1);
     };
-    cand.sort((a,b)=>(cost(a)-cost(b)) || (RwPerMin(b,iid)-RwPerMin(a,iid)));
+    /* ⭐v136 B（对标调研：同物品多配方按「单位原料成本 + 电力」比，局部改进不引入 LP）：
+       ①**单位**原料成本 = 每轮原料成本 ÷ 本轮产出该物品的数量（产出 2 个的，单个成本折半）
+       ②**每轮耗电** = 该配方所属机器的单台耗电 ÷ 每分钟轮数（不同机种换算到同一「每轮」口径）
+       ③单台产出（台数最少）
+       三层**分层比较**，不引入加权魔法数字 —— 原料优先、耗电其次、产出垫底，
+       行为可解释：同样的料谁便宜选谁，一样便宜省电，都省则台数少。 */
+    const unitCost=r=>{
+      const oc=(r.outcomes||[]).filter(x=>x.id===iid).reduce((s2,x)=>s2+(x.count||0),0)||1;
+      return cost(r)/oc;
+    };
+    const powerPerRound=r=>{
+      const b=byBp(r.machineId), pc=b?((+b.powerConsume)||0):0;
+      const rounds=(r.seconds>0)?(60/r.seconds):1;
+      return pc/Math.max(0.001,rounds);
+    };
+    cand.sort((a,b)=>(unitCost(a)-unitCost(b)) || (powerPerRound(a)-powerPerRound(b))
+                    || (RwPerMin(b,iid)-RwPerMin(a,iid)));
     return {r:cand[0], recycled:recycled};
   }
   function build(iid, demand, depth, path){
@@ -3228,6 +3244,10 @@ function Rexplode(targetId, perMin, opt){
     if(ch.external){
       n.raw=true; n.seed=true; n.external=true;
       n.note='唯一做法是回收路线 → 按「需外部输入」处理：启动时给一次，之后靠循环自持';
+      /* ⭐v136（对标调研 D 项）：以前这条只写在节点 note 上，报告警告区**不出声** —— 属于静默降级。
+         现在明确报出来：这是「绕不开的循环」，工具不会替你展开，需要玩家开局给一次料或开闭环自持。 */
+      warns.push(n.name+'：只能走回收路线（绕不开的循环）—— 工具不会自动展开它，按「外部输入」处理。'
+        +'处理办法：开局给一次料让它自持，或打开「闭环自持」让工具算启动清单');
       if(raw.indexOf(iid)<0) raw.push(iid);
       if(externals.indexOf(iid)<0) externals.push(iid);
       return n;
@@ -3247,6 +3267,7 @@ function Rexplode(targetId, perMin, opt){
     if(depth>=RW_MAX_DEPTH && (made[iid]||[]).length){
       n.raw=true; n.seed=true; n.external=true;
       n.note='链深已达 '+RW_MAX_DEPTH+' 层上限 → 按「外部输入 / 外购」处理（这类料通常是野外采集，如清水）';
+      warns.push(n.name+'：链深到 '+RW_MAX_DEPTH+' 层上限就不再往下展开，按外部输入算（通常没问题：这类料多在野外采集）');
       if(raw.indexOf(iid)<0) raw.push(iid);
       if(externals.indexOf(iid)<0) externals.push(iid);
       return n;
@@ -5298,12 +5319,23 @@ function Rreport(P, pw, bw, th, lim, st, rawNeed, sc){
   const stations=RstationCount(Linit().objs);
   const lstate={'jam':'<b style="color:'+RW_COL.bad+'">会堵</b>', 'tight':'<b style="color:'+RW_COL.warn+'">紧</b>',
                 'ok':'<b style="color:'+RW_COL.ok+'">通畅</b>', 'none':'<b style="color:'+RW_COL.bad+'">没连上</b>'};
+  /* ⭐v136（对标调研 A 项）台数口径：理论分数台数（需求 ÷ 单台产能，求和）→ 实际整台（ceil）
+     → 多出来的部分主要来自哪几台。以前只给总数，玩家看不出「为什么凭空多一台」。 */
+  const _mach=P.res.machines||[];
+  const _frac=_mach.reduce((s2,n)=>s2+((n.perMachine>0)?(n.demand/n.perMachine):0),0);
+  const _ceil=_mach.reduce((s2,n)=>s2+(n.machines||0),0);
+  const _over=_mach.map(n=>({n:n, ex:(n.perMachine>0)?(n.machines-n.demand/n.perMachine):0}))
+                   .filter(x=>x.ex>1e-9).sort((a,b)=>b.ex-a.ex);
+  const _r1=x=>Math.round(x*10)/10;
+  const machLine=`
+      <div class="c-sub" style="margin-top:2px"><span><b>台数口径</b> <span class="lo-tag">v136</span>：理论 <b>${_r1(_frac)}</b> 台（各台需求 ÷ 单台产能，求和）→ 实际摆 <b>${_ceil}</b> 台${_over.length?(` —— 取整多 <b>${_r1(_ceil-_frac)}</b> 台，主要在：${_over.slice(0,4).map(x=>esc(x.n.name)+'+'+_r1(x.ex)).join('、')}${_over.length>4?(' 等 '+_over.length+' 台'):''}`):' —— 没有取整损耗'}
+        <span class="c-id">　（机器只能整台摆：需求 1.2 台 = 摆 2 台，多出的产能就是余量；同池并行省下的栋数见上一行）</span></span></div>`;
   return `
       <div class="c-sub" style="margin-top:6px">
         <span>${P.res.targets
           ?('目标 '+P.res.targets.map(t=>'<b>'+esc(t.name)+'</b> '+t.perMin+'/分').join(' ＋ '))
           :('目标 <b>'+esc(P.res.targetName)+'</b> '+P.res.perMin+'/分')} · 机器 <b>${P.res.totalMachines}</b> 台（${P.res.machines.length} 种）· 管线 <b>${P.route.belts.length}</b> 格 · 占 <b>${P.plan.height}</b> 行</span>
-      </div>
+      </div>${machLine}
       ${P.res.poolMerge?`
       <div class="c-sub" style="margin-top:2px"><span><b>扩容反应池同池并行</b> <span class="lo-tag">v133 · 官方文案+实机核实</span>：${P.res.poolMerge.map(g=>'一栋跑 <b>'+g.members.length+'</b> 条反应（'+g.members.map(esc).join('、')+'）· 占 '+g.slots+'/'+RW_POOL_SLOTS+' 格'+(g.saved?('，比一条一栋省 <b>'+g.saved+'</b> 栋'):'')).join('；')}　<span class="c-id">同池并行不提速：每条反应各跑各的额定速度</span></span></div>`:''}
       ${sc?`

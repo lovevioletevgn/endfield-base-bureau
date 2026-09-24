@@ -3115,6 +3115,33 @@ chk('v135 池子面板槽位数按池子上限（扩容池 3 / 基础池 2）+ �
              typeof A.LmacOpen === 'function' && typeof A.LmacClose === 'function';
     })());
 
+// ---- v136 对标调研 D + A（博士 2026-09-24「先做 DA」）----
+chk('v136 D：绕不开的循环 / 链深上限会进警告列表（不再静默降级）',
+    (() => {
+      const r = A.Rexplode('item_liquid_water', 10, { seeds: [
+        { itemId: 'item_liquid_water', perMin: 10 }, { itemId: 'item_xiranite_powder', perMin: 10 }] });
+      const ws = r.warns || [];
+      return ws.some(w => w.indexOf('绕不开的循环') >= 0 || w.indexOf('链深到') >= 0) &&
+             !r.machines.some(n => !n.machineId && n.machines > 0);
+    })(),
+    JSON.stringify((A.Rexplode('item_liquid_water', 10, {}).warns || []).slice(0, 3)));
+chk('v136 A：报告出「台数口径」行（理论分数台数 → 实际整台 → 多出在哪）',
+    (() => {
+      A.Linit(); A.LO.objs = []; A.LO.sel = []; A.LO.size = 70; A.LO.mt = [];
+      A.LawRun('item_iron_cmpt', 10);
+      const h = outEl.innerHTML || '';
+      return h.indexOf('台数口径') >= 0 && h.indexOf('理论') >= 0 && h.indexOf('实际摆') >= 0;
+    })(),
+    (outEl.innerHTML || '').replace(/\s+/g, ' ').slice(0, 40));
+
+chk('v136 B：同物品多配方按「单位成本 → 耗电」分层 —— 紫晶质瓶选塑形机(10电)而非拆解机(20电)',
+    (() => {
+      const r = A.Rexplode('item_glass_bottle', 10, {});
+      const n = (r.machines || []).filter(x => x.itemId === 'item_glass_bottle')[0];
+      return !!n && n.machineId === 'shaper_1';
+    })(),
+    JSON.stringify((A.Rexplode('item_glass_bottle', 10, {}).machines || []).filter(x => x.itemId === 'item_glass_bottle').map(x => x.recipeId + '/' + x.machineName)));
+
 // ---- ⑥-2 × ⑥-1 组合：多目标 + 跨地区收货同时开 ----
 // 要守住的：收货判定吃的是**合并后的原料并集与合并后的需求**（两条链的赤铜矿需求 20+20=40/分），
 // 共用段照常渲染，本地冶炼（赤铜块）照建 —— 收货只改「料从哪来」。
