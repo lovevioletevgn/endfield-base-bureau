@@ -5439,7 +5439,8 @@ function RstationCount(objs){
      料耗效率 产出富余      下界 = 0（整台凑整躲不掉，越少越好）
 
    约束罚分（都是硬指标，命中就扣）：
-     超协议容量 −30 · 原料超全图采集上限 −25 · 超防御建筑上限 −15 · 超滑索上限 −10
+     原料超全图采集上限 −25 · 超防御建筑上限 −15 · 超滑索上限 −10
+     （协议容量不在其列 —— 它只约束集成核心区域**外**的野外设备，基地内不受限，2026-09-24 撤）
      · 走线连不上，每条 −3 · 单线会堵，每条 −3
 
    ⚠️ 权重是**约定**，不是游戏真理。写成常量就是为了让排序口径固定、可复现、也可以调。
@@ -5497,7 +5498,9 @@ function Rscore(res, plan, route, rawNeed){
     {k:'料耗效率', w:RW_W.waste, now:r2(out-demand), best:0, unit:'/分富余', v:clamp(out>0?(demand/out):1)},
   ];
   const pens=[];
-  if(bw.over) pens.push({t:'超协议容量 '+(bw.use-bw.cap), p:30});
+  /* ⭐v145 撤项（2026-09-24 博士游戏内确认）：协议容量**只约束集成核心区域外的野外设备**
+     （本页建筑详情与基地面积页都这么写），基地内不受限 → 不再对「超协议容量」扣分。
+     原惩罚：超协议容量 −30。Rbandwidth 函数保留（将来野外排布要用）。 */
   if(oreOver>0) pens.push({t:'原料超全图采集上限 +'+r2(oreOver)+'/分', p:25});
   if(lim.defOver) pens.push({t:'防御建筑超上限 '+lim.def+'/'+lim.defCap, p:15});
   if(lim.travOver) pens.push({t:'滑索超上限 '+lim.trav+'/'+lim.travCap, p:10});
@@ -5562,7 +5565,7 @@ function planCompareHTML(){
       ${row('汇流/分流器', p=>p.sc.m.hubs)}
       ${row('占用格数', p=>p.sc.m.cells)}
       ${row('用电', p=>p.sc.m.power)}
-      ${row('协议容量', p=>`${p.sc.m.bwUse}${p.sc.m.bwCap!=null?(' / '+p.sc.m.bwCap):''}${p.sc.m.bwCap!=null&&p.sc.m.bwUse>p.sc.m.bwCap?' <span style="color:'+RW_COL.bad+'">超</span>':''}`)}
+      ${/* ⭐v145 撤项：协议容量只约束集成核心区域外的野外设备，不约束基地内 → 方案比较表不再列此项 */''}
       ${row('原料消耗', p=>`${p.sc.m.rawUse}/分（${p.sc.m.rawKinds} 种）`)}
       ${row('会堵的段', p=>p.sc.m.jam?('<span style="color:'+RW_COL.bad+'">'+p.sc.m.jam+'</span>'):'0')}
       ${row('主要扣分', p=>(p.sc.pens.length?esc(p.sc.pens.map(x=>x.t).join('、')):'（无）'))}
@@ -5714,7 +5717,7 @@ function Rreport(P, pw, bw, th, lim, st, rawNeed, sc){
       ${wAll.length?`<div class="c-sub" style="margin-top:6px"><span><b style="color:${RW_COL.warn}">提醒 ${wAll.length} 条</b></span></div>
       ${wAll.map(x=>`<div class="c-sub" style="margin-top:2px"><span>· ${esc(x)}</span></div>`).join('')}`:''}
       <div class="c-sub" style="margin-top:8px"><span><b>⚠️ 约束校验</b>（硬校验；协议容量 · 建造上限 · 用电取配置表，发电量 · 矿点数 · 存电取社区实测）</span></div>
-      <div class="c-sub" style="margin-top:2px"><span>· <b>协议容量</b>：${bw.use}${bw.cap!=null?(' / '+bw.cap+'（'+esc(bw.zone||'')+'满级档）'):'（自由模式没指定基地，没有上限可对）'}${bw.over?' —— <b style="color:'+RW_COL.bad+'">超出 '+(bw.use-bw.cap)+'，得换更大的建造区或拆掉一些</b>':' —— 在限内 ✓'}</span></div>
+      ${''/* ⭐v145 撤项：协议容量不约束基地内设备（只约束集成核心区域外的野外设备）→ 报告不再列此项 */}
       <div class="c-sub" style="margin-top:2px"><span>· <b>发电</b>：这条产线用电 <b>${pw.total}</b> 电；协议核心自带 <b>${th.base}</b> 基础发电${th.gap>0?(' → 缺口 <b>'+th.gap+'</b>，需要热能池：'+th.fuels.map(f=>esc(f.item)+' <b>'+f.count+'</b> 台（'+f.power+'/台）').join(' · ')):' → <b>不用额外发电</b>'}${th.fuels.length?` <span class="c-id">（按地区选燃料：${esc(Lregion()||'通用')}）</span>`:''}${stations?`　<span class="c-id">画布上已摆热能池 ${stations} 台</span>`:''}</span></div>
       <div class="c-sub" style="margin-top:2px"><span>· <b>存电</b> <span class="lo-tag">路线图 ②c · 已纳入</span>：上限 <b>${st.cap.toLocaleString?st.cap.toLocaleString('en-US'):st.cap}</b>（社区实测）${st.gap>0?('　当前缺口 <b>'+st.gap+'</b> 电 → 纯靠存电能撑 <b>'+st.minutes+'</b> 分钟（约 '+r1(st.minutes/60)+' 小时），撑完设备就停；这是缓冲不是电源，得补发电'):'　当前用电没超基础发电，存电不动 ✓'}</span></div>
       <div class="c-sub" style="margin-top:2px"><span>· <b>防御建筑上限</b> <span class="lo-tag">路线图 ②b</span>：${lim.defCap!=null?('<b>'+lim.def+'</b> / '+lim.defCap+'（'+esc(lim.zone||'')+'）'+(lim.defOver?' —— <b style="color:'+RW_COL.bad+'">超了 '+(lim.def-lim.defCap)+'</b>':' —— 在限内 ✓')):'（自由模式没指定基地，没有上限可对）'}<span class="c-id">　按分类「战斗辅助」计</span></span></div>
@@ -5858,16 +5861,13 @@ function renderLayout(){
          正解：非物流件即建筑。 */
       const mach=bs.filter(o=>{ const bp=byBp(o.id); return bp&&!bp.isLogi; }).length;
       const used=bs.reduce((a,o)=>a+(o.w||0)*(o.d||0),0);
-      /* ⭐v145 协议容量：逐件累加（与 Rbandwidth 同口径）。超上限标红 ——
-         容量常比面积更早到顶，超了就是「建不了」，必须一眼看见。 */
-      const bwUse=bs.reduce((a,o)=>a+LbwOf(o.id),0);
-      const bwCap=b.capBw||0;
-      const bwOver=bwCap>0&&bwUse>bwCap;
+      /* ⭐v145 曾在此显示协议容量占用，2026-09-24 博士游戏内确认「核心区无限制」后撤回：
+         协议容量只约束集成核心区域**外**的野外设备，基地内不受限，显示已用/上限会误导。 */
       const hasPlan=!!(st.plan&&st.plan.res);
       return `<button class="lo-tab ${b.levelId===L.base?'on':''}" onclick="LbaseSet('${b.levelId}')"
         title="切到 ${esc(b.zoneName)}（${esc(b.role)} ${b.side}×${b.side}）—— 每片基地的摆放各存一份，切回来原样还在"
         ><span>${esc(b.zoneName)} · ${esc(b.role)} ${b.side}×${b.side}</span>
-        <span class="lo-tabsm">机器 ${mach} · 占地 ${used}/${b.usableCells||'?'} · <span class="${bwOver?'lo-tabover':''}">容量 ${bwUse}/${bwCap||'?'}</span>${hasPlan?' · 已出产线':''}</span></button>`;
+        <span class="lo-tabsm">机器 ${mach} · 占地 ${used}/${b.usableCells||'?'}${hasPlan?' · 已出产线':''}</span></button>`;
     }).join('')+'</div>';
   })();
   /* 格子边长档位：14 是原默认值，20 是现在的默认（物流件的流向箭头在 14px 格上只有几像素，看不清） */
@@ -6444,7 +6444,8 @@ function renderLayout(){
       <b>紧凑度 20%</b>（行数；下界 = Σ 各层最高机器深 + 层数 × 最小通道）· <b>台数效率 20%</b>（下界 = Σ 需求 ÷ 单台产能）·
       <b>走线效率 30%</b>（物流格数；下界 = Σ 每段上下游中心的曼哈顿距离）· <b>集散效率 15%</b>（汇流 / 分流器个数，越少越好）·
       <b>料耗效率 15%</b>（整台凑整带来的产出富余，越少越好）。
-      命中硬约束另扣：超协议容量 −30 · 原料超全图采集上限 −25 · 超防御建筑上限 −15 · 超滑索上限 −10 · 走线连不上或单线会堵每条 −3。<br>
+      命中硬约束另扣：原料超全图采集上限 −25 · 超防御建筑上限 −15 · 超滑索上限 −10 · 走线连不上或单线会堵每条 −3。<br>
+      （<b>协议容量不在其列</b> —— 它只约束集成核心区域<b>外</b>的野外设备，基地内不受限制。）<br>
       <b>「存方案比一比」</b>把当前这版分数存下来（最多 5 套）；换个速率或换个目标再生成一条，报告底部会把它们<b>并排列表比较</b>（分高的一列加粗）——
       这就是「这版比那版好」的依据。⚠️ 权重是**约定**（写在 <code>RW_W</code> 常量里），不是游戏真理：它的作用只是让排序口径固定、可复现、可调。<br>
       ⚠️ **仍然做不到的**：走线只做格内 L 形 / BFS 最短路，端口或走线被前面那条线占了的时候仍会连不上几条（报告里逐条点名，不静默丢）；
@@ -6573,7 +6574,8 @@ function renderLayout(){
           ${Object.keys(pw.byCat).length?`<span class="c-id">${Object.keys(pw.byCat).map(k=>esc(k)+' '+pw.byCat[k]).join(' · ')}</span>`:''}
         </div>
         <div class="c-sub" style="margin-top:4px">
-          <span>📶 <b>协议容量</b>：<b>${bw.use}</b>${bw.cap!=null?(' / '+bw.cap):''}${bw.cap==null?'<span class="c-id">（自由模式未指定基地，没有上限可对）</span>':''}${bw.over?' · <b style="color:#C0392B">超了 '+(bw.use-bw.cap)+'</b>':''}</span>
+          ${/* ⭐v145：口径改成说明 —— 协议容量只约束集成核心区域**外**的野外设备，基地内不受限（博士 2026-09-24 游戏内确认）。 */''}
+          <span class="c-id">📶 协议容量上限 <b>${bw.cap!=null?bw.cap:'—'}</b>${bw.cap!=null?('（'+esc(bw.zone||'本区')+'满级档）'):'（未指定基地）'} —— <b>只约束集成核心区域外的野外设备，基地内不受限制</b></span>
           <span class="c-id">（每座设备的 <code>bandwidth</code> 累加；上限取该建造区满级档 —— 配置表数据）</span>
         </div>
         ${presetBus?`
