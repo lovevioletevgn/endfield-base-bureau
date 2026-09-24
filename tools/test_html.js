@@ -3171,6 +3171,41 @@ chk('v137 管道十字相交 → 交叉格叠管道桥',
       return ids.indexOf('log_pipe_01') >= 0 && ids.indexOf('log_pipe_connector') >= 0;
     })());
 
+// ---- v138 准入口（博士：「准入口只可以放在传送带和管道上」+ 准入物品 + 限速）----
+chk('v138 准入口：空地放不上（必须叠在同类带/管上 + 顺物流方向）',
+    (() => {
+      tab = 'layout'; A.Linit(); A.LO.objs = []; A.LO.sel = []; A.LO.size = 40;
+      A.Lpick('log_conditioner'); A.Lput(5, 5);
+      return A.LO.objs.length === 0 && String(A.LO.msg).indexOf('必须放在同类型的') >= 0;
+    })(), (A.LO.msg || '').slice(0, 40));
+chk('v138 准入口：转角格拒绝（两侧相邻 = 没顺物流方向）',
+    (() => {
+      A.Linit(); A.LO.objs = []; A.LO.pick = A.byBp('grid_belt_01');
+      A.LODRAG = { mode: 'lay', sx: 2, sy: 20, ex: 2, ey: 20, uids: [], hist: [[2, 20]] };
+      for (let x = 3; x <= 8; x++) A.LlayTo(x, 20);
+      A.LODRAG = null; A.render();
+      A.LODRAG = { mode: 'lay', sx: 8, sy: 21, ex: 8, ey: 21, uids: [], hist: [[8, 21]] };
+      for (let y = 21; y <= 25; y++) A.LlayTo(8, y);
+      A.LODRAG = null; A.render();
+      A.Lpick('log_conditioner'); A.Lput(8, 20);
+      return !A.LO.objs.some(o => o.id === 'log_conditioner' && o.x === 8 && o.y === 20) &&
+             String(A.LO.msg).indexOf('转角') >= 0;
+    })(), (A.LO.msg || '').slice(0, 44));
+chk('v138 准入口：放在直线段上成功 + 面板含限速与准入物品 + 限速/物品写入生效',
+    (() => {
+      A.Linit(); A.LO.objs = []; A.LO.pick = A.byBp('grid_belt_01');
+      A.LODRAG = { mode: 'lay', sx: 2, sy: 5, ex: 2, ey: 5, uids: [], hist: [[2, 5]] };
+      for (let x = 3; x <= 10; x++) A.LlayTo(x, 5);
+      A.LODRAG = null; A.render();
+      A.Lpick('log_conditioner'); A.Lput(6, 5);
+      const v = A.LO.objs.filter(o => o.id === 'log_conditioner')[0];
+      if (!v) return false;
+      const h = A.RmacPanelOf(A.byBp('log_conditioner'), v) || '';
+      A.LsetValveRate(v.uid, 12); A.LsetValveItems(v.uid, ['item_liquid_water']);
+      return h.indexOf('限速') >= 0 && h.indexOf('准入物品') >= 0 &&
+             v.vRate === 12 && (v.vItems || []).length === 1;
+    })(), 'vRate=' + ((A.LO.objs.filter(o => o.id === 'log_conditioner')[0] || {}).vRate));
+
 // ---- ⑥-2 × ⑥-1 组合：多目标 + 跨地区收货同时开 ----
 // 要守住的：收货判定吃的是**合并后的原料并集与合并后的需求**（两条链的赤铜矿需求 20+20=40/分），
 // 共用段照常渲染，本地冶炼（赤铜块）照建 —— 收货只改「料从哪来」。

@@ -1869,8 +1869,48 @@ function LmacHasPanel(uid){
 function RmacPanelOf(b, o){
   if(!b) return null;
   if(RisPool(b)) return RmacPoolHtml(b, o);              /* 反应池 / 扩容池：缓存格 + 输出产物槽 */
+  if(b.lgType==='BoxValve'||b.lgType==='FluidValve') return RmacValveHtml(b, o);   /* ⭐v138 准入口 */
   if(Rof(b.id).length) return RmacRecipeHtml(b, o);      /* 其他有配方的机器：配方选择 */
   return null;
+}
+/* ⭐v138 准入口面板（博士：「准入口可以选择准入物品…像上面反应池和协议核心那样在画布中选择」+
+   「准入口还可以进行限速」）：
+   · 限速档位 = 6/分一档；**传送带最高 30、管道最高 60**（社区/攻略核实；管速本身 120，准入口限不到 120）
+   · 准入物品 = 允许通过的材料（多选；被拦的料会堵线，所以默认「不限」）
+   · 计算口径：过滤**不影响**排布器（一条依赖一条线，不混线）；**限速影响**——该段上限 = min(线速, 限速)。 */
+const VALVE_MAX={'log_conditioner':30,'log_pipe_conditioner':60};
+function RmacValveHtml(b, o){
+  const max=VALVE_MAX[b.id]||30, cur=+o.vRate||0;
+  const rOpts=[0]; for(let r=6;r<=max;r+=6) rOpts.push(r);
+  const allItems=Object.keys(DB.items||{}).sort((x,y)=>String((DB.items[x]||{}).name).localeCompare(String((DB.items[y]||{}).name),'zh'));
+  const sel=o.vItems||[];
+  return `
+      <div class="c-sub" style="margin-top:2px"><span>类型：<b>${esc(b.name)}</b>（${esc(b.lgMedium)}·1×1）· 必须放在${esc(b.lgMedium)}上、顺着物流方向</span></div>
+      <div class="c-sub" style="margin-top:6px"><span><b>限速</b>（6/分一档${max===30?'，传送带最高 30':'，管道最高 60'}）</span></div>
+      <select class="lo-sel" style="width:100%;margin-top:4px" onchange="LsetValveRate('${o.uid}', this.value)">
+        ${rOpts.map(r=>`<option value="${r}"${cur===r?' selected':''}>${r?r+'/分':'不限（= 线速上限）'}</option>`).join('')}
+      </select>
+      <div class="c-sub" style="margin-top:8px"><span><b>准入物品</b>（只允许这些通过；<b>不选 = 不限</b>。被拦的料会堵住后面 —— 混线才需要它）</span></div>
+      <select multiple size="6" class="lo-sel" style="width:100%;margin-top:4px"
+        onchange="LsetValveItems('${o.uid}', Array.prototype.map.call(this.selectedOptions,function(x){return x.value;}))">
+        ${allItems.map(id=>`<option value="${esc(id)}"${sel.indexOf(id)>=0?' selected':''}>${esc((DB.items[id]||{}).name||id)}</option>`).join('')}
+      </select>
+      <div class="c-sub" style="margin-top:6px"><span class="c-id">共 ${allItems.length} 件可选 · 已选 ${sel.length} 件${sel.length?'：'+sel.map(id=>esc((DB.items[id]||{}).name||id)).join('、'):''}</span></div>
+      <div class="c-sub" style="margin-top:6px"><span class="c-id">对排布器计算的影响：准入过滤<b>不影响</b>（一条依赖一条线，不混线）；限速<b>影响</b> —— 该段实际上限 = min(线速, 限速)，限到 12/分就是这条线的天花板。</span></div>`;
+}
+function LsetValveRate(uid, r){
+  const L=Linit(), o=L.objs.filter(x=>x.uid===uid)[0];
+  if(!o) return;
+  Lpush(); o.vRate=+r||0;
+  L.msg='准入口限速已设为 '+(o.vRate?o.vRate+'/分':'不限（= 线速上限）');
+  render();
+}
+function LsetValveItems(uid, ids){
+  const L=Linit(), o=L.objs.filter(x=>x.uid===uid)[0];
+  if(!o) return;
+  Lpush(); o.vItems=(ids||[]).slice();
+  L.msg='准入物品已设为 '+(o.vItems.length?o.vItems.length+' 件':'不限');
+  render();
 }
 /* 反应池面板（单机版；左栏那份已撤，就地选是唯一入口） */
 function RmacPoolHtml(b, o){
@@ -2179,20 +2219,51 @@ function LreplaceCell(x,y){
   if(occ.lock) return false;   /* ⑤-1 局部锁定：锁定的段不许被替换 / 叠桥 */
   const ob=byBp(occ.id);
   if(!ob||!ob.isLogi||(ob.lgType!=='Belt'&&ob.lgType!=='Pipe')||ob.lgMedium!==pk.lgMedium) return false;
+  /* ⭐v138 串接类必须「顺着物流方向」：转角格（该格进向 ≠ 出向）不能放 ——
+     博士核实：「转角格不能放的原因是没有沿着物流方向建造」。 */
+  if(kind==='replace' && (pk.lgType==='BoxValve'||pk.lgType==='FluidValve')){
+    /* 拐弯格判据（不依赖 renderLayout 里的局部 flowIn）：看同类介质邻居的分布 ——
+       两侧对开（上下 或 左右）= 直线段（可放）；只有相邻两侧（L 形）= 转角格（拒绝）。
+       博士 2026-09-24 核实：「转角格不能放的原因是没有沿着物流方向建造」。 */
+    const _sd=(dx,dy)=>dx===0?(dy<0?'u':'d'):(dx<0?'l':'r');
+    const _opp={u:'d',d:'u',l:'r',r:'l'};
+    const _hasN=(dd)=>{
+      const v={u:[0,-1],d:[0,1],l:[-1,0],r:[1,0]}[dd];
+      const nb=L.objs.filter(o=>o.x===x+v[0]&&o.y===y+v[1])[0];
+      if(!nb) return false;
+      const nbb=byBp(nb.id);
+      return !!(nbb&&nbb.isLogi&&nbb.lgMedium===pk.lgMedium&&(nbb.lgType==='Belt'||nbb.lgType==='Pipe'));
+    };
+    const _dirs=['u','d','l','r'].filter(_hasN);
+    const _isTurn=_dirs.length>=2 && !(_dirs.length===2 && _dirs.indexOf(_opp[_dirs[0]])>=0);
+    if(_isTurn){
+      L.msg=pk.name+'：这一格是转角（两侧相邻），要顺物流方向 —— 换一格直线（至少一格直段）';
+      render(); return true;
+    }
+  }
   Lpush();
   if(kind==='replace') L.objs=L.objs.filter(o=>o!==occ&&o.uid!==occ.uid);
-  const o=Lmk(pk,x,y,L.pickRot);
+  const o=Lmk(pk,x,y,kind==='replace'?occ.rot:L.pickRot);   /* ⭐v138 串接件朝向 = 原格流向（顺流） */
   o.planRole='link';
   L.objs.push(o); L.sel=[o.uid];
   L.msg= kind==='replace' ? ('已把该格物流段替换成 '+pk.name) : (pk.name+' 已叠上（跨线，原线保留）');
   render();
   return true;
 }
+/* ⭐v138（博士 2026-09-24：「准入口只可以放在传送带和管道上」）：这类件**只能叠在同类带/管上**，
+   不许放空格 —— 串接类（分/汇流器、准入口）替换线上普通段，桥类叠加。判定沿用 LreplaceCell 的 kind。 */
+const LO_ONLINE_TYPES={'BoxValve':1,'FluidValve':1};
+function LisOnLine(b){ return !!(b&&b.isLogi&&LO_ONLINE_TYPES[b.lgType]); }
 function Lput(x,y){
   const L=Linit();
   if(!L.pick) return;
   const b=L.pick, dm=Ldims(b,L.pickRot);
   if(!dm.w||!dm.d) return;
+  if(LisOnLine(b)){
+    if(LreplaceCell(x,y)) return;
+    L.msg=b.name+'：必须放在同类型的'+(b.lgMedium==='管道'?'管道':'传送带')+'上，且要顺着物流方向（转角格不行）';
+    render(); return;
+  }
   if(!Lfree(x,y,dm.w,dm.d,null)){
     if(LreplaceCell(x,y)) return;
     L.msg='这里放不下：越界或与已放建筑重叠'; render(); return;
