@@ -287,7 +287,7 @@ for (const line of html.split('\n')) if (line.length > maxLine) maxLine = line.l
 chk('内联数据最长行不超过 8000 字符', maxLine < 8000, 'maxLine=' + maxLine);
 
 // ---- 5d. 布局试摆（交互画布）与分类字标 ----
-setTab('layout'); A.render();
+setTab('layout'); A.Linit().palOpen = true; A.render();   /* v144 清单默认收起——本组要读清单内容，先展开 */
 const loHtml = outEl.innerHTML || '';
 for (const s of ['布局试摆', 'lo-canvas', 'lo-pal', '画布尺寸', '清空', '70×70']) {
   chk(`布局试摆页含「${s}」`, loHtml.indexOf(s) >= 0);
@@ -295,6 +295,35 @@ for (const s of ['布局试摆', 'lo-canvas', 'lo-pal', '画布尺寸', '清空'
 chk('布局试摆有可摆放建筑列表', loHtml.indexOf('lo-btn') >= 0, 'palette 是否为空');
 // 画布默认 50×50（LO 在 renderLayout 里被 Linit 初始化）
 chk('画布默认 50×50', A.LO && A.LO.size === 50, String(A.LO && A.LO.size));
+// ---- 5d-1. v144 建筑清单侧边栏：收起 = 画布左侧窄竖条；展开 = 画布左侧浮层侧栏（**画布位置恒定**）----
+// 根因（DOM 实测锁定）：.lo-wrap 原本 flex-wrap:wrap + 画布 1052px 宽 → 清单被换行到画布上方、独占整行 1140px。
+// 修法：nowrap + 侧栏定宽（收起 34 / 展开 246）+ 画布 flex:1（放不下时由 .lo-stage 的 overflow:auto 横向滚）。
+A.Linit().palOpen = false; A.render();
+const loFold = outEl.innerHTML || '';
+chk('v144 收起：清单渲染成左侧竖条（lo-pal folded + lo-pal-tab）',
+    loFold.indexOf('lo-pal folded') >= 0 && loFold.indexOf('lo-pal-tab') >= 0);
+chk('v144 收起：清单项整个不渲染（真正让位给画布，不是 display:none）', loFold.indexOf('LpickFromList') < 0);
+chk('v144 画布位置恒定：清单绝对定位挂左侧（不占文档流）+ 宽度自适应函数在',
+    html.indexOf('.lo-wrap{position:relative}') >= 0
+    && html.indexOf('.lo-pal{position:absolute;top:0;right:100%') >= 0
+    && html.indexOf('.lo-pal.folded{width:34px') >= 0
+    && html.indexOf('function LpalFit()') >= 0);
+// 反向锁：「flex 定宽栏」那条错路必须已撤掉 —— 它会让展开时画布整体右移（博士：「画布又被挪了」）
+chk('v144 反向：flex 定宽侧栏的做法已撤（否则画布会被推着走）',
+    html.indexOf('.lo-wrap{display:flex;gap:14px;flex-wrap:nowrap') < 0
+    && html.indexOf('.lo-pal{flex:0 0 246px') < 0
+    && html.indexOf('.lo-stage{flex:1 1 auto') < 0);
+A.Linit().palOpen = true; A.render();
+const loOpen = outEl.innerHTML || '';
+chk('v144 展开：清单项 + 收起按钮都在，竖条标记不在',
+    loOpen.indexOf('LpickFromList') >= 0 && loOpen.indexOf('lo-pal-tab') < 0);
+// ⭐ 配方块必须与清单折叠解耦：首版把 recipeBlock 一起折叠掉了，收起态选机器就没有配方下拉 —— 这条锁住它
+A.Linit().palOpen = false;
+A.Lpick('furnance_1'); A.Lput(3, 3);   /* Lput 会自动选中，出配方块 */
+A.render();
+chk('v144 收起态：按下机器仍出配方块（与清单折叠解耦，不被折叠带走）',
+    (outEl.innerHTML || '').indexOf('class="lo-rp"') >= 0);
+loReset(50); A.render();   /* 复原：画布清空 + 回到展开态，后续用例照旧 */
 
 // ---- 5d-2. 左栏默认清单：官方组（仓储存取/基础生产/合成制造/电力/功能设备）+ 核心结构 + 物流件 ----
 // 需求：沙盘只服务基地产线布局，资源开采（只能放野外）、战斗辅助、装饰默认不列。
@@ -369,7 +398,7 @@ chk('物流件介质/种类取自配置表（10 件里 5 件传送带系 5 件�
 // 渲染层：左栏按钮 == 默认清单
 setTab('layout'); A.render();
 const layoutPal = outEl.innerHTML || '';
-const palIds = [...layoutPal.matchAll(/onclick="Lpick\('([^']+)'\)"/g)].map(m => m[1]);
+const palIds = [...layoutPal.matchAll(/onclick="Lpick(?:FromList)?\('([^']+)'\)"/g)].map(m => m[1]);   /* v144 清单项改走 LpickFromList */
 chk('左栏默认数量与默认清单一致', palIds.length === loAllowedList.length,
     palIds.length + ' vs ' + loAllowedList.length);
 chk('左栏默认含协议核心', palIds.includes('sp_hub_1'));
@@ -385,7 +414,7 @@ chk('左栏物流件正好 10 件，不多不漏',
     palIds.filter(id => lgAll.some(e => e.id === id)).length === 10,
     String(palIds.filter(id => lgAll.some(e => e.id === id)).length));
 chk('物流件按钮尾标给的是吞吐不是尺寸',
-    /Lpick\('grid_belt_01'\)[\s\S]{0,240}?lo-tag">30 个\/分/.test(layoutPal), 'grid_belt_01');
+    /Lpick(?:FromList)?\('grid_belt_01'\)[\s\S]{0,240}?lo-tag">30 个\/分/.test(layoutPal), 'grid_belt_01');
 chk('左栏默认不含防御塔与矿机',
     !palIds.includes('battle_turret_1') && !palIds.includes('miner_1'));
 chk('左栏默认不含中继器',
@@ -495,20 +524,20 @@ chk('示意图声明了「只记几条边 / 方位随镜头变」',
 // 用上方分类下拉仍可单独看某一类（逃生口没堵死），但拉黑名单照样不出现
 A.Lonly('电力');
 const palPower = outEl.innerHTML || '';
-const powerIds = [...palPower.matchAll(/onclick="Lpick\('([^']+)'\)"/g)].map(m => m[1]);
+const powerIds = [...palPower.matchAll(/onclick="Lpick(?:FromList)?\('([^']+)'\)"/g)].map(m => m[1]);
 chk('单看「电力」时保留供电桩、不给中继器',
     powerIds.includes('power_diffuser_1') && !powerIds.includes('power_pole_2') && !powerIds.includes('power_pole_3'),
     powerIds.join(','));
 A.Lonly('战斗辅助');
 const palDef = outEl.innerHTML || '';
-const defIds = [...palDef.matchAll(/onclick="Lpick\('([^']+)'\)"/g)].map(m => m[1]);
+const defIds = [...palDef.matchAll(/onclick="Lpick(?:FromList)?\('([^']+)'\)"/g)].map(m => m[1]);
 chk('切到「战斗辅助」时左栏只列防御类',
     defIds.includes('battle_turret_1') && !defIds.includes('furnance_1'),
     defIds.length + ' 个');
 chk('Lonly 同步了顶部分类下拉的值', els['#f1'].value === '战斗辅助', els['#f1'].value);
 A.Lonly('');
 setTab('layout'); A.render();
-const palBack = [...(outEl.innerHTML || '').matchAll(/onclick="Lpick\('([^']+)'\)"/g)].map(m => m[1]);
+const palBack = [...(outEl.innerHTML || '').matchAll(/onclick="Lpick(?:FromList)?\('([^']+)'\)"/g)].map(m => m[1]);
 chk('「回到默认三类」能切回来', palBack.length === loAllowedList.length && !palBack.includes('battle_turret_1'),
     String(palBack.length));
 
@@ -554,6 +583,7 @@ function loReset(size) {
   /* 基地也必须复位：不复位的话，前面测过「谷地模式」会把后面所有用例都带进那个模式
      （左栏少两件、计数区换成预设口径），症状是一串莫名其妙的失败。 */
   A.LO.base = '';
+  A.LO.palOpen = true;   /* v144 清单默认收起——测试要读清单内容，这里统一展开 */
   setTab('layout');
 }
 loReset(50);
@@ -693,7 +723,7 @@ chk('基地下拉的选中项与当前基地一致', (() => {
   return !!m && m[1] === A.LO.base;
 })());
 chk('谷地模式标签写明「存取线由基地自动铺」', (outEl.innerHTML || '').indexOf('存取线由基地自动铺') >= 0);
-const gdPal = [...(outEl.innerHTML || '').matchAll(/onclick="Lpick\('([^']+)'\)"/g)].map(m => m[1]);
+const gdPal = [...(outEl.innerHTML || '').matchAll(/onclick="Lpick(?:FromList)?\('([^']+)'\)"/g)].map(m => m[1]);
 chk('谷地模式：左栏不给源桩 / 基段',
     !gdPal.includes('log_hongs_bus') && !gdPal.includes('log_hongs_bus_source'), gdPal.length + ' 项');
 chk('谷地模式：存货口 / 取货口照样能放',
@@ -767,7 +797,7 @@ A.LbaseSet('map02_lv002');
 chk('选武陵城 → 画布 80×80 且切到武陵',
     A.LO.size === 80 && A.Lregion() === '武陵', A.LO.size + '/' + A.Lregion());
 chk('武陵模式 = 不是预设（要自己摆）', A.LisPresetBus() === false);
-const wlPal = [...(outEl.innerHTML || '').matchAll(/onclick="Lpick\('([^']+)'\)"/g)].map(m => m[1]);
+const wlPal = [...(outEl.innerHTML || '').matchAll(/onclick="Lpick(?:FromList)?\('([^']+)'\)"/g)].map(m => m[1]);
 chk('武陵模式：左栏给源桩与基段',
     wlPal.includes('log_hongs_bus') && wlPal.includes('log_hongs_bus_source'));
 chk('武陵模式：保留「存取线：源桩 … + 上限档位」',
@@ -785,7 +815,7 @@ A.LbaseSet('');
 A.render();
 chk('选回自由模式', A.LO.base === '' && A.Lregion() === '');
 chk('自由模式：源桩 / 基段回到左栏（不算误伤自由模式）', (() => {
-  const p = [...(outEl.innerHTML || '').matchAll(/onclick="Lpick\('([^']+)'\)"/g)].map(m => m[1]);
+  const p = [...(outEl.innerHTML || '').matchAll(/onclick="Lpick(?:FromList)?\('([^']+)'\)"/g)].map(m => m[1]);
   return p.includes('log_hongs_bus') && p.includes('log_hongs_bus_source');
 })());
 A.LbaseSet('map01_lv001');
@@ -1527,7 +1557,7 @@ loReset(50); A.render();
 loReset(50); A.render();
 chk('左栏顶部标出「物流件 10」', (outEl.innerHTML || '').indexOf('<b>物流件 10</b>') >= 0);
 A.Lonly('物流件');
-const palLg = [...(outEl.innerHTML || '').matchAll(/onclick="Lpick\('([^']+)'\)"/g)].map(m => m[1]);
+const palLg = [...(outEl.innerHTML || '').matchAll(/onclick="Lpick(?:FromList)?\('([^']+)'\)"/g)].map(m => m[1]);
 chk('单看「物流件」正好 10 件', palLg.length === 10, String(palLg.length));
 chk('单看物流件时看不到建筑', !palLg.includes('furnance_1'), palLg.join(','));
 A.Lonly('');
@@ -3231,8 +3261,8 @@ chk('v139 准入口标红：孤立 = 标红 / 拐角 = 标红 / 直线 = 放行'
     })(),
     'vbad 计数三态：孤立应>=1 / 拐角应>=1 / 直线应=0');
 
-// ---- v143 P3：吞吐体检联动准入口限速（该段上限 = min(线速, 限速)）----
-chk('v143 P3：路径上的准入口限速会修正该段 cap 并在报告点名',
+// ---- v142 P3：吞吐体检联动准入口限速（该段上限 = min(线速, 限速)）----
+chk('v142 P3：路径上的准入口限速会修正该段 cap 并在报告点名',
     (() => {
       tab = 'layout'; A.Linit(); A.LO.objs = []; A.LO.sel = []; A.LO.size = 80; A.LO.mt = [];
       A.LawRun('item_copper_nugget', 10);

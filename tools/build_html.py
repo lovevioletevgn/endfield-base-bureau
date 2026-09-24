@@ -293,11 +293,20 @@ nav button:hover{background:var(--chip);color:var(--ink)}
 nav button.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:600}
 
 /* ---- 布局试摆（交互画布） ---- */
-.lo-wrap{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start}
-/* 画布区：格子放大后画布会超过容器宽度，这里兜一层横向滚动（flex 项必须给 min-width:0 才会收缩到内容宽度以下） */
+.lo-wrap{position:relative}
+/* 画布区：格子放大后画布会超过容器宽度，这里兜一层横向滚动 */
 .lo-stage{min-width:0;max-width:100%;overflow:auto}
 .lo-bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
-.lo-pal{flex:1;min-width:220px;max-height:560px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px;background:var(--panel)}
+/* ⭐v144 建筑清单 = 画布左侧的浮层侧栏。**绝对定位脱离文档流** → 无论收起还是展开，
+   画布的位置与宽度都完全不变（曾试过 flex 定宽栏：展开时把画布推右 260px，博士当即否掉 ——「画布又被挪了」）。
+   宽度由 LpalFit() 按 #out 左边的实际空白自适应（上限 246，收起见 CSS 的 34）。 */
+.lo-pal{position:absolute;top:0;right:100%;margin-right:12px;width:246px;
+  max-height:620px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px;background:var(--panel)}
+.lo-pal.folded{width:34px;padding:6px 0;overflow:hidden;
+  background:var(--accent-bg);border-color:var(--accent-line)}
+.lo-pal.folded .lo-pal-tab{writing-mode:vertical-rl;letter-spacing:3px;width:100%;padding:12px 0;
+  border:none;background:none;cursor:pointer;font-family:inherit;font-size:12px;
+  font-weight:600;color:var(--accent)}
 .lo-btn{display:flex;align-items:center;gap:8px;width:100%;text-align:left;background:none;border:1px solid transparent;border-radius:6px;padding:5px 8px;cursor:pointer;font-family:inherit;font-size:12.5px;color:var(--ink)}
 .lo-btn:hover{background:var(--chip)}
 .lo-btn.sel{background:var(--accent-bg);border-color:var(--accent-line);color:var(--accent);font-weight:600}
@@ -2069,6 +2078,8 @@ function Linit(){
   if(!LO) LO={size:50,pick:null,pickRot:0,objs:[],sel:[],undo:[],redo:[],seq:0,msg:'',lastT:0,lastUid:'',showPort:true,showGas:true,zone:'',viewRot:0,base:'',plan:null,plans:[],tgt:'item_iron_cmpt',rate:10,selfLoop:false,shipIn:false,tv:0,tvHours:1,mt:[],shipPick:'',shipCands:[],shipDmap:null,shipRawSet:null,
     /* ⭐⑥-3 收货方向（2026-09-22 博士：两地对称互传，现在用谷地→武陵；下拉为未来新地区留口） */
     shipFrom:'domain_1', shipTo:'domain_2', pickShow:false,
+      /* ⭐v144 建筑清单默认收起（博士：那 45 项的大块一直摊在画布上方，换基建很麻烦） */
+      palOpen:false,
     /* ⭐v109 协议核心出货：{uid:{口index:物品id}} + 当前打开的选货浮层 {uid,idx} */
     hubPicks:{}, dlvPop:null};
   return LO;
@@ -2162,6 +2173,7 @@ function Lfree(x,y,w,d,ign){
   return true;
 }
 function Lpick(id){
+  const L0=Linit(); L0.palOpen=false;   /* ⭐v144 选完建筑自动收起清单（画布让位） */
   const L=Linit(); L.pick=byBp(id);
   L.msg=L.pick&&L.pick.isLogi?'物流件：在空白格按住拖动可一次铺一排；R 换走向':''; render();
 }
@@ -4922,6 +4934,42 @@ function RxlBest(targets){
 }
 /* 面板「选点建议」开关（v1：只出建议，不摆画布） */
 function LpickToggle(){ const L=Linit(); L.pickShow=!L.pickShow; render(); }
+/* ⭐v144 建筑清单折叠开关 */
+function LpalToggle(){ const L=Linit(); L.palOpen=!L.palOpen; render(); }
+/* ⭐v144 清单宽度自适应：清单 absolute 挂在画布左侧，所以「左边有多少空白就用多宽」。
+   上限 246；空白不足 130 时改为贴画布左缘浮起（画布依然不动，选完建筑自动收起就露出来）。 */
+function LpalFit(){
+  /* ⚠️ 两个测试沙箱（node:vm）的 mock 能力不一样：test_html.js 的 window 没有 addEventListener、
+     元素没有 getBoundingClientRect；test_layout_events.js 连 document.getElementById 都不是函数。
+     所以这里逐项做能力探测，探测不到就静默跳过 —— 真实浏览器才量布局。
+     回归断言只认模板字符串，不依赖本函数。 */
+  if(!document || typeof document.querySelector!=='function' || typeof document.getElementById!=='function') return;
+  const pal=document.querySelector('.lo-pal');
+  if(!pal || !pal.style || typeof pal.getBoundingClientRect!=='function') return;
+  pal.style.left=''; pal.style.right=''; pal.style.marginRight=''; pal.style.width=''; pal.style.maxWidth='';
+  if(pal.classList.contains('folded')) return;      /* 收起态宽度交给 CSS（34px 竖条） */
+  const out=document.getElementById('out');
+  if(!out || typeof out.getBoundingClientRect!=='function') return;
+  const avail=out.getBoundingClientRect().left;
+  const room=avail-16;            /* 留 16px 呼吸位 */
+  const MINW=200;                 /* 清单可读下限：低于这个宽度，说明文字/建筑名会挤成一条 */
+  if(room>=MINW){                 /* 左侧空白够 → 整个落在空白里，一点不压画布 */
+    const w=Math.round(Math.min(246,room));
+    pal.style.width=w+'px'; pal.style.maxWidth=w+'px';
+  }else{                          /* 空白不够 → 保持可读宽度，尽量贴左；最多压住画布左缘几十像素（画布仍不动） */
+    /* 贴视口左缘：lo-wrap 左缘 = avail，所以 left=-avail 就等于「从屏幕最左开始」，
+       左侧那截页面空白照样用得上 —— 这样压住画布的宽度最小（1450 视口下仅 26px）。 */
+    pal.style.left=Math.round(-avail)+'px';
+    pal.style.right='auto'; pal.style.marginRight='0';
+    pal.style.width=MINW+'px'; pal.style.maxWidth=MINW+'px';
+  }
+}
+/* 窗口变宽/变窄时，左侧空白跟着变 —— 重算一次（此时不 re-render，画布更不会动） */
+if(typeof window!=='undefined' && window && window.addEventListener){   /* 沙箱没有这个方法，别炸 */
+  window.addEventListener('resize', ()=>{ if(typeof tab!=='undefined' && tab==='layout') LpalFit(); });
+}
+/* v144 从清单里点选建筑 = 拿起 + 自动收起清单（画布让位）。程序化 Lpick 不受影响。 */
+function LpickFromList(id){ Lpick(id); Linit().palOpen=false; render(); }
 /* 单目标 × 单地区的一行对比文案（RxlHtml 用） */
 function RxlRowHtml(t, r, picked){
   const a=RxlAnalyze(t.id, t.rate, r);
@@ -5710,7 +5758,7 @@ function renderLayout(){
     const tip=b.isLogi
       ? ` title="${esc(b.name)} · ${esc(b.lgMedium)} · 吞吐 ${b.lgPerMin} 个/分钟"`
       : ` title="${esc(b.name)} · ${esc(b.categoryName)} · 占地 ${dm.w}×${dm.d} · 接口 ${b.portCount} 个 · ${b.needPower?'耗电 '+b.powerConsume:'无需通电'} · id: ${esc(b.id)}${LhongsRule(b.id)?' · 放置规则：'+LhongsRule(b.id):''}"`;
-    return `<button class="lo-btn ${sel?'sel':''}" onclick="Lpick('${b.id}')"${tip}>
+    return `<button class="lo-btn ${sel?'sel':''}" onclick="LpickFromList('${b.id}')"${tip}>
       <span style="width:18px;text-align:center;color:${b.isLogi?lgColor(b):catColor(b)};font-weight:700">${loPieceGlyph(b)}</span>
       <span style="flex:1">${esc(b.name)}</span>
       <span class="lo-tag">${tail}</span>
@@ -6398,8 +6446,20 @@ function renderLayout(){
       <button class="lo-size ${L.redo.length?'':'off'}" onclick="Lredo()">重做（Ctrl+Y）</button>
       <button class="lo-size" onclick="Lclear()">清空</button>
     </div>
+    ${recipeBlock}
     <div class="lo-wrap">
-      <div class="lo-pal">${recipeBlock}${palHead}${pal||'<div class="empty">没有匹配的分类</div>'}</div>
+      <div class="lo-pal ${L.palOpen?'':'folded'}">${L.palOpen?`
+        <div class="lo-bar" style="margin:0 0 4px">
+          <button class="lo-size on" onclick="LpalToggle()"
+            title="收起清单：变成画布左侧的窄竖条，画布让出宽度"
+          >▾ 收起</button>
+          <span class="lo-tag">${arr.length} 项${f1?(' · 「'+esc(f1)+'」'):''}</span>
+        </div>
+        ${palHead}${pal||'<div class="empty">没有匹配的分类</div>'}`:`
+        <button class="lo-pal-tab" onclick="LpalToggle()"
+          title="展开建筑清单（默认 ${arr.length} 项）：点一件建筑即拿起，选完自动收起"
+        >◂ 建筑清单 ${arr.length}</button>`}
+      </div>
       <div class="lo-stage">
         <div class="lo-canv" style="padding:${CELL+6}px">
           <div class="lo-canvas" style="--locell:${CELL}px;width:${L.size*CELL}px;height:${L.size*CELL}px;transform:rotate(${L.viewRot||0}deg)">${presetBand}${envLayer}${cells}${gasBar}${dlvPop}${macPop}</div>
@@ -6708,6 +6768,8 @@ function render(){
   else { html=renderOverview(); }
   $('#out').innerHTML=html;
   if(palTop){ const p2=$('.lo-pal'); if(p2) p2.scrollTop=palTop; }
+  /* ⭐v144 清单挂在画布左侧空白里，宽度按当时的可用空白算（画布位置不受影响） */
+  if(tab==='layout') LpalFit();
   $('#cnt').textContent = tab==='overview' ? '' : `库中 ${n} 条`;
   refreshFilters();
 }
