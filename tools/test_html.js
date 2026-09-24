@@ -3206,6 +3206,31 @@ chk('v138 准入口：放在直线段上成功 + 面板含限速与准入物品 
              v.vRate === 12 && (v.vItems || []).length === 1;
     })(), 'vRate=' + ((A.LO.objs.filter(o => o.id === 'log_conditioner')[0] || {}).vRate));
 
+// ---- v139 准入口合规标红（博士：「拐角也是怎么还放得下」→ 已有的不合规件也要标出来）----
+chk('v139 准入口标红：孤立 = 标红 / 拐角 = 标红 / 直线 = 放行',
+    (() => {
+      tab = 'layout'; A.Linit(); A.LO.objs = []; A.LO.sel = []; A.LO.size = 40;
+      const _vbadN = () => ((outEl.innerHTML || '').match(/vbad/g) || []).length;
+      const v1 = A.Lmk(A.byBp('log_conditioner'), 5, 5, 0); v1.planRole = 'link';
+      A.LO.objs.push(v1); A.render();
+      const iso = _vbadN();
+      A.LO.objs = []; A.LO.pick = A.byBp('grid_belt_01');
+      A.LODRAG = { mode: 'lay', sx: 2, sy: 20, ex: 2, ey: 20, uids: [], hist: [[2, 20]] };
+      for (let x = 3; x <= 8; x++) A.LlayTo(x, 20); A.LODRAG = null;
+      A.LODRAG = { mode: 'lay', sx: 8, sy: 21, ex: 8, ey: 21, uids: [], hist: [[8, 21]] };
+      for (let y = 21; y <= 25; y++) A.LlayTo(8, y); A.LODRAG = null; A.render();
+      A.LO.objs = A.LO.objs.filter(o => !(o.x === 8 && o.y === 20));
+      const v2 = A.Lmk(A.byBp('log_conditioner'), 8, 20, 0); v2.planRole = 'link';
+      A.LO.objs.push(v2); A.render();
+      const corner = _vbadN();
+      A.LO.objs = A.LO.objs.filter(o => !(o.x === 8 && o.y === 20));
+      const v3 = A.Lmk(A.byBp('log_conditioner'), 5, 20, 0); v3.planRole = 'link';
+      A.LO.objs.push(v3); A.render();
+      const straight = _vbadN();
+      return iso >= 1 && corner >= 1 && straight === 0;
+    })(),
+    '孤立/拐角/直线 = ' + 'vbad 计数');
+
 // ---- ⑥-2 × ⑥-1 组合：多目标 + 跨地区收货同时开 ----
 // 要守住的：收货判定吃的是**合并后的原料并集与合并后的需求**（两条链的赤铜矿需求 20+20=40/分），
 // 共用段照常渲染，本地冶炼（赤铜块）照建 —— 收货只改「料从哪来」。

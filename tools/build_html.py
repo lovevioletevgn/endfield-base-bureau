@@ -364,6 +364,10 @@ nav button.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:
 .lo-dlvpop .it.on{background:#E9F8F1;box-shadow:inset 0 0 0 1px rgba(15,110,86,.32)}
 .lo-dlvpop .it .rr{font-size:10px;color:#C9A227;letter-spacing:-1px;flex:none;width:34px}
 .lo-dlvpop .it .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* ⭐v139 准入口合规标红：孤立的准入口（四周没有同类带/管衔接）= 没放在传送带/管道上 */
+.lo-cell.vbad{box-shadow:inset 0 0 0 2px #C0561F, 0 0 0 1px #C0561F}
+.lo-cell.vbad::after{content:'';position:absolute;right:-1px;top:-1px;width:0;height:0;
+  border-left:7px solid transparent;border-top:7px solid #C0561F}
 /* ⭐v135 机器选择浮层（点机器就地选）：复用出货浮层样式，但内容更高，给个高度上限 */
 .lo-macpop{width:auto;max-height:430px;overflow:auto}
 /* ⭐v134 反应池缓存格：物品卡（星级 + 名字 + 相态角标）——视觉与协议核心出货清单同一套语言 */
@@ -5827,12 +5831,33 @@ function renderLayout(){
     if(b.isLogi){
       /* ⭐v106：弯头格 tooltip 的「进」也按真实拓扑（flowIn），与色条/弯道弧同一口径 */
       const _fin=(b.lgType==='Belt'||b.lgType==='Pipe')?flowIn(o.x,o.y,b.lgMedium==='管道'):null;
+      /* ⭐v139 准入口合规校验（博士：「不是说只能放在传送带上吗，怎么没标红」）：
+         准入口放好后是**替换**掉原来的带/管（那格只剩准入口），所以判据看**衔接**——
+         四邻里有没有同类介质的带/管。孤立（一个都没有）= 没放在带/管上 → 标红警示。
+         这样无论它是新放的、旧画布留下的、还是从方案/撤销栈恢复的，都会被标出来。 */
+      let _vbad=false, _vwhy='';
+      if(b.lgType==='BoxValve'||b.lgType==='FluidValve'){
+        const _hasNb=(dx,dy)=>{
+          const q=L.objs.filter(z=>z.x===o.x+dx&&z.y===o.y+dy)[0];
+          if(!q) return false;
+          const qb=byBp(q.id);
+          return !!(qb&&qb.isLogi&&qb.lgMedium===b.lgMedium&&(qb.lgType==='Belt'||qb.lgType==='Pipe'));
+        };
+        const _N={u:_hasNb(0,-1), d:_hasNb(0,1), l:_hasNb(-1,0), r:_hasNb(1,0)};
+        const _any=_N.u||_N.d||_N.l||_N.r;
+        const _straight=(_N.u&&_N.d)||(_N.l&&_N.r);      /* 对开的一对 = 真直线段（可放） */
+        const _cross=(_N.u||_N.d)&&(_N.l||_N.r);        /* 横竖都有 = 拐角（放不了） */
+        _vbad=(!_any)||(!_straight&&_cross);
+        if(_vbad) _vwhy='【⚠️ 位置不合规：'+b.name+'必须放在'+(b.lgMedium==='管道'?'管道':'传送带')+'上，且要顺物流方向 —— '
+          +(_any?'这一格是**拐角**（两侧相邻，没有一条直的物流方向）':'这一格四周没有'+b.lgMedium+'衔接（空放）')
+          +'，请挪到直线段上】';
+      }
       const ttl=esc(b.name)+' · 走向 '+o.rot+'°（'+LdirName(o.rot)+'） · '+esc(b.lgMedium)
         +' '+b.lgPerMin+' 个/分钟'
         +' · 接口：进 '+(_fin?LGNAME[_fin]:lgSideNames(b,o.rot,'in'))+' / 出 '+lgSideNames(b,o.rot,'out');
-      return `<div class="lo-cell ${b.lgMedium==='管道'?'lgp':'lgb'} ${on?'sel':''}${o.lock?' lock':''}" data-uid="${o.uid}"
+      return `<div class="lo-cell ${b.lgMedium==='管道'?'lgp':'lgb'} ${on?'sel':''}${o.lock?' lock':''}${_vbad?' vbad':''}" data-uid="${o.uid}"
           style="left:${px}px;top:${py}px;width:${w-2}px;height:${d-2}px"
-          title="${o.lock?'【已锁定】':''}${ttl}"
+          title="${o.lock?'【已锁定】':''}${_vwhy}${ttl}"
         >${lgSvg(b,o.rot,flowIn(o.x,o.y,b.lgMedium==='管道'))}</div>`;
     }
     const fp=Lfp(b);
