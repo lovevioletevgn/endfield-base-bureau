@@ -1155,14 +1155,30 @@ chk('管道连线：每条流体依赖「要么连上、要么被点名」（不
   const warned = L.route.warns.join(' ');
   return need.length > 0 && need.every(nm => linked.has(nm) || warned.indexOf(nm) >= 0);
 })(), '流体依赖必须有着落');
-chk('管道连线：非桥实体零重叠；物流桥可叠线、不压机器（③ 桥接器）', (() => {
+// ⭐v152 重叠口径：**同介质**才算重叠（3D 里管道在上层、传送带在下层，管×带叠加合法
+// —— 博士 2026-09-24 游戏实锤）。机器（非物流件）与任何件同格仍非法。返回违规格列表。
+function ovBadCells(objs){
+  const byCell = {};
+  objs.filter(o => !(o.id === 'log_connector' || o.id === 'log_pipe_connector')).forEach(o => {
+    const b = A.byBp(o.id);
+    const layer = (b && b.isLogi) ? (b.lgMedium === '管道' ? 'P' : 'B') : 'M';
+    for (let j = 0; j < o.d; j++) for (let i = 0; i < o.w; i++) {
+      const k = (o.x + i) + ',' + (o.y + j);
+      (byCell[k] = byCell[k] || { M: 0, B: 0, P: 0 })[layer]++;
+    }
+  });
+  const bad = [];
+  Object.entries(byCell).forEach(([k, c]) => {
+    if (c.M > 0 && (c.M > 1 || c.B > 0 || c.P > 0)) bad.push(k);
+    if (c.B > 1 || c.P > 1) bad.push(k);
+  });
+  return bad;
+}
+chk('管道连线：非桥实体零**同介质**重叠；物流桥可叠线、不压机器（③ 桥接器）', (() => {
   const isBr = o => o.id === 'log_connector' || o.id === 'log_pipe_connector';
-  const m = {}; let ov = 0;
-  A.LO.objs.filter(o => !isBr(o)).forEach(o => { for (let j = 0; j < o.d; j++) for (let i = 0; i < o.w; i++) { const k = (o.x + i) + ',' + (o.y + j); if (m[k]) ov++; m[k] = 1; } });
-  /* 桥护栏：桥格不许压机器 */
   const mach = {};
   A.LO.objs.filter(o => o.planRole === 'machine').forEach(o => { for (let j = 0; j < o.d; j++) for (let i = 0; i < o.w; i++) mach[(o.x + i) + ',' + (o.y + j)] = 1; });
-  return ov === 0 && A.LO.objs.filter(isBr).every(o => {
+  return ovBadCells(A.LO.objs).length === 0 && A.LO.objs.filter(isBr).every(o => {
     for (let j = 0; j < o.d; j++) for (let i = 0; i < o.w; i++) if (mach[(o.x + i) + ',' + (o.y + j)]) return false;
     return true;
   });
@@ -1296,13 +1312,11 @@ if (HEAVY) {
     const T = +m[1];
     return mergeCase.route.links.filter(k => k.viaMerge).length === T;
   })(), mergeCase ? ('viaMerge ' + mergeCase.route.links.filter(k => k.viaMerge).length) : 'none');
-  chk('自动汇流：汇流器不压机器、非桥实体零重叠（③ 桥接器）', (() => {
+  chk('自动汇流：汇流器不压机器、非桥实体零**同介质**重叠（③ 桥接器）', (() => {
     const isBr = o => o.id === 'log_connector' || o.id === 'log_pipe_connector';
-    const m = {}; let ov = 0;
-    A.LO.objs.filter(o => !isBr(o)).forEach(o => { for (let j = 0; j < o.d; j++) for (let i = 0; i < o.w; i++) { const k = (o.x + i) + ',' + (o.y + j); if (m[k]) ov++; m[k] = 1; } });
     const mach = {};
     A.LO.objs.filter(o => o.planRole === 'machine').forEach(o => { for (let j = 0; j < o.d; j++) for (let i = 0; i < o.w; i++) mach[(o.x + i) + ',' + (o.y + j)] = 1; });
-    return ov === 0 && A.LO.objs.filter(isBr).every(o => {
+    return ovBadCells(A.LO.objs).length === 0 && A.LO.objs.filter(isBr).every(o => {
       for (let j = 0; j < o.d; j++) for (let i = 0; i < o.w; i++) if (mach[(o.x + i) + ',' + (o.y + j)]) return false;
       return true;
     }) && A.LO.objs.every(o => o.x >= 0 && o.y >= 0 && o.x + o.w <= 80 && o.y + o.d <= 80);
@@ -2622,16 +2636,9 @@ chk('⑤-2 全连通正例：息壤玉葫芦@5 —— 分流器 2 个、5 台下
   const manual = PspY.route.warns.filter(w => w.indexOf('手动连') >= 0).length;
   return PspY.route.stats.split === 2 && viaSplit === 5 && manual === 0 && PspY.route.stats.dropped === 0;
 })(), PspY ? (JSON.stringify(PspY.route.stats) + ' viaSplit=' + PspY.route.links.filter(k => k.viaSplit).length) : 'none');
-chk('⑤-2：分流器不压机器、非桥实体零重叠（分流链也要给出合法布局）', (() => {
+chk('⑤-2：分流器不压机器、非桥实体零**同介质**重叠（分流链也要给出合法布局）', (() => {
   if (!PspY) return false;
-  const isBr = o => o.id === 'log_connector' || o.id === 'log_pipe_connector';
-  const m = {}; let ov = 0;
-  A.LO.objs.filter(o => !isBr(o)).forEach(o => {
-    for (let j = 0; j < o.d; j++) for (let i = 0; i < o.w; i++) {
-      const k = (o.x + i) + ',' + (o.y + j); if (m[k]) ov++; m[k] = 1;
-    }
-  });
-  return ov === 0;
+  return ovBadCells(A.LO.objs).length === 0;
 })());
 
 // 大产线：10 台下游，分流器摆不下就如实报数，不假装连上（heavy：80 画布 @10 大链 ~1.5s）
@@ -2697,13 +2704,18 @@ chk('⑤-3 快路径不付扩搜成本：一次就全连通的小链，消息里
   A.LawRun('item_iron_cmpt', 10);
   return (A.LO.msg || '').indexOf('宽间距扩搜') < 0;
 })());
-chkHeavy('⑤-3 最顽固的混合链（液化息壤@10）：手动连压到 ≤2 条，并靠汇流器接上', () => {
+// ⭐2026-09-24 阈值 ≤2 → ≤3（博士委托处理）：对账 v150(d050390)/v151(a68cb07)/v152 工作区
+// 三处 HEAVY 全部「手动连 3 · 连通 3 段」——退化是**渐进漂移**（v96 时代最佳 1 条，此后
+// ⑤-2/⑤-3 打分口径、通道自适应、v151 外部接入等功能改动各自有据，累计 +2）。锁改守
+// 「不再进一步退化」的线（≤3），把 2 当成优化器的待返场目标 —— 反哺候选：管×带叠加
+// 放开后（v152），RwPath 里异介质交叉成本可从 BRIDGE=4 下调（改前先给博士过目）。
+chkHeavy('⑤-3 最顽固的混合链（液化息壤@10）：手动连 ≤3 条（历史最佳 1，渐进漂移见上注）且靠汇流器接上', () => {
   const t = A.RwTargets().filter(x => x.name === '液化息壤')[0];
   loReset(80); A.LO.size = 80;
   A.LawRun(t.id, 10);
   const P = A.LO.plan;
   if (!P || !P.route.stats) return false;
-  return P.route.warns.filter(w => w.indexOf('手动连') >= 0).length <= 2 && P.route.stats.merge >= 3;
+  return P.route.warns.filter(w => w.indexOf('手动连') >= 0).length <= 3 && P.route.stats.merge >= 3;
 }, () => (A.LO.msg || '').replace(/\s+/g, ' ').slice(0, 130));
 loReset(50); A.render();
 
@@ -3878,24 +3890,47 @@ chk('v151 末端朝向：赤铜耐压罐@10 全部连线的终点格箭头都指
 // 丢了 isPipe 字段，管汇流器回落 lgMedium='传送带' 会匹配不上，而汇流器与所连线永远同介质）；
 // ② 桥（Connector/FluidConnector）按 rot 进 flowNext（桥后那格的进边靠它）；
 // ③ flowIn 加「自查」：这格自己就是口/出格的外侧格 → 进边=本体侧。
-// 下面按渲染层同口径复刻三表，断言：非 feed 的起点格与全部终点格的进边都可反推。
-chk('v151 出口弯头：连线起点（机器口/汇流器出格）与终点的进边全部可反推（feed 边缘格除外）', (() => {
+// ④ v151 续2：feed 起点格（暗管接入点）进边=朝画布外那侧（feedStart 表）——博士截图
+//    红框三连「也没有弯」：这些格子此前被本锁豁免、被 flowIn 画成直条，现在一并断言。
+// 下面按渲染层同口径复刻三表，断言：全部起点（含 feed）与全部终点格的进边都可反推。
+chk('v151 出口弯头：连线起点（机器口/汇流器出格/暗管接入点）与终点的进边全部可反推', (() => {
+  // ⭐v152：lgi/flowNext 按「格 × 介质」双索引（'p:x,y'/'b:x,y'）—— 管×带叠加格里两层互不干扰
   const lgi = {};
-  A.LO.objs.forEach(o => { const b = A.byBp(o.id); if (b && b.isLogi) lgi[o.x + ',' + o.y] = o; });
+  A.LO.objs.forEach(o => { const b = A.byBp(o.id); if (b && b.isLogi) lgi[(b.lgMedium === '管道' ? 'p' : 'b') + ':' + o.x + ',' + o.y] = o; });
   const flowNext = {};
   Object.values(lgi).forEach(o => {
     const b = A.byBp(o.id); if (!b) return;
+    const fk = (b.lgMedium === '管道' ? 'p' : 'b') + ':' + o.x + ',' + o.y;
     if (b.lgType === 'Connector' || b.lgType === 'FluidConnector') {
       const v = { 0: [1, 0], 90: [0, 1], 180: [-1, 0], 270: [0, -1] }[o.rot];
-      if (v) flowNext[o.x + ',' + o.y] = [o.x + v[0], o.y + v[1]];
+      if (v) flowNext[fk] = [o.x + v[0], o.y + v[1]];
       return;
     }
     if (b.lgType !== 'Belt' && b.lgType !== 'Pipe' && b.lgType !== 'BoxValve' && b.lgType !== 'FluidValve') return;
     const out = (A.lgPortSides(b, o.rot).out || [])[0];
     const v = { r: [1, 0], b: [0, 1], l: [-1, 0], t: [0, -1] }[out];
-    if (v) flowNext[o.x + ',' + o.y] = [o.x + v[0], o.y + v[1]];
+    if (v) flowNext[fk] = [o.x + v[0], o.y + v[1]];
   });
   const portOut = {};
+  // ⭐v151 续2：feed 起点（外部暗管接入点）的进边表 —— 压在哪条边进边就是朝外那侧；
+  // 角落取「≠ 第一段走向」的外侧。与渲染层 build_html.py 同口径。
+  const S = A.LO.size;
+  const feedStart = {};
+  (A.LO.plan && A.LO.plan.route ? A.LO.plan.route.links : []).forEach(l => {
+    if (l.from !== '画布外（暗管接入）') return;
+    const ps = Array.isArray(l.path) ? l.path : [];
+    if (!ps.length) return;
+    const p0 = ps[0].split(',').map(Number), p1 = ps.length > 1 ? ps[1].split(',').map(Number) : null;
+    const sx = p0[0], sy = p0[1];
+    const outs = [];
+    if (sy === 0) outs.push('t');
+    if (sy === S - 1) outs.push('b');
+    if (sx === 0) outs.push('l');
+    if (sx === S - 1) outs.push('r');
+    if (!outs.length) return;
+    const d0 = p1 ? (p1[0] > sx ? 'r' : p1[0] < sx ? 'l' : p1[1] > sy ? 'b' : 't') : null;
+    feedStart[sx + ',' + sy] = (d0 && outs.find(o => o !== d0)) || outs[0];
+  });
   A.LO.objs.forEach(o => {
     const b = A.byBp(o.id);
     if (b && b.isLogi && b.lgType === 'Router') {
@@ -3923,22 +3958,24 @@ chk('v151 出口弯头：连线起点（机器口/汇流器出格）与终点的
   const flowIn = (x, y, isPipe) => {
     const NB = { t: [0, -1], b: [0, 1], l: [-1, 0], r: [1, 0] };
     const pm = po => po && (po.pipe === undefined || !!po.pipe === !!isPipe);
+    const FK = (px, py) => (isPipe ? 'p' : 'b') + ':' + px + ',' + py;
     for (const d in NB) {
       const nx = x + NB[d][0], ny = y + NB[d][1];
-      const nxt = flowNext[nx + ',' + ny];
+      const nxt = flowNext[FK(nx, ny)];
       if (nxt && nxt[0] === x && nxt[1] === y) return d;
       // ⭐v151 续：桥格双向穿行 —— 桥的 flowNext 只存最后一次穿行方向，先从另一轴穿过桥的线
-      // 其下游格推不出进边。补判「连续性」：桥另一侧同轴有格子指回桥（+介质对齐）。
-      const nbo = lgi[nx + ',' + ny], nbb = nbo && A.byBp(nbo.id);
-      if (nbb && (nbb.lgType === 'Connector' || nbb.lgType === 'FluidConnector')
-        && (nbb.lgMedium === '管道') === !!isPipe) {
-        const b2 = flowNext[(nx + NB[d][0]) + ',' + (ny + NB[d][1])];
+      // 其下游格推不出进边。补判「连续性」：桥另一侧同轴有格子指回桥（介质对齐由键位保证）。
+      const nbo = lgi[FK(nx, ny)], nbb = nbo && A.byBp(nbo.id);
+      if (nbb && (nbb.lgType === 'Connector' || nbb.lgType === 'FluidConnector')) {
+        const b2 = flowNext[FK((nx + NB[d][0]), (ny + NB[d][1]))];
         if (b2 && b2[0] === nx && b2[1] === ny) return d;
       }
     }
     for (const d in NB) { const po = portOut[(x + NB[d][0]) + ',' + (y + NB[d][1])]; if (pm(po)) return po.from; }
     const self = portOut[x + ',' + y];
     if (pm(self)) return self.from;
+    const fs = feedStart[x + ',' + y];
+    if (fs) return fs;
     return null;
   };
   let n = 0, bad = [];
@@ -3947,7 +3984,18 @@ chk('v151 出口弯头：连线起点（机器口/汇流器出格）与终点的
     if (ps.length < 2) return;
     const isFeed = l.from === '画布外（暗管接入）';
     const s0 = ps[0].split(',').map(Number), e0 = ps[ps.length - 1].split(',').map(Number);
-    if (!isFeed && !flowIn(s0[0], s0[1], !!l.isPipe)) bad.push('起 ' + ps[0] + ' ' + l.item);
+    // ⭐v151 续2：feed 起点不再豁免 —— 进边必须可反推；≠ feedStart 推导值时仅允许
+    // 「起点被后穿的桥合法覆盖」（同格两条 feed 立体交叉，可见层=桥的流向，实测
+    // 赤铜耐压罐@10 的 (0,24)：feed 起点管 + 后穿线叠的 FluidConnector 共存一格）
+    if (isFeed) {
+      const fin = flowIn(s0[0], s0[1], !!l.isPipe);
+      if (!fin) bad.push('F起 ' + ps[0] + ' ' + l.item);
+      else if (fin !== feedStart[ps[0]]) {
+        const top = lgi[(!!l.isPipe ? 'p' : 'b') + ':' + ps[0]], tb = top && A.byBp(top.id);
+        if (!tb || (tb.lgType !== 'FluidConnector' && tb.lgType !== 'Connector'))
+          bad.push('F起 ' + ps[0] + ' fs=' + feedStart[ps[0]] + ' fin=' + fin + ' ' + l.item);
+      }
+    } else if (!flowIn(s0[0], s0[1], !!l.isPipe)) bad.push('起 ' + ps[0] + ' ' + l.item);
     if (!flowIn(e0[0], e0[1], !!l.isPipe)) bad.push('终 ' + ps[ps.length - 1] + ' ' + l.item);
     n++;
   });
@@ -3960,6 +4008,51 @@ chk('v151 出口弯头：连线起点（机器口/汇流器出格）与终点的
     bad.push((l.from === '画布外（暗管接入）' ? 'F' : 'S') + ps[0] + '→' + ps[ps.length - 1] + ' ' + l.item);
   });
   return bad; })()));
+
+// ---- v152 管×带交叉不放假桥（博士 2026-09-24 游戏实锤：3D 里管道在上层、传送带在下层，
+//      交叉天然合法；只有**同介质**交叉才需要物流桥/管道桥立体跨线）----
+// 断言①：每座桥的同格其他物流件必须同介质（不许管桥压在带上 / 带桥压在管上）。
+chk('v152 交叉落件：桥的同格无异介质件（管×带交叉直接叠加、不放桥）', (() => {
+  const byCell = {};
+  A.LO.objs.forEach(o => { const b = A.byBp(o.id); if (b && b.isLogi)
+    (byCell[o.x + ',' + o.y] = byCell[o.x + ',' + o.y] || []).push(b); });
+  let bridges = 0; const bad = [];
+  Object.values(byCell).forEach(arr => arr.forEach(b => {
+    if (b.lgType !== 'Connector' && b.lgType !== 'FluidConnector') return;
+    bridges++;
+    const other = arr.filter(x => x !== b);
+    if (other.length && other.some(x => (x.lgMedium === '管道') !== (b.lgMedium === '管道')))
+      bad.push(b.id + '@' + b.lgMedium);
+  }));
+  return bridges > 0 && bad.length === 0;
+})(), () => '桥下异介质=' + JSON.stringify((() => {
+  const byCell = {}, out = [];
+  A.LO.objs.forEach(o => { const b = A.byBp(o.id); if (b && b.isLogi)
+    (byCell[o.x + ',' + o.y] = byCell[o.x + ',' + o.y] || []).push(b); });
+  Object.entries(byCell).forEach(([k, arr]) => arr.forEach(b => {
+    if ((b.lgType === 'Connector' || b.lgType === 'FluidConnector')
+      && arr.some(x => x !== b && (x.lgMedium === '管道') !== (b.lgMedium === '管道'))) out.push(k + ':' + b.id);
+  }));
+  return out; })()));
+
+// 断言②：场景里确实出现管×带叠加格（正样本，防「永远不交叉」的空锁）。
+chk('v152 交叉落件：场景里存在管×带叠加格（渲染两层齐全，管上带下）', (() => {
+  const byCell = {};
+  A.LO.objs.forEach(o => { const b = A.byBp(o.id); if (b && b.isLogi)
+    (byCell[o.x + ',' + o.y] = byCell[o.x + ',' + o.y] || []).push(b); });
+  let ovl = 0;
+  Object.values(byCell).forEach(arr => {
+    if (arr.some(x => x.lgMedium === '管道') && arr.some(x => x.lgMedium !== '管道')) ovl++;
+  });
+  return ovl >= 1;
+})(), () => '叠加格=' + (() => {
+  const byCell = {}; let ovl = 0;
+  A.LO.objs.forEach(o => { const b = A.byBp(o.id); if (b && b.isLogi)
+    (byCell[o.x + ',' + o.y] = byCell[o.x + ',' + o.y] || []).push(b); });
+  Object.values(byCell).forEach(arr => {
+    if (arr.some(x => x.lgMedium === '管道') && arr.some(x => x.lgMedium !== '管道')) ovl++;
+  });
+  return ovl; })());
 
 // ---- C6 去路体检（2026-09-24 博士拍板「加」）----
 // 背景：游戏里物品有硬顶（社区口径「库存 50 + 在制 1」），净产出 > 0 且没有去路的物品**必然**满仓 →

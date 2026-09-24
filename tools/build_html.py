@@ -494,8 +494,8 @@ nav button.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:
 /* 已接：正对外侧那格放着同类物流件（传送带口↔传送带、管道口↔管道） */
 .lo-port.on{box-shadow:0 0 0 1px #fff,0 0 0 3px rgba(15,110,86,.32)}
 /* 物流件（1×1 可摆放件）：带系=方角青，管系=圆角紫 */
-.lo-cell.lgb{border-color:#2E8B9E;background:rgba(46,139,158,.16);color:#186C7D}
-.lo-cell.lgp{border-color:#7B62C9;background:rgba(123,98,201,.16);color:#5A46A6}
+.lo-cell.lgb{border-color:#2E8B9E;background:rgba(46,139,158,.16);color:#186C7D;z-index:1}
+.lo-cell.lgp{border-color:#7B62C9;background:rgba(123,98,201,.16);color:#5A46A6;z-index:2}
 /* 物流件的接口图（进/出边 + 功能字形或流向箭头）自己画成 SVG，铺满格内 */
 .lo-cell > svg{position:absolute;left:0;top:0;width:100%;height:100%;display:block;overflow:visible}
 /* 选中态（框选/单选共用）：暖色描边，和默认的墨绿区分开 */
@@ -2102,9 +2102,10 @@ function LportDirRot(p,rot,w0,d0){
   for(let k=0;k<n;k++) dir=LOGI_PORT_STEP[dir]||dir;
   return dir;
 }
-/* 某个接口外侧那一格有没有同类物流件 —— 有就是「接上了」 */
+/* 某个接口外侧那一格有没有同类物流件 —— 有就是「接上了」
+   ⭐v152：idx 已按「格 × 介质」双索引（'p:x,y'/'b:x,y'），键位天然介质对齐 */
 function LlogiAt(idx,x,y,isPipe){
-  const o=idx[x+','+y];
+  const o=idx[(isPipe?'p':'b')+':'+x+','+y];
   if(!o) return false;
   const b=byBp(o.id);
   return !!b&&!!b.isLogi&&((!!isPipe)===(b.lgMedium==='管道'));
@@ -4288,6 +4289,7 @@ function RwRoute(placed, res, size, corr, extraBusy){
                     ||((Math.abs(a2.s.x-a2.t.x)+Math.abs(a2.s.y-a2.t.y))
                       -(Math.abs(b2.s.x-b2.t.x)+Math.abs(b2.s.y-b2.t.y))));
   const axis={};   /* 已铺线格的轴向（'h' 横 / 'v' 竖）—— 桥接穿越的判定依据 */
+  const cellMed={};/* ⭐v152 已铺线格的介质（true=管）—— 管×带交叉不放假桥的判定依据（博士 2026-09-24 游戏实锤：3D 里管在上层、带在下层，交叉天然合法无需桥；只有同介质交叉才要桥） */
   jobs.forEach(j=>{
     let s=j.s; let t=j.t;
     const mine=k=>k===K(s.x,s.y)||k===K(t.x,t.y);
@@ -4352,12 +4354,21 @@ function RwRoute(placed, res, size, corr, extraBusy){
       if(!axis[kk]) axis[kk]=myAx;
       busy[kk]=1;
       if(isBr){
-        /* ⭐ 桥格：原线保留，上面叠物流桥 / 管道桥；桥格对后续寻路关闭（一格一桥） */
+        /* ⭐v152：交叉落件**分介质**（博士 2026-09-24 游戏实锤：3D 里管道在上层、传送带在下层
+           —— 管×带交叉直接叠加，不放桥；同介质交叉才占同一层，要物流桥/管道桥立体跨线）。
+           桥格/叠加格都对后续寻路关闭（一格最多一带一管，第三条线绕路）。 */
         delete axis[kk];
-        belts.push({x:c.x, y:c.y, rot:RwRotTo(c,nx), isPipe:j.isP,
-          logiId:(j.isP?'log_pipe_connector':'log_connector'), bridge:true});
+        if(cellMed[kk]===j.isP){
+          /* 同介质：原线保留，上面叠物流桥 / 管道桥 */
+          belts.push({x:c.x, y:c.y, rot:RwRotTo(c,nx), isPipe:j.isP,
+            logiId:(j.isP?'log_pipe_connector':'log_connector'), bridge:true});
+        }else{
+          /* 异介质（管×带）：两层各放各的，渲染层管在上、带在下 */
+          belts.push({x:c.x, y:c.y, rot:RwRotTo(c,nx), isPipe:j.isP});
+        }
       }else{
         belts.push({x:c.x, y:c.y, rot:RwRotTo(c,nx), isPipe:j.isP});
+        cellMed[kk]=j.isP;
       }
     });
     /* 汇流器 / 分流器那几条只算一次成品线，别重复计数 */
@@ -6200,9 +6211,12 @@ function renderLayout(){
   })();
   /* 格子边长档位：14 是原默认值，20 是现在的默认（物流件的流向箭头在 14px 格上只有几像素，看不清） */
   const cellBtns=[14,20,26,32].map(n=>`<button class="lo-size ${LOCELL===n?'on':''}" onclick="Lcell(${n})">${n}px</button>`).join('');
-  /* 物流件占格索引：给接口做「外侧有没有接上」的判定 */
+  /* 物流件占格索引：给接口做「外侧有没有接上」的判定 + 流向拓扑。
+     ⭐v152：物流件按「格 × 介质」双索引 —— 3D 里管道在上层、传送带在下层，一格可同时有管+带
+     （管×带交叉不再放桥，博士 2026-09-24 游戏实锤）。索引键 'p:x,y' / 'b:x,y'；
+     flowNext 同样按介质分表 —— 叠加格里两层的流向互不干扰，各层各推各的进边。 */
   const lgi={};
-  L.objs.forEach(o=>{ const b=byBp(o.id); if(b&&b.isLogi) lgi[o.x+','+o.y]=o; });
+  L.objs.forEach(o=>{ const b=byBp(o.id); if(b&&b.isLogi) lgi[(b.lgMedium==='管道'?'p':'b')+':'+o.x+','+o.y]=o; });
   /* ⭐ 流向表：每个带/管格的「下一格」—— 用来反推每格的进边（弯道渲染要用）。
      ⭐v142：**准入口（箱阀/管阀）也必须进表** —— 它是串接在线上的件，被它替换掉的那格原来是带子，
      下游的弯头格靠「邻居指向我」反推进边；只认带/管的话准入口就成了空气，
@@ -6211,40 +6225,62 @@ function renderLayout(){
   Object.values(lgi).forEach(o=>{
     const b=byBp(o.id);
     if(!b) return;
+    const fk=(b.lgMedium==='管道'?'p':'b')+':'+o.x+','+o.y;
     if(b.lgType==='Connector'||b.lgType==='FluidConnector'){
       /* ⭐v151 续：桥也进流向表（出向按 rot —— RwRotTo 给的就是真实下游方向）。
          桥后那格的进边靠「桥指向我」反推，桥不在表里则那格推不出进边 → 画成直条
          （实测赤铜块@10 的 (13,24) 终点格，上游恰好是桥）。 */
       const v={0:[1,0], 90:[0,1], 180:[-1,0], 270:[0,-1]}[o.rot];
-      if(v) flowNext[o.x+','+o.y]=[o.x+v[0], o.y+v[1]];
+      if(v) flowNext[fk]=[o.x+v[0], o.y+v[1]];
       return;
     }
     if(b.lgType!=='Belt'&&b.lgType!=='Pipe'&&b.lgType!=='BoxValve'&&b.lgType!=='FluidValve') return;
     const out=(lgPortSides(b,o.rot).out||[])[0];
     const v={r:[1,0], b:[0,1], l:[-1,0], t:[0,-1]}[out];
-    if(v) flowNext[o.x+','+o.y]=[o.x+v[0], o.y+v[1]];
+    if(v) flowNext[fk]=[o.x+v[0], o.y+v[1]];
   });
   /* ⭐v107 出料口外格索引：机器某 output 口的外侧格 → {from:带子的进边方向, pipe:是否管道口}。
      孤格带/管夹在两台对角机器之间时没有带子邻居，flowIn 只查带子会推不出进边
      （博士图1「还是不行」）—— 现在机器口也算拓扑。from = 口朝向的反侧（机器在那边）。 */
   const portOut={};
+  /* ⭐v151 续2：feed 起点格（外部暗管接入点）的进边 —— 料从画布外垂直插进这格，
+     它压在哪条边、进边就是朝外那侧；角落取「≠ 第一段走向」的外侧（第一段朝内走时
+     外侧恰为反向，同式成立）。没有这条，feed 起点永远画直条（博士 2026-09-24
+     截图红框三连：「这些是不是要接外部暗管啊，也没有弯」—— 就是它们）。 */
+  const feedStart={};
+  if(L.plan&&L.plan.route) L.plan.route.links.forEach(l=>{
+    if(l.from!=='画布外（暗管接入）') return;
+    const ps=Array.isArray(l.path)?l.path:[];
+    if(!ps.length) return;
+    const p0=ps[0].split(',').map(Number), p1=ps.length>1?ps[1].split(',').map(Number):null;
+    const sx=p0[0], sy=p0[1], S=L.size;
+    const outs=[];
+    if(sy===0) outs.push('t');
+    if(sy===S-1) outs.push('b');
+    if(sx===0) outs.push('l');
+    if(sx===S-1) outs.push('r');
+    if(!outs.length) return;
+    const d0=p1?(p1[0]>sx?'r':p1[0]<sx?'l':p1[1]>sy?'b':'t'):null;
+    feedStart[sx+','+sy]=(d0&&outs.find(o=>o!==d0))||outs[0];
+  });
   const flowIn=(x,y,isPipe)=>{
     const NB={t:[0,-1], b:[0,1], l:[-1,0], r:[1,0]};
     const pm=po=>po&&(po.pipe===undefined||!!po.pipe===!!isPipe);
+    /* ⭐v152：流向表/物流件索引都按介质分键 —— 叠加格里管、带两层各推各的进边，互不可见 */
+    const FK=(px,py)=>(isPipe?'p':'b')+':'+px+','+py;
     for(const d in NB){
       const nx=x+NB[d][0], ny=y+NB[d][1];
-      const nxt=flowNext[nx+','+ny];
+      const nxt=flowNext[FK(nx,ny)];
       if(nxt&&nxt[0]===x&&nxt[1]===y) return d;
       /* ⭐v151 续：桥格双向穿行 —— 桥的 rot/flowNext 只保留**最后一次**穿行的方向，先从另一轴
          穿过桥的线，其下游格靠「桥指向我」推不出进边（实测赤铜耐压罐@10 的 (6,4)：上游 (6,5)
          是桥、rot=180 被后穿的横向线覆盖，本线纵向 (6,5)→(6,4)）。桥四侧皆可进出（lgPortSides），
          真正穿过桥的线在桥另一侧同轴必有格子指回桥 —— 用这条「连续性」补判，不盲目按轴放行
-         （否则恰好停在桥旁的无关格会误得进边）。介质对齐：带桥只服务带线，管桥只服务管线
-         （桥的 lgMedium 来自蓝图、与所叠线同介质，放置校验强制）。 */
-      const nbo=lgi[nx+','+ny], nbb=nbo&&byBp(nbo.id);
-      if(nbb&&(nbb.lgType==='Connector'||nbb.lgType==='FluidConnector')
-         &&(nbb.lgMedium==='管道')===!!isPipe){
-        const b2=flowNext[(nx+NB[d][0])+','+(ny+NB[d][1])];
+         （否则恰好停在桥旁的无关格会误得进边）。介质对齐由 FK 键位天然保证
+         （带桥在 'b:' 表、管桥在 'p:' 表，只查自己那层）。 */
+      const nbo=lgi[FK(nx,ny)], nbb=nbo&&byBp(nbo.id);
+      if(nbb&&(nbb.lgType==='Connector'||nbb.lgType==='FluidConnector')){
+        const b2=flowNext[FK(nx+NB[d][0],ny+NB[d][1])];
         if(b2&&b2[0]===nx&&b2[1]===ny) return d;
       }
     }
@@ -6257,6 +6293,9 @@ function renderLayout(){
        （博士 2026-09-24 截图「入口弯头好了，出口没有」）。 */
     const self=portOut[x+','+y];
     if(pm(self)) return self.from;
+    /* ⭐v151 续2：feed 起点自查 —— 暗管从画布外这一侧插进来（见 feedStart 表注释） */
+    const fs=feedStart[x+','+y];
+    if(fs) return fs;
     return null;
   };
   /* ================================================================
