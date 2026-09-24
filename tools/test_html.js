@@ -825,6 +825,51 @@ chk('点画布尺寸按钮会退出基地选择（回自由模式）',
 loReset(50);
 A.render();
 
+// ---- 5d-7b. v145 多基地：每片基地的摆放各存一份（切走再切回，内容原样还在）----
+// 做法见 docs/最优排布-设计规格.md 第 1 期 Decision 1：基地级字段用访问器代理到 bases[当前基地]，
+// 所以「切换基地 = 改 base 指针」即完成保存/恢复；undo/redo 保持全局操作历史。
+const tabsOf = t => (t.match(/class="lo-tab[ "]/g) || []).length;
+A.LbaseSet('');
+A.LO.objs = [];
+A.LbaseSet('map01_lv001');
+A.Lpick('furnance_1'); A.Lput(3, 3); A.Lput(14, 3);
+const mbA = { n: A.LO.objs.length, size: A.LO.size, pts: A.LO.objs.map(o => o.x + ',' + o.y).join('|') };
+A.LbaseSet('map01_lv002');
+chk('v145 切到另一片基地 = 一张干净画布（内容不串）',
+    A.LO.objs.length === 0 && A.LO.size === 40, A.LO.objs.length + '/' + A.LO.size);
+A.Lpick('storager_1'); A.Lput(2, 2);
+const mbB = { n: A.LO.objs.length, size: A.LO.size };
+A.LbaseSet('map01_lv001');
+chk('v145 切回原基地：机器数与坐标逐点原样恢复',
+    A.LO.objs.length === mbA.n && A.LO.size === mbA.size &&
+    A.LO.objs.map(o => o.x + ',' + o.y).join('|') === mbA.pts,
+    A.LO.objs.length + '/' + A.LO.size + '/' + A.LO.objs.map(o => o.x + ',' + o.y).join('|'));
+A.LbaseSet('map01_lv002');
+chk('v145 再切回去：另一片基地的内容同样还在',
+    A.LO.objs.length === mbB.n && A.LO.size === mbB.size);
+A.LbaseSet('');
+chk('v145 自由模式是独立的一格存储（与各基地互不干扰）',
+    A.LO.objs.length === 0 && A.LO.base === '');
+
+// 基地页签：只列当前那片基地所在地区的基地，当前那片高亮；自由模式不出页签
+A.LbaseSet('map01_lv001'); A.render();
+const tabsHtml = outEl.innerHTML || '';
+chk('v145 基地页签：该地区 4 片基地各一个、当前那片高亮',
+    tabsOf(tabsHtml) === 4 && tabsHtml.indexOf('class="lo-tab on"') >= 0, String(tabsOf(tabsHtml)));
+chk('v145 基地页签带摘要（机器数 / 占地 / 可用格）',
+    /机器 \d+ · 占地 \d+\/\d+/.test(tabsHtml));
+chk('v145 基地页签摘要含协议容量（占用/上限，且超限有标红钩子）',
+    /容量 \d+\/\d+/.test(tabsHtml) && /lo-tabover/.test(html));
+chk('v145 基地页签只列本地区（不混进武陵的基地）', (() => {
+  /* ⚠️ 只能在页签区块里搜 —— 上方的「基地」下拉本来就列全 8 片（含武陵城），整页搜会假红。 */
+  const seg = (tabsHtml.match(/<div class="lo-tabs">[\s\S]*?<\/div>/) || [''])[0];
+  return seg.indexOf('武陵城') < 0 && seg.indexOf('枢纽区') >= 0 && seg.indexOf('谷地通道') >= 0;
+})());
+A.LbaseSet(''); A.render();
+chk('v145 自由模式不出基地页签', tabsOf(outEl.innerHTML || '') === 0);
+loReset(50);
+A.render();
+
 // ---- 5d-8. 生产配方：设施选物品 + 产能配比（博士 2026-09-21）----
 // 317 条配方靠 machineId 挂到设施；选中设施后左栏出现配方下拉；产能用**纯函数**算（给以后排布器打地基）。
 const recs = A.DB.machine_recipes || [];
@@ -1422,7 +1467,9 @@ chk('按地区选燃料：谷地→谷地电池、武陵→武陵电池', (() =>
     (fb['四号谷地'] || []).length === 3 && (fb['武陵'] || []).length === 2;
 })(), JSON.stringify(Object.keys((mp2.power || {}).fuelByRegion || {})));
 chk('协议容量：选枢纽区 → 上限 200（配置表）', (() => {
-  loReset(50); A.LbaseSet('map01_lv001');
+  /* ⚠️ v145 起：切基地是**载入该基地原有内容**（多画布，R1/R2），不再清空 ——
+     要验「空画布不占容量」必须显式清空，不能指望切基地顺手清。 */
+  loReset(50); A.LbaseSet('map01_lv001'); A.LO.objs = [];
   const bw = A.Rbandwidth(A.LO.objs);
   return bw.cap === 200 && bw.use === 0 && bw.over === false && bw.zone === '枢纽区';
 })());
@@ -1433,7 +1480,13 @@ chk('协议容量：设备累加，超上限要报出来', (() => {
   const b = A.byBp('furnance_1');
   A.LO.objs = [A.Lmk(b, 1, 1, 0), A.Lmk(b, 5, 1, 0)];
   const two = A.Rbandwidth(A.LO.objs);
-  const ok = two.use === (+b.bandwidth || 0) * 2 && one.use === (+A.byBp('sp_hub_1').bandwidth || 0);
+  /* ⚠️ 期望值必须从 DB.buildings 取 —— byBp() 的注入版**不含 bandwidth 字段**（注入层裁剪），
+     以前这里用 byBp().bandwidth 算期望，与被修的坏代码同源，所以 0==0 一直假绿（v145 修复时揭穿）。 */
+  const bwOf = id => {
+    const x = ((A.DB.buildings) || []).filter(y => y.id === id)[0] || {};
+    return +x.bandwidth || 0;
+  };
+  const ok = two.use === bwOf('furnance_1') * 2 && one.use === bwOf('sp_hub_1');
   A.LbaseSet(''); loReset(50); A.render();
   return ok;
 })());

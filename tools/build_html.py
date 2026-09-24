@@ -307,6 +307,18 @@ nav button.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:
 .lo-pal.folded .lo-pal-tab{writing-mode:vertical-rl;letter-spacing:3px;width:100%;padding:12px 0;
   border:none;background:none;cursor:pointer;font-family:inherit;font-size:12px;
   font-weight:600;color:var(--accent)}
+/* ⭐v145 多基地页签：一个地区 4 片基地各一个页签，点着切换；一次只渲染当前这片（与单画布同量级）。
+   同屏看不到别片布局的短板由页签上的**摘要**补偿。 */
+.lo-tabs{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0 0}
+.lo-tab{display:flex;flex-direction:column;align-items:flex-start;gap:1px;padding:5px 10px;
+  border:1px solid var(--line2);border-radius:8px;background:var(--panel);cursor:pointer;
+  font-family:inherit;font-size:12px;color:var(--ink2);text-align:left;line-height:1.45}
+.lo-tab:hover{background:var(--chip)}
+.lo-tab.on{background:var(--accent-bg);border-color:var(--accent-line);color:var(--accent);font-weight:600}
+.lo-tabsm{font-size:10.5px;color:var(--ink3);font-weight:400}
+/* ⭐v145 容量超上限：标红（容量比面积更早到顶，超了就是建不了） */
+.lo-tabover{color:#C0392B;font-weight:600}
+.lo-tab.on .lo-tabsm{color:var(--accent)}
 .lo-btn{display:flex;align-items:center;gap:8px;width:100%;text-align:left;background:none;border:1px solid transparent;border-radius:6px;padding:5px 8px;cursor:pointer;font-family:inherit;font-size:12.5px;color:var(--ink)}
 .lo-btn:hover{background:var(--chip)}
 .lo-btn.sel{background:var(--accent-bg);border-color:var(--accent-line);color:var(--accent);font-weight:600}
@@ -2081,8 +2093,40 @@ function Linit(){
       /* ⭐v144 建筑清单默认收起（博士：那 45 项的大块一直摊在画布上方，换基建很麻烦） */
       palOpen:false,
     /* ⭐v109 协议核心出货：{uid:{口index:物品id}} + 当前打开的选货浮层 {uid,idx} */
-    hubPicks:{}, dlvPop:null};
+    hubPicks:{}, dlvPop:null,
+    /* ⭐v145 多基地：基地级字段（LO_BASE_KEYS）按基地各存一份 —— 上面那几个同名字段
+       会被 LbaseHook() 用访问器接管，读写都落到 bases[当前基地] 上。 */
+    bases:{}};
+  LbaseHook();
   return LO;
+}
+/* ⭐v145 多基地状态（Wave 1）
+   问题：单画布状态字段在页面里有 142 处引用，逐个改成「按基地取」等于全量重构。
+   做法：把这 8 个字段改成访问器，读写自动落到 bases[L.base||''] 上 ——
+        调用点一行不动，而「切基地」只要改 L.base 指针就完成了保存/恢复。
+   哪些是基地级：画布尺寸、摆放内容、选中、镜头角度、产线方案与快照、协议核心出货口、选货浮层。
+   哪些**不是**（全局）：base 是活跃指针；undo/redo 是**操作历史**（否则「撤销切基地」跨不回上一个基地，
+   既有测试正是这个语义）；pick/pickRot 是手里拿着的件；显示开关与产线目标参数跨基地共享。 */
+const LO_BASE_KEYS=['size','objs','sel','viewRot','plan','plans','hubPicks','dlvPop'];
+/* 取「当前活跃基地」的存储位；首次访问某基地时按它的建设区边长开一张干净画布 */
+function LbaseSlot(){
+  const L=LO, k=L.base||'';
+  let st=L.bases[k];
+  if(!st){
+    const r=Lbases().filter(x=>x.levelId===k)[0];
+    st=L.bases[k]={size:(r&&r.side)||50, objs:[], sel:[], viewRot:0,
+                   plan:null, plans:[], hubPicks:{}, dlvPop:null};
+  }
+  return st;
+}
+function LbaseHook(){
+  LO_BASE_KEYS.forEach(k=>{
+    Object.defineProperty(LO, k, {
+      configurable:true, enumerable:true,
+      get(){ return LbaseSlot()[k]; },
+      set(v){ LbaseSlot()[k]=v; }
+    });
+  });
 }
 /* 占地规格：rot 为 90/270 时宽进深互换（与游戏内旋转一致） */
 function Lfp(b){
@@ -2122,7 +2166,9 @@ function Lpush(){
 }
 function Lapply(s){
   const L=Linit(), d=JSON.parse(s);
-  L.size=d.size; L.base=d.base||''; L.objs=d.objs;
+  /* ⭐v145 顺序要紧：基地级字段是访问器，先写 size 会落到**当前**基地上；
+     必须先切 base 指针，再把快照的尺寸/内容写进那个基地（否则「撤销切基地」会把尺寸写错格子）。 */
+  L.base=d.base||''; L.size=d.size; L.objs=d.objs;
   L.sel=L.sel.filter(u=>L.objs.some(o=>o.uid===u));
 }
 function Lundo(){
@@ -2211,7 +2257,9 @@ function Lcell(n){
 function Lsize(n){
   const L=Linit(); Lpush();
   const wasBase=!!L.base;
-  L.size=n; L.base=''; L.objs=[]; L.sel=[]; L.pick=null;
+  /* ⭐v145 注意顺序：画布尺寸是**基地级**访问器字段，赋值落到「当前基地」的存储上 ——
+     必须先切回自由模式（L.base=''）再写尺寸，否则会把新尺寸写进刚离开的那片基地。 */
+  L.base=''; L.size=n; L.objs=[]; L.sel=[]; L.pick=null;
   L.msg='画布改为 '+n+'×'+n+'，原有摆放已清空（可撤销）'+(wasBase?'；并回到自由模式（不限地区）':'');
   render();
 }
@@ -2923,7 +2971,12 @@ const LO_PRESET_BUS_REGIONS=['四号谷地'];
 function Lbases(){
   return ((DB.bases&&DB.bases.maxBases)||[]).map(r=>({
     levelId:r.levelId, zoneName:r.zoneName, domainName:r.domainName,
-    role:r.role, side:(r.area&&r.area.side)||0
+    role:r.role, side:(r.area&&r.area.side)||0,
+    /* ⭐v145 页签摘要要显示「占地 / 可用格」——usableCells 已扣协议核心本体 */
+    usableCells:(r.area&&r.area.usableCells)||0,
+    /* ⭐v145 协议容量上限（逐基地不同：谷地主 200 / 谷地通道 100 / 武陵主 350 …）——
+       容量常比面积更早到顶（枢纽区容量只够 100 台、面积能摆 192 台），摘要把占用与上限都摆出来 */
+    capBw:(r.caps&&r.caps.bandwidth)||0
   })).filter(r=>!!r.side);
 }
 function LbaseRow(){ const L=Linit(); return Lbases().filter(r=>r.levelId===L.base)[0]||null; }
@@ -2990,11 +3043,13 @@ function LbaseSet(id){
   const L=Linit();
   const r=Lbases().filter(x=>x.levelId===id)[0];
   if(!r){ L.base=''; L.msg='已回到自由模式（不限地区）'; render(); return; }
-  const sameSize=(L.size===r.side);
-  if(L.base===r.levelId&&sameSize){ L.msg='当前就是「'+r.zoneName+'」'; render(); return; }
+  /* ⭐v145 多基地：切基地 = 只换指针。每个基地的摆放内容各存一份（bases[levelId]），
+     切回来原样还在；不再「尺寸变了就清空」。画布边长由该基地自己的存储提供
+     （首次访问时按 r.side 开画布），所以这里不写 L.size。 */
+  if(L.base===r.levelId){ L.msg='当前就是「'+r.zoneName+'」'; render(); return; }
   Lpush();
-  L.base=r.levelId; L.size=r.side;
-  if(!sameSize){ L.objs=[]; L.sel=[]; L.pick=null; }
+  L.base=r.levelId;
+  L.pick=null;
   /* ⭐⑥-3：切基地 → 收货方向「到」自动跟随当前基地所在地区（货要进**这片产线所在地区**的仓库才有用）；
      「从」若被顶成同一个地区，就自动换成另一片（两地区现状；未来 >2 地区时保持原选择即可）。 */
   const doms=Ldomains();
@@ -3007,7 +3062,7 @@ function LbaseSet(id){
     }
   }
   L.msg='已切到 '+r.domainName+'·'+r.zoneName+'（'+r.role+' '+r.side+'×'+r.side+'）'
-    +(sameSize?'，摆放留着':'，边长变了所以摆放已清空（可撤销）')
+    +'，这片基地的摆放已恢复（各基地内容各存一份、互不影响）'
     +(LisPresetBus()?' —— 谷地：存取线由基地自动铺，左栏不再给源桩 / 基段'
                     :' —— 武陵：源桩 / 基段要自己摆，没接上会标红')
     +(toDom?'；收货方向已对齐「'+LshipFromName()+' → '+LshipToName()+'」':'');
@@ -5122,10 +5177,21 @@ function RmineRate(itemId){
    ② 发电 —— 用电是配置表 ✅；**发电量是社区数值**。
       博士 2026-09-21 定：**谷地用谷地电池、武陵用武陵电池**；一台热能池发电功率 = 燃料功率值。
    ③ 野外采集上限 —— 矿点属关卡场景数据（配置表无），用社区矿脉数 × 每脉点数 × 纯度速率算**区间**。 */
+/* ⭐v145 修 bug：协议容量以前恒算成 0 —— byBp() 读的是「占地蓝图」注入版，注入层把 bandwidth 裁掉了
+   （实测 byBp('furnance_1') 没有该字段，而 DB.buildings 里是 2）→ 页面「📶 协议容量」长期显示 0/200，
+   超限也永不报警。这里建一张 id→bandwidth 索引，从 DB.buildings 取，别再走 byBp。 */
+let LO_BW_IDX=null;
+function LbwOf(id){
+  if(!LO_BW_IDX){
+    LO_BW_IDX={};
+    ((DB&&DB.buildings)||[]).forEach(b=>{ LO_BW_IDX[b.id]=+b.bandwidth||0; });
+  }
+  return LO_BW_IDX[id]||0;
+}
 function Rbandwidth(objs){
   const L=Linit();
   let use=0;
-  (objs||L.objs).forEach(o=>{ const b=byBp(o.id); if(b) use+=(+b.bandwidth||0); });
+  (objs||L.objs).forEach(o=>{ use+=LbwOf(o.id); });
   const row=(((DB.bases||{}).maxBases)||[]).filter(r=>r.levelId===L.base)[0];
   const cap=(row&&row.caps)?row.caps.bandwidth:null;
   return {use:use, cap:cap, over:(cap!=null&&use>cap), zone:row?row.zoneName:null};
@@ -5779,6 +5845,31 @@ function renderLayout(){
   const baseTag=curRow
     ? `<span class="lo-tag">当前：${esc(curRow.domainName)}·${esc(curRow.zoneName)}${presetBus?' · 存取线由基地自动铺':' · 存取线自己摆'}</span>`
     : `<span class="lo-tag">当前：自由模式（不限地区）</span>`;
+  /* ⭐v145 多基地页签（博士 2026-09-24：一键最优排布要能看到这个地区的每张画布）
+     只列**当前基地所在地区**的基地；摘要读各基地已存的那份内容（bases[levelId]），
+     所以没被切过的基地也照样报得出「机器 0 · 占地 0/Y」。 */
+  const baseTabs=(()=>{
+    if(!curRow) return '';                       /* 自由模式不出页签 */
+    const zone=bases.filter(x=>x.domainName===curRow.domainName);
+    if(zone.length<2) return '';
+    return '<div class="lo-tabs">'+zone.map(b=>{
+      const st=L.bases[b.levelId]||{}, bs=st.objs||[];
+      /* ⚠️ 不能用 planRole 判机器 —— 那是排布器生成的件才带的标记，手动摆的没有（v145 实测抓出：摆了 3 台仍显示 0）。
+         正解：非物流件即建筑。 */
+      const mach=bs.filter(o=>{ const bp=byBp(o.id); return bp&&!bp.isLogi; }).length;
+      const used=bs.reduce((a,o)=>a+(o.w||0)*(o.d||0),0);
+      /* ⭐v145 协议容量：逐件累加（与 Rbandwidth 同口径）。超上限标红 ——
+         容量常比面积更早到顶，超了就是「建不了」，必须一眼看见。 */
+      const bwUse=bs.reduce((a,o)=>a+LbwOf(o.id),0);
+      const bwCap=b.capBw||0;
+      const bwOver=bwCap>0&&bwUse>bwCap;
+      const hasPlan=!!(st.plan&&st.plan.res);
+      return `<button class="lo-tab ${b.levelId===L.base?'on':''}" onclick="LbaseSet('${b.levelId}')"
+        title="切到 ${esc(b.zoneName)}（${esc(b.role)} ${b.side}×${b.side}）—— 每片基地的摆放各存一份，切回来原样还在"
+        ><span>${esc(b.zoneName)} · ${esc(b.role)} ${b.side}×${b.side}</span>
+        <span class="lo-tabsm">机器 ${mach} · 占地 ${used}/${b.usableCells||'?'} · <span class="${bwOver?'lo-tabover':''}">容量 ${bwUse}/${bwCap||'?'}</span>${hasPlan?' · 已出产线':''}</span></button>`;
+    }).join('')+'</div>';
+  })();
   /* 格子边长档位：14 是原默认值，20 是现在的默认（物流件的流向箭头在 14px 格上只有几像素，看不清） */
   const cellBtns=[14,20,26,32].map(n=>`<button class="lo-size ${LOCELL===n?'on':''}" onclick="Lcell(${n})">${n}px</button>`).join('');
   /* 物流件占格索引：给接口做「外侧有没有接上」的判定 */
@@ -6446,6 +6537,7 @@ function renderLayout(){
       <button class="lo-size ${L.redo.length?'':'off'}" onclick="Lredo()">重做（Ctrl+Y）</button>
       <button class="lo-size" onclick="Lclear()">清空</button>
     </div>
+    ${baseTabs}
     ${recipeBlock}
     <div class="lo-wrap">
       <div class="lo-pal ${L.palOpen?'':'folded'}">${L.palOpen?`
