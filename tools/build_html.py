@@ -2268,7 +2268,11 @@ function LvalveBad(x, y, med){
     const qb=byBp(q.id);
     return (qb&&qb.isLogi&&qb.lgMedium===med&&(qb.lgType==='Belt'||qb.lgType==='Pipe'))?q:null; };
   const me=cellAt(x,y);
-  const myDir=me?LrotDir(me.rot):'r';
+  const _meB=me?byBp(me.id):null;
+  /* ⭐v141 关键修正：**阀门类的 rot 基准差 90°** —— 读方向前必须先转回传送带语义，
+     否则竖直段上会被读成横向、误判成拐角（博士截图 3：竖直带中间放准入口也标红）。 */
+  const _meRot=(me&&_meB&&LisOnLine(_meB))?(((me.rot-90)%360)+360)%360:(me?me.rot:0);
+  const myDir=me?LrotDir(_meRot):'r';
   const UP=[[0,-1,'d'],[0,1,'u'],[-1,0,'r'],[1,0,'l']];      /* [dx,dy, 该邻居「指向我」时应有的流向] */
   let up=null, anyNb=false;
   UP.forEach(u=>{ const q=nbOf(u[0],u[1]); if(!q) return; anyNb=true;
@@ -2280,6 +2284,29 @@ function LvalveBad(x, y, med){
   if(up && !down) return '这一格是' + med + '的末端/断头（顺着流向没有接下去的' + med + '，放这里会把线截断）';
   if(!up && !down) return '这一格和'+med+'接不上（我的流向那侧没有'+med+'）';
   return null;
+}
+/* ⭐v141 阀门朝向重算：把选中/移动过的阀门 rot 按**新位置所在的线段流向**重设 ——
+   拖到别的线上时 rot 不会自己更新，会一直被标红/朝向不对（博士截图 2）。 */
+function LvalveResync(uids){
+  const L=Linit();
+  const toBelt={r:0,d:90,l:180,u:270};
+  (uids||[]).forEach(u=>{
+    const o=L.objs.filter(q=>q.uid===u)[0]; if(!o) return;
+    const b=byBp(o.id); if(!b||!LisOnLine(b)) return;
+    const med=b.lgMedium;
+    const nbOf=(dx,dy)=>{
+      const q=L.objs.filter(z=>z.x===o.x+dx&&z.y===o.y+dy&&(z.w||1)===1&&(z.d||1)===1)[0];
+      if(!q) return null; const qb=byBp(q.id);
+      return (qb&&qb.isLogi&&qb.lgMedium===med&&(qb.lgType==='Belt'||qb.lgType==='Pipe'))?q:null; };
+    let dir=null;
+    [[0,-1,'d'],[0,1,'u'],[-1,0,'r'],[1,0,'l']].forEach(u2=>{
+      const q=nbOf(u2[0],u2[1]); if(q&&LrotDir(q.rot)===u2[2]) dir=u2[2]; });
+    if(!dir){
+      const DD={r:[1,0],d:[0,1],l:[-1,0],u:[0,-1]};
+      Object.keys(DD).forEach(k=>{ if(!dir&&nbOf(DD[k][0],DD[k][1])) dir=k; });
+    }
+    if(dir) o.rot=LtwinRot(b, toBelt[dir]);
+  });
 }
 function Lput(x,y){
   const L=Linit();
@@ -2779,6 +2806,7 @@ function LonMouseUp(){
         const f=st.from.filter(q=>q.uid===u)[0];
         if(o&&f){ o.x=f.x+st.dx; o.y=f.y+st.dy; }
       });
+      LvalveResync(st.sel);   /* ⭐v141 移动到新线路上 → 阀门朝向跟着重算 */
       L.msg='已移动 '+st.sel.length+' 座（'+st.dx+', '+st.dy+'）';
     } else {
       /* ⭐ 2026-09-21（博士「拖到传送带上放不上」）：拖的是分/汇流器（Router/FluidRepeater 单选）
@@ -5681,11 +5709,14 @@ function renderLayout(){
   /* 物流件占格索引：给接口做「外侧有没有接上」的判定 */
   const lgi={};
   L.objs.forEach(o=>{ const b=byBp(o.id); if(b&&b.isLogi) lgi[o.x+','+o.y]=o; });
-  /* ⭐ 流向表：每个带/管格的「下一格」—— 用来反推每格的进边（弯道渲染要用） */
+  /* ⭐ 流向表：每个带/管格的「下一格」—— 用来反推每格的进边（弯道渲染要用）。
+     ⭐v142：**准入口（箱阀/管阀）也必须进表** —— 它是串接在线上的件，被它替换掉的那格原来是带子，
+     下游的弯头格靠「邻居指向我」反推进边；只认带/管的话准入口就成了空气，
+     于是「放在转折格旁边」时转折格反推不到上游 → 被画成直线（博士 2026-09-24 实测三报之一）。 */
   const flowNext={};
   Object.values(lgi).forEach(o=>{
     const b=byBp(o.id);
-    if(!b||(b.lgType!=='Belt'&&b.lgType!=='Pipe')) return;
+    if(!b||(b.lgType!=='Belt'&&b.lgType!=='Pipe'&&b.lgType!=='BoxValve'&&b.lgType!=='FluidValve')) return;
     const out=(lgPortSides(b,o.rot).out||[])[0];
     const v={r:[1,0], b:[0,1], l:[-1,0], t:[0,-1]}[out];
     if(v) flowNext[o.x+','+o.y]=[o.x+v[0], o.y+v[1]];
