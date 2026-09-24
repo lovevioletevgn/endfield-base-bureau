@@ -3797,7 +3797,170 @@ chkHeavy('⑥-4+v99 端到端（重）：膨地啪@30（12 炉 = 游戏上限满
   }
 })();
 
-// ---- C6 去路体检（2026-09-24 博士拍板「加」）----
+// ---- v151 外部流体接入口（2026-09-24 博士定稿）----
+// 博士截图实锤：实际玩法是拉很多根水管分别供给多台设备 ——「每流体一条」的收窄版已回退，
+// 现在是**每台消费机器各拉一条边缘进管**（暗管贴画布外，画布内由排布器铺到每台机器的管口）。
+// ⚠️ 口径：feed 失败不进「手动连」计数（那是 ⑤-3 内部连通率的回归口径），进 feedFail 正式点名。
+let v151N = null;   /* 赤铜块@10 现场（LawRun 很慢，后续锁复用不重跑） */
+chk('v151 外部接入：赤铜块@10 = 8 台反应池 × 2 种外部流体，16 根边缘进管「每台一条」全有着落', (() => {
+  tab = 'layout'; A.Linit(); A.LO.objs = []; A.LO.sel = []; A.LO.size = 80;
+  A.LawRun('item_copper_nugget', 10);
+  const P = A.LO.plan, R = P.route;
+  const pools = P.plan.objs.filter(o => o.node && o.node.machineName === '反应池');
+  v151N = { feeds: R.feeds, fail: R.feedFail, pools: pools.length };
+  const cover = it => v151N.feeds.filter(f => f.item === it).length
+    + v151N.fail.filter(f => f.item === it).length;
+  return pools.length === 8 && cover('液化息壤') === 8 && cover('污水') === 8
+    && v151N.feeds.every(f => f.need === 5);
+})(), () => JSON.stringify(v151N && { ok: v151N.feeds.length, fail: v151N.fail.length, pools: v151N.pools }));
+
+chk('v151 外部接入：接入点全在画布边缘、两两不同格（不挤在同一个口上）', (() => {
+  const size = 80, es = v151N.feeds.map(f => f.edge.x + ',' + f.edge.y);
+  return es.length === v151N.feeds.length && new Set(es).size === es.length
+    && v151N.feeds.every(f => f.edge.x === 0 || f.edge.y === 0 || f.edge.x === size - 1 || f.edge.y === size - 1);
+})(), () => JSON.stringify(v151N.feeds.map(f => f.edge)));
+
+chk('v151 外部接入：铺不出的进管全部点名进 feedFail（不静默丢；why/to/坐标齐全）', (() => {
+  return v151N.feeds.length + v151N.fail.length === 16 && v151N.fail.length <= 2
+    && v151N.fail.every(f => f.item && f.why && f.to);
+})(), () => JSON.stringify(v151N.fail));
+
+chk('v151 外部接入：内部连通率不被外部接入挤坏（赤铜块@10 手动连 ≤2 = v150 基线口径）', (() => {
+  const n = A.LO.plan.route.warns.filter(w => w.indexOf('手动连') >= 0).length;
+  return n <= 2;
+})(), () => String(A.LO.plan.route.warns.filter(w => w.indexOf('手动连') >= 0).length));
+
+chk('v151 外部接入：赤铜耐压罐@10（含惰气外部输入）6 根进管全铺成、零失败、接入点唯一贴边', (() => {
+  tab = 'layout'; A.Linit(); A.LO.objs = []; A.LO.sel = []; A.LO.size = 70;
+  A.LawRun('item_copper_jar', 10);
+  const R = A.LO.plan.route, size = 70;
+  const es = R.feeds.map(f => f.edge.x + ',' + f.edge.y);
+  return R.feeds.length === 6 && R.feedFail.length === 0 && new Set(es).size === 6
+    && R.feeds.every(f => f.edge.x === 0 || f.edge.y === 0 || f.edge.x === size - 1 || f.edge.y === size - 1);
+})(), () => JSON.stringify(A.LO.plan.route.feeds.map(f => f.item + ' [' + f.edge.x + ',' + f.edge.y + ']')));
+
+// ---- v151 末端朝向修复（博士截图实锤「进出口的弯道又不对了」）----
+// 根因：RwPath 的路径含终点格，铺线循环里最后一格 nx=path[k+1]||t 退化成自己指自己 →
+// RwRotTo(t,t) 落到 LrotFrom 的 return 270 → **每条自动线的终点格箭头恒朝上**，与流向对撞
+//（上游 ↓ 它 ↑）。修法：job 带 tInto（机器端口格 / 汇分流体本体），终点格朝向指向它。
+// 不变量：终点格的出向绝不指回自己的上游邻居（= 不许在机器口掉头）。
+chk('v151 末端朝向：赤铜耐压罐@10 全部连线的终点格箭头都指向下游，无一「掉头指回上游」', (() => {
+  const DL = { 0: [1, 0], 90: [0, 1], 180: [-1, 0], 270: [0, -1] };
+  const rotAt = {};
+  A.LO.objs.forEach(o => { const b = A.byBp(o.id); if (b && b.isLogi) rotAt[o.x + ',' + o.y] = o.rot; });
+  let n = 0, bad = [];
+  A.LO.plan.route.links.forEach(l => {
+    const ps = Array.isArray(l.path) ? l.path : [];
+    if (ps.length < 2) return;
+    n++;
+    const last = ps[ps.length - 1].split(',').map(Number);
+    const prev = ps[ps.length - 2].split(',').map(Number);
+    const r = rotAt[last[0] + ',' + last[1]];
+    if (r === undefined) { bad.push(ps[ps.length - 1] + ' 无物流件'); return; }
+    const d = DL[r];
+    if (last[0] + d[0] === prev[0] && last[1] + d[1] === prev[1]) bad.push(ps[ps.length - 1] + ' rot=' + r);
+  });
+  return n >= 10 && bad.length === 0;
+})(), () => 'links=' + A.LO.plan.route.links.length + ' bad=' + JSON.stringify(
+  (() => { const DL = { 0: [1, 0], 90: [0, 1], 180: [-1, 0], 270: [0, -1] }; const rotAt = {};
+    A.LO.objs.forEach(o => { const b = A.byBp(o.id); if (b && b.isLogi) rotAt[o.x + ',' + o.y] = o.rot; });
+    const out = []; A.LO.plan.route.links.forEach(l => { const ps = Array.isArray(l.path) ? l.path : [];
+      if (ps.length < 2) return; const last = ps[ps.length - 1].split(',').map(Number);
+      const prev = ps[ps.length - 2].split(',').map(Number); const r = rotAt[last[0] + ',' + last[1]];
+      if (r === undefined) { out.push(ps[ps.length - 1] + ' 无件'); return; }
+      const d = DL[r]; if (last[0] + d[0] === prev[0] && last[1] + d[1] === prev[1]) out.push(ps[ps.length - 1] + ' rot=' + r); });
+    return out; })()));
+
+// ---- v151 出口弯头（博士第二针：「入口弯头好了，出口没有」）----
+// 根因：flowIn 只会查「邻居的 flowNext / 邻居的 portOut」——线**起点格**（机器口/汇流器出格
+// 的外侧格）的进边来源是机器口/汇分流体本体，两查都够不着 → 永远画直条。
+// 修法：① 汇流器/分流器（lgType=Router）的出格进 portOut（from=本体侧；pipe 通配——objs 转存
+// 丢了 isPipe 字段，管汇流器回落 lgMedium='传送带' 会匹配不上，而汇流器与所连线永远同介质）；
+// ② 桥（Connector/FluidConnector）按 rot 进 flowNext（桥后那格的进边靠它）；
+// ③ flowIn 加「自查」：这格自己就是口/出格的外侧格 → 进边=本体侧。
+// 下面按渲染层同口径复刻三表，断言：非 feed 的起点格与全部终点格的进边都可反推。
+chk('v151 出口弯头：连线起点（机器口/汇流器出格）与终点的进边全部可反推（feed 边缘格除外）', (() => {
+  const lgi = {};
+  A.LO.objs.forEach(o => { const b = A.byBp(o.id); if (b && b.isLogi) lgi[o.x + ',' + o.y] = o; });
+  const flowNext = {};
+  Object.values(lgi).forEach(o => {
+    const b = A.byBp(o.id); if (!b) return;
+    if (b.lgType === 'Connector' || b.lgType === 'FluidConnector') {
+      const v = { 0: [1, 0], 90: [0, 1], 180: [-1, 0], 270: [0, -1] }[o.rot];
+      if (v) flowNext[o.x + ',' + o.y] = [o.x + v[0], o.y + v[1]];
+      return;
+    }
+    if (b.lgType !== 'Belt' && b.lgType !== 'Pipe' && b.lgType !== 'BoxValve' && b.lgType !== 'FluidValve') return;
+    const out = (A.lgPortSides(b, o.rot).out || [])[0];
+    const v = { r: [1, 0], b: [0, 1], l: [-1, 0], t: [0, -1] }[out];
+    if (v) flowNext[o.x + ',' + o.y] = [o.x + v[0], o.y + v[1]];
+  });
+  const portOut = {};
+  A.LO.objs.forEach(o => {
+    const b = A.byBp(o.id);
+    if (b && b.isLogi && b.lgType === 'Router') {
+      const OPPT = { t: 'b', b: 't', l: 'r', r: 'l' };
+      (A.lgPortSides(b, o.rot).out || []).forEach(sd => {
+        const v = { r: [1, 0], b: [0, 1], l: [-1, 0], t: [0, -1] }[sd];
+        if (!v) return;
+        const kx = o.x + v[0], ky = o.y + v[1];
+        if (kx < 0 || ky < 0) return;
+        portOut[kx + ',' + ky] = { from: OPPT[sd] };
+      });
+      return;
+    }
+    if (!b || b.isLogi) return;
+    const fp = A.Lfp(b);
+    (b.ports || []).forEach(p => {
+      const q = A.LportXY(p, o.rot, fp[0], fp[1]);
+      if (q.x < 0 || q.x >= o.w || q.z < 0 || q.z >= o.d) return;
+      const dir = A.LportDirRot(p, o.rot, fp[0], fp[1]);
+      const dx = dir === 'l' ? -1 : dir === 'r' ? 1 : 0, dz = dir === 'u' ? -1 : dir === 'd' ? 1 : 0;
+      if (dir && p.kind === 'output') portOut[(o.x + q.x + dx) + ',' + (o.y + q.z + dz)] =
+        { from: ({ t: 'b', b: 't', l: 'r', r: 'l' })[dir === 'u' ? 't' : dir === 'd' ? 'b' : dir], pipe: !!p.isPipe };
+    });
+  });
+  const flowIn = (x, y, isPipe) => {
+    const NB = { t: [0, -1], b: [0, 1], l: [-1, 0], r: [1, 0] };
+    const pm = po => po && (po.pipe === undefined || !!po.pipe === !!isPipe);
+    for (const d in NB) {
+      const nx = x + NB[d][0], ny = y + NB[d][1];
+      const nxt = flowNext[nx + ',' + ny];
+      if (nxt && nxt[0] === x && nxt[1] === y) return d;
+      // ⭐v151 续：桥格双向穿行 —— 桥的 flowNext 只存最后一次穿行方向，先从另一轴穿过桥的线
+      // 其下游格推不出进边。补判「连续性」：桥另一侧同轴有格子指回桥（+介质对齐）。
+      const nbo = lgi[nx + ',' + ny], nbb = nbo && A.byBp(nbo.id);
+      if (nbb && (nbb.lgType === 'Connector' || nbb.lgType === 'FluidConnector')
+        && (nbb.lgMedium === '管道') === !!isPipe) {
+        const b2 = flowNext[(nx + NB[d][0]) + ',' + (ny + NB[d][1])];
+        if (b2 && b2[0] === nx && b2[1] === ny) return d;
+      }
+    }
+    for (const d in NB) { const po = portOut[(x + NB[d][0]) + ',' + (y + NB[d][1])]; if (pm(po)) return po.from; }
+    const self = portOut[x + ',' + y];
+    if (pm(self)) return self.from;
+    return null;
+  };
+  let n = 0, bad = [];
+  A.LO.plan.route.links.forEach(l => {
+    const ps = Array.isArray(l.path) ? l.path : [];
+    if (ps.length < 2) return;
+    const isFeed = l.from === '画布外（暗管接入）';
+    const s0 = ps[0].split(',').map(Number), e0 = ps[ps.length - 1].split(',').map(Number);
+    if (!isFeed && !flowIn(s0[0], s0[1], !!l.isPipe)) bad.push('起 ' + ps[0] + ' ' + l.item);
+    if (!flowIn(e0[0], e0[1], !!l.isPipe)) bad.push('终 ' + ps[ps.length - 1] + ' ' + l.item);
+    n++;
+  });
+  return n >= 10 && bad.length === 0;
+})(), () => JSON.stringify((() => {
+  const bad = [];
+  A.LO.plan.route.links.forEach(l => {
+    const ps = Array.isArray(l.path) ? l.path : [];
+    if (ps.length < 2) return;
+    bad.push((l.from === '画布外（暗管接入）' ? 'F' : 'S') + ps[0] + '→' + ps[ps.length - 1] + ' ' + l.item);
+  });
+  return bad; })()));
+
 // ---- C6 去路体检（2026-09-24 博士拍板「加」）----
 // 背景：游戏里物品有硬顶（社区口径「库存 50 + 在制 1」），净产出 > 0 且没有去路的物品**必然**满仓 →
 // 在制格卡死 → 该机停机 → 沿产线**反向逐级堵死** → 整条支线停产，并会跨线连锁

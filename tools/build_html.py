@@ -4063,7 +4063,7 @@ function RwRoute(placed, res, size, corr, extraBusy){
           if(!pick){ warns.push(parent.name+' ← '+child.name+'：端口/端点被占了，请手动连'); return; }
           used[pick.key]=1;
           reserved[K(outOf(pick).x,outOf(pick).y)]=1; reserved[K(tPt.x,tPt.y)]=1;
-          jobs.push({s:outOf(pick), t:tPt, isP:isP, parent:parent, child:child});
+          jobs.push({s:outOf(pick), t:tPt, isP:isP, parent:parent, child:child, tInto:{x:dst.p.gx, y:dst.p.gy}});
           return;
         }
         /* 多台一组：在「下游机器正下方的通道」里找个空位放汇流器 */
@@ -4074,7 +4074,7 @@ function RwRoute(placed, res, size, corr, extraBusy){
             const ocs=portCands(src,'output'), pick=ocs.filter(c=>free(outOf(c)))[0];
             if(!pick||!free(tPt)) return;
             used[pick.key]=1; reserved[K(outOf(pick).x,outOf(pick).y)]=1; reserved[K(tPt.x,tPt.y)]=1;
-            jobs.push({s:outOf(pick), t:tPt, isP:isP, parent:parent, child:child});
+            jobs.push({s:outOf(pick), t:tPt, isP:isP, parent:parent, child:child, tInto:{x:dst.p.gx, y:dst.p.gy}});
           });
           return;
         }
@@ -4092,10 +4092,10 @@ function RwRoute(placed, res, size, corr, extraBusy){
           if(!pick){ dropN++; return; }
           used[pick.key]=1;
           reserved[K(outOf(pick).x,outOf(pick).y)]=1; reserved[K(ip.x,ip.y)]=1;
-          jobs.push({s:outOf(pick), t:ip, isP:isP, parent:parent, child:child, intoMerge:true});
+          jobs.push({s:outOf(pick), t:ip, isP:isP, parent:parent, child:child, intoMerge:true, tInto:cell});
         });
         reserved[K(tPt.x,tPt.y)]=1;
-        jobs.push({s:outs, t:tPt, isP:isP, parent:parent, child:child, fromMerge:true, mergeCell:cell});
+        jobs.push({s:outs, t:tPt, isP:isP, parent:parent, child:child, fromMerge:true, mergeCell:cell, tInto:{x:dst.p.gx, y:dst.p.gy}});
         if(dropN-d0) warns.push(parent.name+' ← '+child.name+'：有 '+(dropN-d0)+' 台上游并进汇流器的线没连上（端口/通道被占），请手动连');
       });
     }else if(outNeed>outCap && M>N){
@@ -4124,7 +4124,7 @@ function RwRoute(placed, res, size, corr, extraBusy){
           used[pick.key]=1;
           reserved[K(outOf(pick).x,outOf(pick).y)]=1;
           reserved[K(outOf(targets[0].p).x,outOf(targets[0].p).y)]=1;
-          jobs.push({s:outOf(pick), t:outOf(targets[0].p), isP:isP, parent:parent, child:child});
+          jobs.push({s:outOf(pick), t:outOf(targets[0].p), isP:isP, parent:parent, child:child, tInto:{x:targets[0].p.gx, y:targets[0].p.gy}});
           return;
         }
         /* 每 3 台下游一个分流器 —— 一个不够就并排摆第二个 */
@@ -4142,12 +4142,12 @@ function RwRoute(placed, res, size, corr, extraBusy){
           spN++;
           const outCells=[{x:cell.x,y:cell.y-1},{x:cell.x-1,y:cell.y},{x:cell.x+1,y:cell.y}];
           used[pick.key]=1; reserved[K(outOf(pick).x,outOf(pick).y)]=1; reserved[K(inCell.x,inCell.y)]=1;
-          jobs.push({s:outOf(pick), t:inCell, isP:isP, parent:parent, child:child, intoSplit:true});
+          jobs.push({s:outOf(pick), t:inCell, isP:isP, parent:parent, child:child, intoSplit:true, tInto:cell});
           grp.forEach((d,ti)=>{
             const oc=outCells[ti%outCells.length];
             if(busy[K(oc.x,oc.y)]||reserved[K(oc.x,oc.y)]){ dropN++; return; }
             reserved[K(oc.x,oc.y)]=1; reserved[K(outOf(d.p).x,outOf(d.p).y)]=1;
-            jobs.push({s:oc, t:outOf(d.p), isP:isP, parent:parent, child:child, fromSplit:true});
+            jobs.push({s:oc, t:outOf(d.p), isP:isP, parent:parent, child:child, fromSplit:true, tInto:{x:d.p.gx, y:d.p.gy}});
           });
         }
       });
@@ -4162,29 +4162,193 @@ function RwRoute(placed, res, size, corr, extraBusy){
         if(!pick){ warns.push(parent.name+' ← '+child.name+'：第 '+(i+1)+' 条的端口/端点被占了，请手动连'); continue; }
         used[pick.key]=1;
         reserved[K(outOf(pick).x,outOf(pick).y)]=1; reserved[K(outOf(dst.p).x,outOf(dst.p).y)]=1;
-        jobs.push({s:outOf(pick), t:outOf(dst.p), isP:isP, parent:parent, child:child});
+        jobs.push({s:outOf(pick), t:outOf(dst.p), isP:isP, parent:parent, child:child, tInto:{x:dst.p.gx, y:dst.p.gy}});
       }
     }
   });
 
+  /* ⭐v151 外部流体接入口（博士 2026-09-24 定稿）—————————————————————————————————
+     背景：野外的液体/气体原料（清水、气体、溶液…）在 `Rexplode` 里被标成 `external`（machines=0），
+     原来画布上**不摆也不连** —— 报告只写一句「建议外部供应」，产线在画布上是**断的**。
+     博士的实际用法：他用**暗管**把野外流体拉到**画布旁边**（画布外，不在画布内），
+     所以排布器只要**在画布边缘占一格当接入点**，从那一格铺管道接到用料机器的进料管口。
+     → 报告给出接入点坐标，博士照着把暗管出口贴在画布外面那一格的外侧。
+     ⚠️ **画布外那段归博士，排布器一概不管**（也管不了：库里没有矿点逐点坐标）。
+     ⚠️ 没有 external 流体时**一行都不多跑** —— 老行为逐字节不变（回归锁靠这个）。
+     ⚠️ 放在阶段一之后、阶段二之前：这样能直接复用 `used`（端口占用）/`reserved`（端点格）/
+        `busy`（已占格）三张表，不必另起一套状态。 */
+  const feeds=[];
+  const feedFail=[];                    /* 没铺出来的外部接入（不静默丢：报告与回归测试都点名）。
+                                           ⚠️ 口径与「手动连」分开：那是内部产线连通率的回归口径
+                                           （⑤-3），外部接入是 v151 新增功能，各自盯各自的。 */
+  const feedUsed={};                    /* 已分配的接入点（主选格），避免两条线抢同一格；
+                                           备选格不占名 —— 走线阶段谁先铺谁得，重试时按 busy/feedUsed 现查 */
+  /* 画布四条边全部格子，按「离 (cx,cy) 的曼哈顿距离」从近到远 —— 外部接入点从这里挑 */
+  const edgePick=(cx,cy)=>{
+    const es=[];
+    for(let x0=0;x0<size;x0++){ es.push({x:x0, y:0}); es.push({x:x0, y:size-1}); }
+    for(let y0=1;y0<size-1;y0++){ es.push({x:0, y:y0}); es.push({x:size-1, y:y0}); }
+    es.sort((a1,b1)=>(Math.abs(a1.x-cx)+Math.abs(a1.y-cy))-(Math.abs(b1.x-cx)+Math.abs(b1.y-cy)));
+    return es;
+  };
+  if((res.externals||[]).length){
+    res.externals.forEach(iid=>{
+      if((byNode[iid]||[]).length) return;                 /* 画布上有人自己产它 → 不需要外部接入 */
+      if(!RwFluid(RwPhaseOf(iid))) return;                 /* 只处理流体：固体走无线，不需要管子 */
+      const users=[];                                      /* 谁在用它（external 节点挂在机器的 children 上） */
+      res.machines.forEach(m=>{
+        (m.children||[]).forEach(c=>{ if(!c.recipeId && c.itemId===iid) users.push({m:m, d:c.demand}); });
+      });
+      if(!users.length) return;
+      /* ⭐每台消费机器各拉**一条**边缘进管 —— 博士 2026-09-24 截图实锤：他实际玩法就是拉很多根
+         水管分别供给多台设备（上一版把「画个管道」误读成「一个流体只接一条」，已纠正）。
+         拥塞对策（曾经 8 池 × 2 流体 = 16 条管子堵掉 4 条的教训，靠下面三条解决而不是靠砍线）：
+         ① 接入点候选 = **整条四边**按「离这台机器的距离」排序 —— 只取中心 ±4 时 16 根管子
+            会把格子抢光，被迫退到对面边 → 横穿画布的长线必堵；
+         ② 同一流体的多台机器按「离边缘距离」从近到远分配，紧挨的机器自然拿到相邻格、沿边排开；
+         ③ 走线失败时换备选接入点重试（走线循环里的 edgeAlts），不急着报「请手动连」。 */
+      const edgeDistOf=e=>{
+        const os=placed.filter(o=>o.node===e.m);
+        return os.length ? Math.min.apply(null, os.map(o=>
+          Math.min(o.x, o.y, size-1-(o.x+o.w-1), size-1-(o.y+o.d-1)))) : 1e9;
+      };
+      users.sort((a1,b1)=>edgeDistOf(a1)-edgeDistOf(b1));
+      users.forEach(u=>{
+        const m=u.m;
+        const insts=placed.filter(o=>o.node===m);
+        /* 单台需求 = 节点总需求 ÷ 实体数 —— 每根管子只背自己那台机器的量，报告不虚报 */
+        const dI=insts.length>1 ? Math.round(u.d/insts.length*100)/100 : u.d;
+        insts.forEach(o=>{
+          /* ① 这台机器**空闲的进料管口**（口径与阶段一 portCands 一致：kind=input + isPipe） */
+          const b=o.b, fp=Lfp(b), cands=[];
+          (b.ports||[]).filter(p=>p.kind==='input' && p.isPipe).forEach(p=>{
+            const q=LportXY(p,o.rot,fp[0],fp[1]);
+            if(q.x<0||q.x>=o.w||q.z<0||q.z>=o.d) return;
+            const key=uidOf(o)+'input'+p.index+'P';
+            if(used[key]) return;
+            /* ⚠️ **dir 必须带上**（与阶段一 portCands 逐字段对齐）：`outOf()` 靠 `p.dir` 算
+               「端口外侧那一格」；漏掉它 dir=undefined → 偏移量算成 0 → 外侧格退化成**端口自身格**，
+               而那一格恒是机器本体 → busy 恒真 → 该机器所有进料口统统判「无空闲」。
+               v151 实测踩过：8 台反应池 × 2 个外部流体 = 16 条全假失败，报「没有空闲进料管口」。 */
+            const c={key:key, gx:o.x+q.x, gy:o.y+q.z, dir:LportDirRot(p,o.rot,fp[0],fp[1])};
+            const tp=outOf(c);
+            if(tp.x<0||tp.y<0||tp.x>=size||tp.y>=size) return;
+            if(busy[K(tp.x,tp.y)]||reserved[K(tp.x,tp.y)]) return;
+            cands.push(c);
+          });
+          const pick=cands[0];
+          if(!pick){
+            feedFail.push({item:RwItemName(iid), to:m.machineName, why:'port'});
+            warns.push('外部接入：'+m.machineName+'（'+RwItemName(iid)+'）没有空闲进料管口，画布内这一段请自己补管'); return;
+          }
+          /* ② 接入点 = 画布四条边里离这台机器最近、且空闲的一格（管道最短）。
+             ⭐ 候选 = **整条四边**按曼哈顿距离排序，不是只取中心 ±4 —— 16 根管子会把 ±4 的
+                格子抢光，后面被迫退到对面边 → 横穿画布的长线必堵（v151 实测教训）。
+                同一台机器的多个流体、紧挨着的多台机器，按排序天然拿到相邻格、沿边排开。
+             ⭐ 另留 eAlts（接下来的几个空闲格）给走线失败时换格重试 —— 重试发生在走线阶段
+                （那时内部线路已铺完，哪个格子真空闲才见分晓）。 */
+          const cx=Math.max(0,Math.min(size-1,Math.round(o.x+o.w/2)));
+          const cy=Math.max(0,Math.min(size-1,Math.round(o.y+o.d/2)));
+          const freeE=edgePick(cx,cy).filter(e=>!busy[K(e.x,e.y)]&&!feedUsed[K(e.x,e.y)]&&!reserved[K(e.x,e.y)]);
+          if(!freeE.length){
+            feedFail.push({item:RwItemName(iid), to:m.machineName, why:'edge'});
+            warns.push('外部接入：'+m.machineName+' 找不到空闲的画布边缘格，'+RwItemName(iid)+' 画布内这一段请自己补管'); return;
+          }
+          const s=freeE[0], eAlts=freeE.slice(1,25);
+          used[pick.key]=1; feedUsed[K(s.x,s.y)]=1;
+          /* ⚠️ 端口外侧格**不进 reserved**：提前预留会挤压内部走线的路径空间 —— 实测把
+             赤铜块@10 的「手动连」从 ≤2 顶到 3（16 个预留格正好压在池子旁边的通道上）。
+             feed 线本来就排到最后铺，届时外侧格若真被内部线占了，走线循环里会
+             **换端口重试**（portAlts），比提前占坑更稳。 */
+          const t=outOf(pick);
+          /* ⚠️ 方向必须对齐走线循环的口径（links 语义 = **from 供给方 → to 消费方**）：
+             **parent = 消费它的那台机器**、**child = 画布外的暗管（虚拟供给方）**。
+             反着写报告里会显示成「机器 → 画布外」，方向颠倒（踩过一次）。 */
+          /* feeds 只收**铺成功的**条目：先造引用挂到 job 上，走线铺成后才入 feeds ——
+             失败的进 feedFail（不静默丢），报告层不用再过滤 */
+          const feedRef={item:RwItemName(iid), itemId:iid, machine:m.name, machineName:m.machineName,
+            edge:{x:s.x, y:s.y}, need:dI};
+          jobs.push({s:s, t:t, isP:true, feed:true, edge:{x:s.x,y:s.y},
+            tInto:{x:pick.gx, y:pick.gy},
+            edgeAlts:eAlts, feedRef:feedRef, mc:{x:cx, y:cy},
+            portAlts:cands.slice(1,5),
+            parent:m,
+            child:{name:RwItemName(iid), demand:dI, machineName:'画布外（暗管接入）', itemId:iid}});
+        });
+      });
+    });
+  }
+
   /* ========== 阶段二：统一走线（不许穿过别人的端点格） ==========
      ⭐ 路线图 ③「由短到长铺」：短段先占近路，长段后铺绕远 —— 总线长更短。 */
-  jobs.sort((a2,b2)=>((a2.isP?0:1)-(b2.isP?0:1))                 /* 流体（管道）优先：被带子截断就没路可绕 */
+  jobs.sort((a2,b2)=>((a2.feed?1:0)-(b2.feed?1:0))               /* ⭐v151 外部接入**最后铺** ——
+      必须让内部连线先占路：feed 线若参与正常排序会挤掉既有路径，实测把「P3 准入口限速」那条回归锁
+      直接顶红（路径变了 → 准入口不再落在原路径上）。排在最后 = 老产线走线逐字节不变。 */
+                    ||((a2.isP?0:1)-(b2.isP?0:1))                 /* 流体（管道）优先：被带子截断就没路可绕 */
                     ||((Math.abs(a2.s.x-a2.t.x)+Math.abs(a2.s.y-a2.t.y))
                       -(Math.abs(b2.s.x-b2.t.x)+Math.abs(b2.s.y-b2.t.y))));
   const axis={};   /* 已铺线格的轴向（'h' 横 / 'v' 竖）—— 桥接穿越的判定依据 */
   jobs.forEach(j=>{
-    const s=j.s, t=j.t;
+    let s=j.s; let t=j.t;
     const mine=k=>k===K(s.x,s.y)||k===K(t.x,t.y);
     const block=(x,y)=>!!reserved[K(x,y)]&&!mine(K(x,y));
-    const path=RwPath(s, t, busy, size, block, axis);
-    if(!path){ warns.push(j.parent.name+' ← '+j.child.name+'：走线过不去（端口/走线都被占了），这一段请手动连'
-      +'（'+s.x+','+s.y+' → '+t.x+','+t.y+'）'); return; }
+    let path=RwPath(s, t, busy, size, block, axis);
+    if(!path && j.feed && j.edgeAlts && j.edgeAlts.length){
+      /* ⭐v151 外部接入的换格重试：feed 线排到最后铺，此时内部线已定形 —— 首选接入点走不通
+         就挨个试备选格（挑格时已按距离排好序），全部失败才往下走。 */
+      for(let ai=0; ai<j.edgeAlts.length && !path; ai++){
+        const a2=j.edgeAlts[ai], ak=K(a2.x,a2.y);
+        if(busy[ak]||reserved[ak]||(feedUsed[ak]&&ak!==K(s.x,s.y))) continue;
+        const p2=RwPath(a2, t, busy, size, block, axis);
+        if(p2){ path=p2; s=a2; if(j.feedRef) j.feedRef.edge={x:a2.x, y:a2.y}; }
+      }
+    }
+    if(!path && j.feed && j.portAlts && j.portAlts.length){
+      /* ⭐换端口重试：首选口的「外侧格」被内部线占了 —— RwPath 对终点占用是硬失败（ok(t)），
+         换接入点救不了，只能换一个外侧格还空着的进料口，并在机器旁就近重挑接入点。 */
+      for(const pa of j.portAlts){
+        if(used[pa.key]) continue;
+        const tk=outOf(pa);
+        if(tk.x<0||tk.y<0||tk.x>=size||tk.y>=size) continue;
+        if(busy[K(tk.x,tk.y)]||reserved[K(tk.x,tk.y)]) continue;
+        const es=edgePick(j.mc.x, j.mc.y).filter(e=>!busy[K(e.x,e.y)]&&!feedUsed[K(e.x,e.y)]&&!reserved[K(e.x,e.y)]);
+        for(const ss of es.slice(0,8)){
+          const mine3=k=>k===K(ss.x,ss.y)||k===K(tk.x,tk.y);
+          const block3=(x,y)=>!!reserved[K(x,y)]&&!mine3(K(x,y));
+          const p3=RwPath(ss, tk, busy, size, block3, axis);
+          if(p3){ used[pa.key]=1; feedUsed[K(ss.x,ss.y)]=1; path=p3; s=ss; t=tk; j.tInto={x:pa.gx, y:pa.gy};
+            if(j.feedRef) j.feedRef.edge={x:ss.x, y:ss.y}; break; }
+        }
+        if(path) break;
+      }
+    }
+    if(!path){
+      if(j.feed){
+        /* ⭐口径分离：外部接入失败**不进**「手动连」计数（那是 ⑤-3 内部连通率的回归口径），
+           进 feedFail 正式点名 —— 博士自己拉暗管时，画布内补这一小段本就在他的操作流里。 */
+        feedFail.push({item:j.child.name, to:j.parent.machineName, s:{x:s.x,y:s.y}, t:{x:t.x,y:t.y}, why:'path'});
+        warns.push('外部接入：'+j.parent.machineName+' 要的'+j.child.name+'没铺出边缘进管（画布内这段被产线占满了）——'
+          +'暗管出口可贴在 ('+s.x+','+s.y+') 外侧，画布内这一小段自己补管');
+      }else{
+        warns.push(j.parent.name+' ← '+j.child.name+'：走线过不去（端口/走线都被占了），这一段请手动连'
+          +'（'+s.x+','+s.y+' → '+t.x+','+t.y+'）');
+      }
+      return;
+    }
     path.forEach((c,k)=>{
       const kk=K(c.x,c.y);
       const isBr=!!axis[kk];
-      const nx=path[k+1]||t;
-      const myAx=(nx.x-c.x!==0)?'h':'v';
+      /* ⭐v151 末端朝向修复（博士截图实锤「进出口的弯道又不对了」）：最后一格的 path[k+1]
+         是 undefined → RwRotTo(t,t) 落到 LrotFrom 的 return 270 →
+         **每条自动线的终点格箭头恒朝上**，与真实流向对撞（上游 ↓ 它 ↑）。
+         修法：job 带 tInto（流向最终进入的那格 = 机器端口格 / 汇分流体本体），rot 指向 tInto
+         —— 弯头、色条、flowNext 全部跟着正确。
+         ⚠️ axis 轴向**必须保持旧口径**（终点格按 t 算 = 恒 'v'）：axis 只喂 RwPath 的桥接
+         判定，改它会让后续线的可穿越集变化 —— 实测 feed 线失败 2 → 4（桥接绕路全变）。
+         渲染（rot/flowNext）与寻路（axis）在这里解耦。 */
+      const nx=path[k+1]||j.tInto||t;
+      const axc=path[k+1]||t;
+      const myAx=(axc.x-c.x!==0)?'h':'v';
       if(!axis[kk]) axis[kk]=myAx;
       busy[kk]=1;
       if(isBr){
@@ -4197,6 +4361,7 @@ function RwRoute(placed, res, size, corr, extraBusy){
       }
     });
     /* 汇流器 / 分流器那几条只算一次成品线，别重复计数 */
+    if(j.feed && j.feedRef) feeds.push(j.feedRef);   /* ⭐v151 外部接入：铺成了才进 feeds（失败的在 feedFail 里点名） */
     if(!j.intoMerge && !j.intoSplit){
       linked.set(j.child, (linked.get(j.child)||0)+1);
       links.push({item:j.child.name, perMin:j.child.demand, from:j.child.machineName,
@@ -4221,7 +4386,7 @@ function RwRoute(placed, res, size, corr, extraBusy){
       state:(!n?'none':(per>cap+1e-6?'jam':(per>cap*0.9?'tight':'ok')))};
   });
   /* stats（⑤-2）：汇流/分流器实际摆了几个、有几条线被丢下 —— 报告与回归测试都看这几个数 */
-  return {belts:belts, warns:warns, links:links, loads:loads,
+  return {belts:belts, warns:warns, links:links, loads:loads, feeds:feeds, feedFail:feedFail,
           stats:{split:spN, merge:mgN, dropped:dropN}};
 }
 function RwFindSplit(size, src, busy, corr){
@@ -6045,7 +6210,16 @@ function renderLayout(){
   const flowNext={};
   Object.values(lgi).forEach(o=>{
     const b=byBp(o.id);
-    if(!b||(b.lgType!=='Belt'&&b.lgType!=='Pipe'&&b.lgType!=='BoxValve'&&b.lgType!=='FluidValve')) return;
+    if(!b) return;
+    if(b.lgType==='Connector'||b.lgType==='FluidConnector'){
+      /* ⭐v151 续：桥也进流向表（出向按 rot —— RwRotTo 给的就是真实下游方向）。
+         桥后那格的进边靠「桥指向我」反推，桥不在表里则那格推不出进边 → 画成直条
+         （实测赤铜块@10 的 (13,24) 终点格，上游恰好是桥）。 */
+      const v={0:[1,0], 90:[0,1], 180:[-1,0], 270:[0,-1]}[o.rot];
+      if(v) flowNext[o.x+','+o.y]=[o.x+v[0], o.y+v[1]];
+      return;
+    }
+    if(b.lgType!=='Belt'&&b.lgType!=='Pipe'&&b.lgType!=='BoxValve'&&b.lgType!=='FluidValve') return;
     const out=(lgPortSides(b,o.rot).out||[])[0];
     const v={r:[1,0], b:[0,1], l:[-1,0], t:[0,-1]}[out];
     if(v) flowNext[o.x+','+o.y]=[o.x+v[0], o.y+v[1]];
@@ -6056,14 +6230,33 @@ function renderLayout(){
   const portOut={};
   const flowIn=(x,y,isPipe)=>{
     const NB={t:[0,-1], b:[0,1], l:[-1,0], r:[1,0]};
+    const pm=po=>po&&(po.pipe===undefined||!!po.pipe===!!isPipe);
     for(const d in NB){
-      const nxt=flowNext[(x+NB[d][0])+','+(y+NB[d][1])];
+      const nx=x+NB[d][0], ny=y+NB[d][1];
+      const nxt=flowNext[nx+','+ny];
       if(nxt&&nxt[0]===x&&nxt[1]===y) return d;
+      /* ⭐v151 续：桥格双向穿行 —— 桥的 rot/flowNext 只保留**最后一次**穿行的方向，先从另一轴
+         穿过桥的线，其下游格靠「桥指向我」推不出进边（实测赤铜耐压罐@10 的 (6,4)：上游 (6,5)
+         是桥、rot=180 被后穿的横向线覆盖，本线纵向 (6,5)→(6,4)）。桥四侧皆可进出（lgPortSides），
+         真正穿过桥的线在桥另一侧同轴必有格子指回桥 —— 用这条「连续性」补判，不盲目按轴放行
+         （否则恰好停在桥旁的无关格会误得进边）。介质对齐：带桥只服务带线，管桥只服务管线
+         （桥的 lgMedium 来自蓝图、与所叠线同介质，放置校验强制）。 */
+      const nbo=lgi[nx+','+ny], nbb=nbo&&byBp(nbo.id);
+      if(nbb&&(nbb.lgType==='Connector'||nbb.lgType==='FluidConnector')
+         &&(nbb.lgMedium==='管道')===!!isPipe){
+        const b2=flowNext[(nx+NB[d][0])+','+(ny+NB[d][1])];
+        if(b2&&b2[0]===nx&&b2[1]===ny) return d;
+      }
     }
     for(const d in NB){
       const po=portOut[(x+NB[d][0])+','+(y+NB[d][1])];
-      if(po&&!!po.pipe===!!isPipe) return po.from;
+      if(pm(po)) return po.from;
     }
+    /* ⭐v151 续：这格**自己**就是机器出料口 / 汇流器·分流器出格的外侧格 ——
+       料从本体那侧流入本格（线起点格的进边）。没有这条，出口第一格永远画成直条
+       （博士 2026-09-24 截图「入口弯头好了，出口没有」）。 */
+    const self=portOut[x+','+y];
+    if(pm(self)) return self.from;
     return null;
   };
   /* ================================================================
@@ -6079,7 +6272,25 @@ function renderLayout(){
   /* ---- [a] 接口统计（和下面的逐个渲染同口径：越界的不算、朝向跟 rot 转 ⭐v122） ---- */
   let pAll=0, pOn=0;
   L.objs.forEach(o=>{
-    const b=byBp(o.id); if(!b||b.isLogi) return;
+    const b=byBp(o.id);
+    /* ⭐v151 续：汇流器/分流器（Router）的**出格**也进 portOut —— 干线起点格的进边靠它反推，
+       否则「出口没有弯头」（博士 2026-09-24 截图：汇流干线出来第一格画成直条）。
+       from = 本体相对出格的方向；汇流器 1 出（上）、分流器 3 出（上/左/右）。
+       ⚠️ 不填 pipe（通配）：objs 元素转存时 isPipe 字段丢了（keys=uid|id|x|y|rot|w|d|planRole），
+       管道汇流器回落 lgMedium='传送带' 会匹配不上；而汇流器与所连线永远同介质（RwRoute 保证），
+       通配无误伤。 */
+    if(b&&b.isLogi&&b.lgType==='Router'){
+      const OPPT={t:'b', b:'t', l:'r', r:'l'};
+      (lgPortSides(b,o.rot).out||[]).forEach(sd=>{
+        const v={r:[1,0], b:[0,1], l:[-1,0], t:[0,-1]}[sd];
+        if(!v) return;
+        const kx=o.x+v[0], ky=o.y+v[1];
+        if(kx<0||ky<0) return;
+        portOut[kx+','+ky]={from:OPPT[sd]};
+      });
+      return;
+    }
+    if(!b||b.isLogi) return;
     const fp=Lfp(b);
     (b.ports||[]).forEach(p=>{
       const q=LportXY(p,o.rot,fp[0],fp[1]);
