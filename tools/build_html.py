@@ -365,9 +365,11 @@ nav button.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:
 .lo-dlvpop .it .rr{font-size:10px;color:#C9A227;letter-spacing:-1px;flex:none;width:34px}
 .lo-dlvpop .it .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* ⭐v139 准入口合规标红：孤立的准入口（四周没有同类带/管衔接）= 没放在传送带/管道上 */
-.lo-cell.vbad{box-shadow:inset 0 0 0 2px #C0561F, 0 0 0 1px #C0561F}
-.lo-cell.vbad::after{content:'';position:absolute;right:-1px;top:-1px;width:0;height:0;
-  border-left:7px solid transparent;border-top:7px solid #C0561F}
+/* ⭐v140 标红加强：纯红粗描边 + 左上角「!」角标 —— 之前用橙红，与准入口本身的橙色描边撞车看不清 */
+.lo-cell.vbad{box-shadow:inset 0 0 0 3px #E01B24, 0 0 0 2px #E01B24;z-index:3}
+.lo-cell.vbad::before{content:'!';position:absolute;left:0;top:0;width:11px;height:11px;
+  background:#E01B24;color:#fff;font-size:9px;font-weight:700;line-height:11px;text-align:center;
+  border-radius:0 0 6px 0;z-index:4}
 /* ⭐v135 机器选择浮层（点机器就地选）：复用出货浮层样式，但内容更高，给个高度上限 */
 .lo-macpop{width:auto;max-height:430px;overflow:auto}
 /* ⭐v134 反应池缓存格：物品卡（星级 + 名字 + 相态角标）——视觉与协议核心出货清单同一套语言 */
@@ -2226,28 +2228,18 @@ function LreplaceCell(x,y){
   /* ⭐v138 串接类必须「顺着物流方向」：转角格（该格进向 ≠ 出向）不能放 ——
      博士核实：「转角格不能放的原因是没有沿着物流方向建造」。 */
   if(kind==='replace' && (pk.lgType==='BoxValve'||pk.lgType==='FluidValve')){
-    /* 拐弯格判据（不依赖 renderLayout 里的局部 flowIn）：看同类介质邻居的分布 ——
-       两侧对开（上下 或 左右）= 直线段（可放）；只有相邻两侧（L 形）= 转角格（拒绝）。
-       博士 2026-09-24 核实：「转角格不能放的原因是没有沿着物流方向建造」。 */
-    const _sd=(dx,dy)=>dx===0?(dy<0?'u':'d'):(dx<0?'l':'r');
-    const _opp={u:'d',d:'u',l:'r',r:'l'};
-    const _hasN=(dd)=>{
-      const v={u:[0,-1],d:[0,1],l:[-1,0],r:[1,0]}[dd];
-      const nb=L.objs.filter(o=>o.x===x+v[0]&&o.y===y+v[1])[0];
-      if(!nb) return false;
-      const nbb=byBp(nb.id);
-      return !!(nbb&&nbb.isLogi&&nbb.lgMedium===pk.lgMedium&&(nbb.lgType==='Belt'||nbb.lgType==='Pipe'));
-    };
-    const _dirs=['u','d','l','r'].filter(_hasN);
-    const _isTurn=_dirs.length>=2 && !(_dirs.length===2 && _dirs.indexOf(_opp[_dirs[0]])>=0);
-    if(_isTurn){
-      L.msg=pk.name+'：这一格是转角（两侧相邻），要顺物流方向 —— 换一格直线（至少一格直段）';
+    /* ⭐v140 合规判定走唯一出处 LvalveBad（该格现在是带子 occ，用它的流向判） */
+    const _why=LvalveBad(x, y, pk.lgMedium);
+    if(_why){
+      L.msg=pk.name+'：'+_why+' —— 换一格顺着物流方向的直线段';
       render(); return true;
     }
   }
   Lpush();
   if(kind==='replace') L.objs=L.objs.filter(o=>o!==occ&&o.uid!==occ.uid);
-  const o=Lmk(pk,x,y,kind==='replace'?occ.rot:L.pickRot);   /* ⭐v138 串接件朝向 = 原格流向（顺流） */
+  /* ⭐v140 朝向：串接件沿用原格流向，但**准入口的 rot 基准差 90°**（传送带 rot0=流向右 /
+     准入口 rot0=下进上出）→ 必须映射，否则竖着放会变横（博士截图 1）。 */
+  const o=Lmk(pk,x,y,kind==='replace'?LtwinRot(pk,occ.rot):L.pickRot);
   o.planRole='link';
   L.objs.push(o); L.sel=[o.uid];
   L.msg= kind==='replace' ? ('已把该格物流段替换成 '+pk.name) : (pk.name+' 已叠上（跨线，原线保留）');
@@ -2258,6 +2250,37 @@ function LreplaceCell(x,y){
    不许放空格 —— 串接类（分/汇流器、准入口）替换线上普通段，桥类叠加。判定沿用 LreplaceCell 的 kind。 */
 const LO_ONLINE_TYPES={'BoxValve':1,'FluidValve':1};
 function LisOnLine(b){ return !!(b&&b.isLogi&&LO_ONLINE_TYPES[b.lgType]); }
+/* ⭐v140 物流件的「rot ↔ 方向」明文映射：**传送带/管道** rot=0 表示「流向右」，90=下、180=左、270=上
+   （与 LdirName 一致）。⚠️ 但**准入口**的 rot 基准不同（测试锁定：rot=0 时「下进上出」）——
+   两者差 90°，换件时必须做映射，否则竖着放会变成横的（博士 2026-09-24 截图 1）。 */
+function LrotDir(rot){ return ({0:'r',90:'d',180:'l',270:'u'})[((rot%360)+360)%360]||'r'; }
+function LtwinRot(pk, rot){
+  return (pk.lgType==='BoxValve'||pk.lgType==='FluidValve') ? (((rot+90)%360)+360)%360 : rot;
+}
+/* ⭐v140 准入口合规判定（**唯一出处**：放置校验 + 渲染标红共用，避免两处口径不一致）：
+   合规 = 这一格顺着物流方向 —— ①四邻有同类介质的带/管；②若存在上游（邻居流向指向我），
+   我的流向必须与它一致；③没有上游时至少要有下游（我流向的那格接得上）。
+   返回 null = 合规；否则返回不合规原因文案。 */
+function LvalveBad(x, y, med){
+  const objs=Linit().objs;
+  const cellAt=(cx,cy)=>objs.filter(z=>cx>=z.x&&cx<z.x+(z.w||1)&&cy>=z.y&&cy<z.y+(z.d||1))[0];
+  const nbOf=(dx,dy)=>{ const q=cellAt(x+dx,y+dy); if(!q) return null;
+    const qb=byBp(q.id);
+    return (qb&&qb.isLogi&&qb.lgMedium===med&&(qb.lgType==='Belt'||qb.lgType==='Pipe'))?q:null; };
+  const me=cellAt(x,y);
+  const myDir=me?LrotDir(me.rot):'r';
+  const UP=[[0,-1,'d'],[0,1,'u'],[-1,0,'r'],[1,0,'l']];      /* [dx,dy, 该邻居「指向我」时应有的流向] */
+  let up=null, anyNb=false;
+  UP.forEach(u=>{ const q=nbOf(u[0],u[1]); if(!q) return; anyNb=true;
+    if(LrotDir(q.rot)===u[2]) up=u[2]; });
+  const DD={r:[1,0],l:[-1,0],u:[0,-1],d:[0,1]}, dv=DD[myDir];
+  const down=nbOf(dv[0],dv[1]);
+  if(!anyNb) return '四周没有'+med+'衔接（空放，没放在'+med+'上）';
+  if(up && up!==myDir) return '这一格是拐角（进向≠出向，没有顺着物流方向）';
+  if(up && !down) return '这一格是' + med + '的末端/断头（顺着流向没有接下去的' + med + '，放这里会把线截断）';
+  if(!up && !down) return '这一格和'+med+'接不上（我的流向那侧没有'+med+'）';
+  return null;
+}
 function Lput(x,y){
   const L=Linit();
   if(!L.pick) return;
@@ -5837,20 +5860,11 @@ function renderLayout(){
          这样无论它是新放的、旧画布留下的、还是从方案/撤销栈恢复的，都会被标出来。 */
       let _vbad=false, _vwhy='';
       if(b.lgType==='BoxValve'||b.lgType==='FluidValve'){
-        const _hasNb=(dx,dy)=>{
-          const q=L.objs.filter(z=>z.x===o.x+dx&&z.y===o.y+dy)[0];
-          if(!q) return false;
-          const qb=byBp(q.id);
-          return !!(qb&&qb.isLogi&&qb.lgMedium===b.lgMedium&&(qb.lgType==='Belt'||qb.lgType==='Pipe'));
-        };
-        const _N={u:_hasNb(0,-1), d:_hasNb(0,1), l:_hasNb(-1,0), r:_hasNb(1,0)};
-        const _any=_N.u||_N.d||_N.l||_N.r;
-        const _straight=(_N.u&&_N.d)||(_N.l&&_N.r);      /* 对开的一对 = 真直线段（可放） */
-        const _cross=(_N.u||_N.d)&&(_N.l||_N.r);        /* 横竖都有 = 拐角（放不了） */
-        _vbad=(!_any)||(!_straight&&_cross);
-        if(_vbad) _vwhy='【⚠️ 位置不合规：'+b.name+'必须放在'+(b.lgMedium==='管道'?'管道':'传送带')+'上，且要顺物流方向 —— '
-          +(_any?'这一格是**拐角**（两侧相邻，没有一条直的物流方向）':'这一格四周没有'+b.lgMedium+'衔接（空放）')
-          +'，请挪到直线段上】';
+        /* ⭐v140 标红与放置校验共用同一判定（LvalveBad），口径永远一致 */
+        const _why=LvalveBad(o.x, o.y, b.lgMedium);
+        _vbad=!!_why;
+        if(_vbad) _vwhy='【⚠️ 位置不合规：'+b.name+'必须放在'+(b.lgMedium==='管道'?'管道':'传送带')+'上，且要顺着物流方向 —— '
+          +_why+'，请挪到直线段上】';
       }
       const ttl=esc(b.name)+' · 走向 '+o.rot+'°（'+LdirName(o.rot)+'） · '+esc(b.lgMedium)
         +' '+b.lgPerMin+' 个/分钟'

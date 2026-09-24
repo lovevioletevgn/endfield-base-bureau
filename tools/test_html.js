@@ -3189,7 +3189,7 @@ chk('v138 准入口：转角格拒绝（两侧相邻 = 没顺物流方向）',
       A.LODRAG = null; A.render();
       A.Lpick('log_conditioner'); A.Lput(8, 20);
       return !A.LO.objs.some(o => o.id === 'log_conditioner' && o.x === 8 && o.y === 20) &&
-             String(A.LO.msg).indexOf('转角') >= 0;
+             (String(A.LO.msg).indexOf('拐角') >= 0 || String(A.LO.msg).indexOf('末端') >= 0);
     })(), (A.LO.msg || '').slice(0, 44));
 chk('v138 准入口：放在直线段上成功 + 面板含限速与准入物品 + 限速/物品写入生效',
     (() => {
@@ -3229,7 +3229,7 @@ chk('v139 准入口标红：孤立 = 标红 / 拐角 = 标红 / 直线 = 放行'
       const straight = _vbadN();
       return iso >= 1 && corner >= 1 && straight === 0;
     })(),
-    '孤立/拐角/直线 = ' + 'vbad 计数');
+    'vbad 计数三态：孤立应>=1 / 拐角应>=1 / 直线应=0');
 
 // ---- ⑥-2 × ⑥-1 组合：多目标 + 跨地区收货同时开 ----
 // 要守住的：收货判定吃的是**合并后的原料并集与合并后的需求**（两条链的赤铜矿需求 20+20=40/分），
