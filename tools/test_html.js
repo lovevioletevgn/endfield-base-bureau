@@ -3067,6 +3067,54 @@ chk('v133 单配方链不升扩容池（赤铜块链只 1 条池子配方 → �
       return !r.machines.some(n => n.machineId === 'mix_pool_2'); })(),
     JSON.stringify(A.Rexplode('item_copper_nugget', 10, {}).machines.map(n => n.machineName + 'x' + n.machines)));
 
+// ---- v134 反应池面板：缓存格推演 + 池子判定（博士 2026-09-24 要「像游戏那样显示缓存槽」）----
+// 壤晶链三条反应：息壤+清水→液化息壤 / 液化息壤+污水→壤晶废液+惰性壤晶废液 / 壤晶废液+蓝铁粉末→壤晶+污水
+// 材料并集 = 息壤·清水·液化息壤·污水·壤晶废液·惰性壤晶废液·蓝铁粉末·壤晶 = 恰好 8 格（与实机 8 缓存格逐项吻合）
+chk('v134 缓存格推演：壤晶链 3 条反应 = 8 格，材料逐项吻合',
+    (() => {
+      const cells = A.RpoolCells(['pool_liquid_liquid_xiranite_2', 'pool_liquid_xiranite_poly_2', 'pool_xiranite_poly_2']);
+      const want = ['息壤', '清水', '液化息壤', '污水', '壤晶废液', '惰性壤晶废液', '蓝铁粉末', '壤晶'];
+      return cells.length === 8 && want.every(n => cells.some(c => c.name === n));
+    })(),
+    JSON.stringify(A.RpoolCells(['pool_liquid_liquid_xiranite_2', 'pool_liquid_xiranite_poly_2', 'pool_xiranite_poly_2']).map(c => c.name)));
+chk('v134 池子判定与上限：基础池 2 条 / 扩容池 3 条，其他机器不是池子',
+    (() => {
+      const cells = A.RpoolCells(['pool_liquid_liquid_xiranite_2', 'pool_liquid_xiranite_poly_2', 'pool_xiranite_poly_2']);
+      return cells.length === 8 && A.POOL_CELLS === 8 &&
+             A.POOL_SLOT_MAX['mix_pool_2'] === 3 && A.POOL_SLOT_MAX['mix_pool_1'] === 2 &&
+             A.RisPool({ id: 'mix_pool_2' }) && A.RisPool({ id: 'mix_pool_1' }) &&
+             !A.RisPool({ id: 'furnance_1' }) && !A.RisPool({ id: 'mix_pool_9' });
+    })(),
+    'cells=' + A.POOL_CELLS + ' slots=' + JSON.stringify(A.POOL_SLOT_MAX));
+chk('v134 池子反应读取兼容：o.rl 数组优先、旧 o.r 单值也认',
+    (() => {
+      const a = A.RpoolOf({ rl: ['r1', 'r2'] }), b = A.RpoolOf({ r: 'r1' }), c = A.RpoolOf({});
+      return a.length === 2 && a[0] === 'r1' && b.length === 1 && b[0] === 'r1' && c.length === 0;
+    })());
+
+// ---- v135「点机器就地选」框架（博士 2026-09-24：「我要在这里选，要做到以后能逐步完善到其他基建都能在这里选」）----
+chk('v135 就地选分派：反应池→池子面板 / 有配方机器→配方面板 / 无配方→不弹',
+    (() => {
+      const bp = A.DB.blueprint.buildings;
+      const pool = bp.filter(x => x.id === 'mix_pool_2')[0];
+      const fur = bp.filter(x => x.id === 'furnance_1')[0];
+      const deco = bp.filter(x => x.id === 'doll_1')[0];
+      const h1 = A.RmacPanelOf(pool, { uid: 'u', rl: [] });
+      const h2 = A.RmacPanelOf(fur, { uid: 'u' });
+      const h3 = deco ? A.RmacPanelOf(deco, { uid: 'u' }) : null;
+      return typeof h1 === 'string' && h1.indexOf('缓存格') >= 0 &&
+             typeof h2 === 'string' && h2.indexOf('可选') >= 0 && h3 === null;
+    })(),
+    'pool=' + typeof A.RmacPanelOf(A.DB.blueprint.buildings.filter(x => x.id === 'mix_pool_2')[0], { uid: 'u', rl: [] }));
+chk('v135 池子面板槽位数按池子上限（扩容池 3 / 基础池 2）+ 开关函数在位',
+    (() => {
+      const bp = A.DB.blueprint.buildings;
+      const n = h => String(h).split('槽 ').length - 1;
+      return n(A.RmacPanelOf(bp.filter(x => x.id === 'mix_pool_2')[0], { uid: 'u', rl: [] })) === 3 &&
+             n(A.RmacPanelOf(bp.filter(x => x.id === 'mix_pool_1')[0], { uid: 'u', rl: [] })) === 2 &&
+             typeof A.LmacOpen === 'function' && typeof A.LmacClose === 'function';
+    })());
+
 // ---- ⑥-2 × ⑥-1 组合：多目标 + 跨地区收货同时开 ----
 // 要守住的：收货判定吃的是**合并后的原料并集与合并后的需求**（两条链的赤铜矿需求 20+20=40/分），
 // 共用段照常渲染，本地冶炼（赤铜块）照建 —— 收货只改「料从哪来」。

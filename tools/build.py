@@ -79,6 +79,9 @@ QUICKBAR_ORDER_SNAPSHOT = ["logistic", "source_machine", "storage", "basic_machi
 TAG_IMAGE = re.compile(r'<image="[^"]*"(?:\s+[^>]*)?>')
 TAG_ANY = re.compile(r"<[^>]{0,120}>")
 
+# ⭐v136 占地特例覆盖（建筑 id → 实际占格）。目前只有一条：扩容反应池实占 5×5。
+SIZE_OVERRIDE = {"mix_pool_2": "5×5"}
+
 # 原始建筑表，供 resolve_category 回查原版的 quickBarType
 BUILDINGS_RAW = {}
 
@@ -397,7 +400,10 @@ def main():
             "footprintD": D,
             "footprintH": H,
             # ---- 蓝图专用字段 ----
-            "gridFootprint": f"{W}×{D}",           # 地面占格（蓝图核心数据）
+            # ⭐v136 尺寸特例（**以游戏实测为准**）：扩容反应池配置表 range 写 6×5、渲染模板名 06x05，
+            #   但博士 2026-09-24 实机放置预览是 5×5（且两池接口坐标完全相同）→ 判为配置表口径偏差。
+            #   占格只从这一处出（前端 Lfp 也解析它），改这里 → CLI / 蓝图页 / 沙盘 / 接口 全一致。
+            "gridFootprint": SIZE_OVERRIDE.get(bid) or f"{W}×{D}",           # 地面占格（蓝图核心数据）
             "gridArea": (W * D) if (W and D) else None,  # 占格面积
             "gridHeight": H,                        # 占格高度（可堆叠依据）
             "gridPerimeter": (2 * (W + D)) if (W and D) else None,  # 外圈周长（算传送带用量）

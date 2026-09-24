@@ -364,6 +364,19 @@ nav button.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:
 .lo-dlvpop .it.on{background:#E9F8F1;box-shadow:inset 0 0 0 1px rgba(15,110,86,.32)}
 .lo-dlvpop .it .rr{font-size:10px;color:#C9A227;letter-spacing:-1px;flex:none;width:34px}
 .lo-dlvpop .it .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* ⭐v135 机器选择浮层（点机器就地选）：复用出货浮层样式，但内容更高，给个高度上限 */
+.lo-macpop{width:auto;max-height:430px;overflow:auto}
+/* ⭐v134 反应池缓存格：物品卡（星级 + 名字 + 相态角标）——视觉与协议核心出货清单同一套语言 */
+.lo-ccells{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
+.lo-ccell{position:relative;width:80px;height:46px;border:1px solid #B4B2A9;border-radius:6px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;
+  padding:3px 4px 2px;box-sizing:border-box;background:#fff;overflow:hidden}
+.lo-ccell.empty{opacity:.38;font-size:11px;color:#888780}
+.lo-ccell.over{border-color:#C0561F;box-shadow:inset 0 0 0 1px rgba(192,86,31,.3)}
+.lo-ccell .rr{font-size:9px;color:#C9A227;letter-spacing:-1px;line-height:1}
+.lo-ccell .nm{font-size:11px;line-height:1.15;text-align:center;word-break:break-all;max-height:26px;overflow:hidden}
+.lo-ccell .ph{position:absolute;right:2px;top:2px;color:#fff;font-size:9px;border-radius:3px;
+  padding:0 3px;line-height:1.35}
 .lo-dlvpop .it .cc{color:var(--ink3);font-size:10px}
 .lo-dlvpop .it .ck{color:#0F6E56;flex:none;font-size:11px}
 .lo-dlvpop .em{font-size:11.5px;color:var(--ink3);padding:6px 4px}
@@ -1131,9 +1144,34 @@ function renderLogistics(){
    ⚠️ 改 build.py 或重跑构建都不影响这里 —— 页面数据是构建时内联进 HTML 的，只能在这儿改。
    （同样是兜底分类的 liquid_recycle_gate_1 / liquid_clean_gate_1 / power_port_1 是野外固定件，
      不进试摆，分类保持原样。） */
+/* ⭐v136（博士 2026-09-24：「都说了只要扩容反应池了，我要只显示反应池，反应池的数据是扩容反应池的就行」）：
+   界面上**只呈现一个「反应池」**，它的数据（占地 6×5 / 100 电 / 8 缓存格 / 3 条并行）就是扩容反应池
+   mix_pool_2 的；基础反应池 mix_pool_1 从沙盘清单移除（LO_SKIP_IDS，见下），不作独立条目出现。 */
+const POOL_DISPLAY_NAME={'mix_pool_2':'反应池'};
+/* ⭐v136 尺寸覆盖（以游戏实测为准，与 build.py SIZE_OVERRIDE 同源）：扩容反应池实占 **5×5**。
+   配置表 range=6×5 / 模板名 06x05 判为口径偏差；gridFootprint 是尺寸唯一出口（Lfp 解析它），
+   覆盖这一处 → 摆放 / 渲染 / 接口坐标 / 占地文案 全一致。 */
+const SIZE_OVERRIDE={'mix_pool_2':'5×5'};
+const _POOL_BASE_PORTS=((((DB.buildings||[]).filter(function(x){return x.id==='mix_pool_1';})[0])||{}).ports)||null;
 const CORE_STRUCT_IDS={'sp_hub_1':1,'sp_sub_hub_1':1};
 [DB.buildings,DB.blueprint.buildings,DB.mechanics].forEach(function(arr){
-  (arr||[]).forEach(function(b){ if(b&&CORE_STRUCT_IDS[b.id]) b.categoryName='核心结构'; });
+  (arr||[]).forEach(function(b){
+    if(b&&CORE_STRUCT_IDS[b.id]) b.categoryName='核心结构';
+    if(b&&POOL_DISPLAY_NAME[b.id]) b.name=POOL_DISPLAY_NAME[b.id];   /* ⭐v136 只呈现「反应池」，数据=扩容池 */
+    if(b&&SIZE_OVERRIDE[b.id]) b.gridFootprint=SIZE_OVERRIDE[b.id];   /* ⭐v136 扩容池实占 5×5 */
+    /* ⭐v136 端口覆盖：扩容池实机端口 = 基础池那套（每边各 2：带 2 进 2 出 / 管 2 进 2 出，共 8 个）。
+       配置表按 6 格宽写成了「4 带进 + 4 带出 + 2 管进 + 2 管出」（12 个，管道出口 x=5 在 5×5 上越界），
+       博士 2026-09-24 实机核实为每边各 2 —— 以游戏为准，整组沿用基础池坐标。 */
+    if(b&&b.id==='mix_pool_2'&&_POOL_BASE_PORTS) b.ports=JSON.parse(JSON.stringify(_POOL_BASE_PORTS));
+    /* 端口绑定同步：端口数组换成 8 个后，扩容池配方组的绑定索引也要换成基础池那套（[0,1]/[2,3]），
+       否则旧绑定 [4,5] 会越界（test_html「接口序号越界」断言会红）。 */
+    if(b&&b.id==='mix_pool_2'){
+      const _grp=(DB.recipe_groups||{}).groups||{};
+      const _a=_grp['group_mix_pool_1_liquid'], _b2=_grp['group_mix_pool_2_liquid'];
+      if(_a&&_b2){ ['solidIn','fluidIn','solidOut','fluidOut'].forEach(function(k){
+        if(_a[k]) _b2[k]=JSON.parse(JSON.stringify(_a[k])); }); }
+    }
+  });
 });
 
 /* v132 分类三表（CAT_COLOR/CAT_GLYPH/CAT_ORDER）由构建时动态生成（由构建时 gen_cat_tables() 注入）：
@@ -1816,6 +1854,71 @@ function LdlvOpen(uid,idx){
   L.dlvPop={uid:uid, idx:idx, q:'', rare:0, jar:0}; render();
 }
 function LdlvClose(){ const L=Linit(); L.dlvPop=null; render(); }
+/* ⭐v135「点机器就地选」（博士 2026-09-24：「我要在这里选，要做到以后能逐步完善到其他基建都能在这里选」）：
+   单击沙盘上的机器 → 机器正上方弹出该机器的**选择浮层**（游戏同款交互）。
+   浮层内容按机器类型分派（RmacPanelOf）——新增基建只需在分派里加一个分支。
+   与协议核心出货浮层（dlvPop）同一套定位/样式语言。 */
+function LmacOpen(uid){ const L=Linit(); L.macPop={uid:uid}; render(); }
+function LmacClose(){ const L=Linit(); L.macPop=null; render(); }
+function LmacHasPanel(uid){
+  const L=Linit(); const o=L.objs.filter(x=>x.uid===uid)[0];
+  return !!(o&&RmacPanelOf(byBp(o.id), o));
+}
+/* ⭐v135 「就地选」总分派：按建筑类型返回该机器的选择面板 HTML（null = 这台没得选）。
+   ⬇️ 以后支持新基建，在这里加分支即可。 */
+function RmacPanelOf(b, o){
+  if(!b) return null;
+  if(RisPool(b)) return RmacPoolHtml(b, o);              /* 反应池 / 扩容池：缓存格 + 输出产物槽 */
+  if(Rof(b.id).length) return RmacRecipeHtml(b, o);      /* 其他有配方的机器：配方选择 */
+  return null;
+}
+/* 反应池面板（单机版；左栏那份已撤，就地选是唯一入口） */
+function RmacPoolHtml(b, o){
+  const slots=POOL_SLOT_MAX[b.id], rl=RpoolOf(o);
+  const cells=RpoolCells(rl), over=cells.length>POOL_CELLS;
+  const PH={'固态':['#8A8778','固'],'液态':['#2E8B9E','液'],'气态':['#7BA05B','气']};
+  const cellBox=(c,i)=>{
+    if(!c) return `<span class="lo-ccell empty">空</span>`;
+    const ph=PH[c.phase]||['#8A8778','?'], overOne=over&&i>=POOL_CELLS;
+    return `<span class="lo-ccell${overOne?' over':''}"
+      title="${esc(c.name)} · R${c.rarity} · ${esc(c.phase)}${overOne?'（超出 '+POOL_CELLS+' 格）':''}">
+      <span class="rr">${'★'.repeat(Math.max(1,Math.min(6,c.rarity|0)))}</span>
+      <span class="nm">${esc(c.name)}</span>
+      <span class="ph" style="background:${ph[0]}">${ph[1]}</span></span>`;
+  };
+  return `
+      <div class="c-sub" style="margin-top:2px"><span><b>缓存格</b>：占了 <b style="color:${over?RW_COL.bad:'inherit'}">${cells.length}</b>/${POOL_CELLS}（按已选反应的进料 + 出料去重推演）</span></div>
+      <div class="lo-ccells">
+        ${Array.from({length:Math.max(POOL_CELLS,cells.length)},(_,i)=>cellBox(cells[i],i)).join('')}
+      </div>
+      ${over?`<div class="c-sub" style="margin-top:4px"><span style="color:${RW_COL.bad}">⚠️ 超过 ${POOL_CELLS} 格 —— 游戏里这些料塞不进一栋，删掉一条反应或分成两栋</span></div>`:''}
+      <div class="c-sub" style="margin-top:8px"><span><b>输出产物</b>（每个槽一条反应；同一条反应重复选不会提速，要提产请加栋数）</span></div>
+      <div style="display:flex;flex-direction:column;gap:4px;margin-top:4px">
+        ${Array.from({length:slots},(_,i)=>{
+          const rid=rl[i]||'', rr=rid?RbyId(rid):null, rt=rr?Rrate(rr):null;
+          return `<div style="display:flex;align-items:center;gap:5px">
+            <span class="lo-tag" style="flex:none">槽 ${i+1}</span>
+            <select class="lo-sel" style="flex:1;min-width:0" onchange="LsetPoolSlot(${i}, this.value, '${o.uid}')">
+              <option value=""${rid?'':' selected'}>— 空 —</option>
+              ${Rof(b.id).map(r=>`<option value="${esc(r.id)}"${rid===r.id?' selected':''}>${esc(Rsummary(r))}</option>`).join('')}
+            </select>
+            <span class="c-id" style="white-space:nowrap">${rt?('出 '+rt.out.map(x=>esc(x.name)+' '+x.perMin+'/分').join('、')):'—'}</span>
+          </div>`; }).join('')}
+      </div>
+      <div class="c-sub" style="margin-top:6px"><span class="c-id">缓存格是静态推演（该栋各反应的料去重），不代表游戏内实时时序；同池并行的栋数口径见产线闭环报告。</span></div>`;
+}
+/* 通用配方面板（单机版）——「以后其他基建都能在这里选」的通用形态 */
+function RmacRecipeHtml(b, o){
+  const rs=Rof(b.id);
+  const rec=o.r?RbyId(o.r):null, rt=rec?Rrate(rec):null;
+  return `
+      <div class="c-sub" style="margin-top:2px"><span>可选 <b>${rs.length}</b> 条配方</span></div>
+      <select class="lo-sel" style="width:100%;margin-top:4px" onchange="LsetRecipe(this.value, '${o.uid}')">
+        <option value=""${o.r?'':' selected'}>— 未指定 —</option>
+        ${rs.map(r=>`<option value="${esc(r.id)}"${o.r===r.id?' selected':''}>${esc(Rsummary(r))}</option>`).join('')}
+      </select>
+      ${rt?`<div class="c-sub" style="margin-top:6px"><span>单台产能 <b>${rt.out.map(x=>esc(x.name)+' '+x.perMin+'/分').join('、')}</b> · ${rt.seconds} 秒/轮 · ${rt.roundsPerMin} 轮/分</span></div>`:''}`;
+}
 /* ⭐v126 选货浮层搜索 + 稀有度筛选（博士「东西几百个太多了」——281 件翻不动）：
    oninput / 点 chip 只走轻量 DOM 过滤（LdlvRefilter），**不走 render** —— render
    重建整个画布 DOM，输入框每敲一个字就丢焦点。状态存 L.dlvPop（q/rare/jar），选中
@@ -2593,6 +2696,9 @@ function LonMouseUp(){
     const t=Date.now();
     if(t-L.lastT<420&&L.lastUid===st.uid){ Ldel(st.uid); return; }
     L.lastT=t; L.lastUid=st.uid;
+    /* ⭐v135 单击机器 = 选中 + 就地弹出选择浮层（这台有得选才弹；拖动/双击不受影响） */
+    const _o=L.objs.filter(q=>q.uid===st.uid)[0];
+    if(_o&&RmacPanelOf(byBp(_o.id), _o)) L.macPop={uid:st.uid};
   }
   render();
 }
@@ -2635,6 +2741,7 @@ const LO_KEEP_IDS=['sp_hub_1','sp_sub_hub_1'];
      / 便捷存取站 carrier_1 / 留言信标 marker_1 —— 博士 2026-09-21 要求不出现在试摆里。
    拉黑对「默认清单」和「分类下拉单独看」都生效；要放回来，把 ID 从这里删掉即可。 */
 const LO_SKIP_IDS=['power_pole_2','power_pole_3',
+  'mix_pool_1',                         /* ⭐v136 基础反应池不作独立条目 —— 界面上的「反应池」= 扩容池（博士只用扩容） */
   'squirter_1','squirter_nop_1',        /* 洒水机 */
   'dumper_1','dumper_nop_1',            /* 给水器 */
   'travel_pole_1','travel_pole_nop_1',  /* 滑索架 */
@@ -2769,6 +2876,24 @@ function Rof(machineId){
     .sort((a,b)=>((a.sortId||0)-(b.sortId||0))||(a.id<b.id?-1:a.id>b.id?1:0));
 }
 function Rgroup(r){ return r?((((DB.recipe_groups||{}).groups)||{})[r.group]||null):null; }
+/* ⭐v134 反应池面板（博士 2026-09-24：「布局试摆里反应池也要像游戏里那样显示缓存槽和选择输出产物」）。
+   游戏事实（v133 三重核实）：一栋池子有 N 个缓存格、可同时跑多条**不同**配方（同一条不叠加提速）；
+   扩容池（mix_pool_2）8 格 / 最多同时 3 条反应；基础池（mix_pool_1）格少（社区口径「以前只有 5 个口」）。
+   数据依据：FactoryMachineCraftTable.buffers = 每条反应涉及的缓冲物（= 占格）。
+   沙盘侧：池子机器用 o.rl（反应数组，≤ 上限）而不是 o.r（单配方）。 */
+const POOL_SLOT_MAX={'mix_pool_1':2, 'mix_pool_2':3};   /* 池子 id → 同时反应数上限 */
+const POOL_CELLS=8;                                      /* 缓存格数（实机口径：全解锁 8 格） */
+function RisPool(b){ return !!(b&&POOL_SLOT_MAX[b.id]); }
+function RpoolOf(o){ if(o&&o.rl&&o.rl.length) return o.rl.filter(Boolean); return (o&&o.r)?[o.r]:[]; }
+/* 缓存格推演：把该栋已选各条反应的进料 + 出料去重 → 每格一件料（静态推演，非游戏内实时时序） */
+function RpoolCells(rl){
+  const cells=[];
+  (rl||[]).forEach(rid=>{ const r=RbyId(rid); if(!r) return;
+    (r.ingredients||[]).concat(r.outcomes||[]).forEach(x=>{
+      if(!cells.some(c=>c.id===x.id)) cells.push({id:x.id, name:x.name, phase:x.phase,
+        rarity:((DB.items||{})[x.id]||{}).rarity||1}); }); });
+  return cells;
+}
 function RphaseName(t){ return (((DB.recipe_groups||{}).phaseNames)||{})[String(t)]||('相态'+t); }
 /* 每分钟轮数：配方的 seconds 是「一轮多少秒」→ 一分钟 60/seconds 轮 */
 function Rrounds(r){ return (r&&r.seconds)?(60/r.seconds):0; }
@@ -2838,14 +2963,35 @@ function Rtargets(){
   return sel.filter(o=>o.id===first.id);
 }
 /* 给选中的设施设配方（'' = 清掉）。批量：只动与第一台同机种的那些。 */
-function LsetRecipe(rid){
-  const L=Linit(), list=Rtargets();
+function LsetRecipe(rid, uid){
+  const L=Linit();
+  /* ⭐v135 uid 传入 = 只改这一台（浮层就地选）；不传 = 原来的「选中同机种批量改」 */
+  const list=uid ? [L.objs.filter(o=>o.uid===uid)[0]].filter(Boolean) : Rtargets();
   if(!list.length){ L.msg='先选中一台生产设施（能选配方的只有有配方的那 18 台）'; render(); return; }
   Lpush();
   list.forEach(o=>{ if(rid) o.r=rid; else delete o.r; });
   const r=rid?RbyId(rid):null;
   const b=byBp(list[0].id);
   L.msg=(r?('「'+b.name+'」×'+list.length+' 已设为：'+Rsummary(r)):(b.name+'×'+list.length+' 的配方已清掉'));
+  render();
+}
+/* ⭐v134 给选中的池子设第 i 条反应（'' = 清空该槽）。同机种批量套用，与单配方口径一致。 */
+function LsetPoolSlot(i, rid, uid){
+  const L=Linit();
+  const list=uid ? [L.objs.filter(o=>o.uid===uid)[0]].filter(Boolean) : Rtargets();
+  if(!list.length){ L.msg='先选中一台反应池（基础池 / 扩容池）'; render(); return; }
+  const b=byBp(list[0].id);
+  if(!RisPool(b)){ L.msg=b.name+' 不是反应池 —— 它用普通配方下拉'; render(); return; }
+  Lpush();
+  list.forEach(o=>{
+    const rl=RpoolOf(o);
+    if(rid) rl[i]=rid; else rl.splice(i,1);
+    o.rl=rl.filter((x,j,a)=>x&&a.indexOf(x)===j);   /* 去重 + 去空（同一条反应选了两次只算一次） */
+    delete o.r;
+  });
+  const cells=RpoolCells(RpoolOf(list[0]));
+  L.msg='「'+b.name+'」×'+list.length+' 已设 '+RpoolOf(list[0]).length+'/'+POOL_SLOT_MAX[b.id]+' 条反应 · 缓存格占 '
+    +cells.length+'/'+POOL_CELLS+(cells.length>POOL_CELLS?' —— ⚠️ 超格了，游戏里这些料塞不进一栋，删掉一条或换两栋':'');
   render();
 }
 /* 选中设施的配方摘要（给计数区用） */
@@ -2856,6 +3002,7 @@ function RselectedInfo(){
   const ids=[];
   list.forEach(o=>{ if(o.r&&ids.indexOf(o.r)<0) ids.push(o.r); });
   return {building:b, count:list.length, recipes:Rof(b.id), chosen:ids,
+          first:list[0], isPool:RisPool(b),
           recipe:ids.length===1?RbyId(ids[0]):null};
 }
 /* ========== 产线闭环 · 排布器 v1（2026-09-21）==========
@@ -5491,6 +5638,24 @@ function renderLayout(){
      ⭐v126：加搜索框 + 稀有度 chip（博士「东西几百个太多了」）。服务端过滤只渲染
      匹配项（render 路径保持筛选），oninput/点 chip 走 LdlvRefilter 轻量 DOM 过滤
      （不 render，防输入框丢焦点）。条目带 data-nm/data-rr 供 DOM 过滤。 */
+  /* ⭐v135 机器选择浮层（点机器弹出；定位与样式沿用协议核心出货浮层那套） */
+  const macPop=(function(){
+    if(!L.macPop) return '';
+    const o=L.objs.filter(x=>x.uid===L.macPop.uid)[0]; if(!o) return '';
+    const b=byBp(o.id); if(!b) return '';
+    const html=RmacPanelOf(b, o); if(!html) return '';
+    /* ⭐v136：宽 440 → 缓存格 4 个一行；位置优先放机器**下方**（别盖住机器本体），
+       下方放不下（机器贴着画布底）才翻到上方。 */
+    const W=440, H_EST=370;
+    const _lo=4, _hi=Math.max(4, L.size*CELL-W-6);
+    const cx=Math.min(_hi, Math.max(_lo, o.x*CELL+o.w*CELL/2-W/2));
+    const below=(o.y+o.d)*CELL+8;
+    const cy=(below+H_EST<=L.size*CELL) ? below : Math.max(4, o.y*CELL-8-H_EST);
+    return `<div class="lo-dlvpop lo-macpop" style="left:${cx}px;top:${cy}px;width:${W}px" onclick="event.stopPropagation()">
+        <div class="hd"><b>${esc(b.name)}</b> <span class="c-id">${esc(b.id)}</span>
+          <span class="x" onclick="LmacClose()" title="关闭">×</span></div>
+        ${html}</div>`;
+  })();
   const dlvPop=(function(){
     if(!L.dlvPop) return '';
     const o=L.objs.filter(x=>x.uid===L.dlvPop.uid)[0];
@@ -5551,9 +5716,10 @@ function renderLayout(){
     }
     const fp=Lfp(b);
     /* 这台设施选了配方吗？选了就把产出物品标在格子上、并给接口分「走 / 不走」 */
-    const rec=o.r?RbyId(o.r):null;
+    const _rl=RpoolOf(o);
+    const rec=_rl.length?RbyId(_rl[0]):(o.r?RbyId(o.r):null);
     const rp=rec?RportSets(rec):null;
-    const prod=o.prod||((rec&&rec.outcomes&&rec.outcomes[0])?rec.outcomes[0].name:'');
+    const prod=o.prod||(_rl.length>1?('同池 '+_rl.length+' 条反应'):((rec&&rec.outcomes&&rec.outcomes[0])?rec.outcomes[0].name:''));
     /* ⭐v103：散布机 tooltip 前缀 —— 通入的气体 + 环境范围（数据 FactoryVaporizerTable） */
     const vp=vaporizerOf(b);
     const vpTtl=vp?('【环境圈：'+esc(envGasName(o.gas||1))+' · 环境 '+vaporizerSide(b)[0]+'×'+vaporizerSide(b)[1]+' 格（外扩 '+vaporizerSide(b)[2]+'）】'):'';
@@ -5656,8 +5822,47 @@ function renderLayout(){
     if(p) parts.push('管道 '+p+' 条（流体 '+rt.fluidIn+'/分 ÷ 120）');
     return parts.length?parts.join(' · '):'这配方不用外接料';
   };
-  /* ---- [1] 配方块：单台机器的配方下拉 + 产能读数 ---- */
-  const recipeBlock=(rInfo&&rInfo.recipes.length)?`
+  /* ---- [1] 配方块：池子 → 反应池面板（缓存格 + 输出产物槽）；其他机器 → 单配方下拉 ---- */
+  const poolPanel=(rInfo&&rInfo.isPool)?(function(){
+    const slots=POOL_SLOT_MAX[rInfo.building.id], rl=RpoolOf(rInfo.first);
+    const cells=RpoolCells(rl), over=cells.length>POOL_CELLS;
+    const PH={'固态':['#8A8778','固'],'液态':['#2E8B9E','液'],'气态':['#7BA05B','气']};
+    const cellBox=(c,i)=>{
+      if(!c) return `<span class="lo-ccell empty">空</span>`;
+      const ph=PH[c.phase]||['#8A8778','?'], overOne=over&&i>=POOL_CELLS;
+      return `<span class="lo-ccell${overOne?' over':''}"
+        title="${esc(c.name)} · R${c.rarity} · ${esc(c.phase)}${overOne?'（超出 '+POOL_CELLS+' 格）':''}">
+        <span class="rr">${'★'.repeat(Math.max(1,Math.min(6,c.rarity|0)))}</span>
+        <span class="nm">${esc(c.name)}</span>
+        <span class="ph" style="background:${ph[0]}">${ph[1]}</span></span>`;
+    };
+    return `
+    <div class="lo-rp">
+      <div class="lo-ph">⚗️ 反应池 · <b>${esc(rInfo.building.name)}</b> <span class="lo-tag">v134 · 对齐游戏面板</span> — 缓存格 <b>${POOL_CELLS}</b> 个 · 可同时跑 <b>${slots}</b> 条反应${rInfo.count>1?(' · 会同时改选中的 '+rInfo.count+' 台同机种'):''}</div>
+      <div class="c-sub" style="margin-top:6px"><span><b>缓存格</b>：占了 <b style="color:${over?RW_COL.bad:'inherit'}">${cells.length}</b>/${POOL_CELLS}（按已选反应的进料 + 出料去重推演）</span></div>
+      <div class="lo-ccells">
+        ${Array.from({length:Math.max(POOL_CELLS,cells.length)},(_,i)=>cellBox(cells[i],i)).join('')}
+      </div>
+      ${over?`<div class="c-sub" style="margin-top:4px"><span style="color:${RW_COL.bad}">⚠️ 超过 ${POOL_CELLS} 格 —— 游戏里这些料塞不进一栋，删掉一条反应或分成两栋</span></div>`:''}
+      <div class="c-sub" style="margin-top:8px"><span><b>输出产物</b>（每个槽一条反应；同一条反应重复选不会提速 —— 要提产请加栋数）</span></div>
+      <div style="display:flex;flex-direction:column;gap:4px;margin-top:4px">
+        ${Array.from({length:slots},(_,i)=>{
+          const rid=rl[i]||'', rr=rid?RbyId(rid):null, rt=rr?Rrate(rr):null;
+          return `<div style="display:flex;align-items:center;gap:6px">
+            <span class="lo-tag" style="flex:none">槽 ${i+1}</span>
+            <select class="lo-sel" style="flex:1" onchange="LsetPoolSlot(${i}, this.value)">
+              <option value=""${rid?'':' selected'}>— 空 —</option>
+              ${rInfo.recipes.map(r=>`<option value="${esc(r.id)}"${rid===r.id?' selected':''}>${esc(Rsummary(r))}</option>`).join('')}
+            </select>
+            <span class="c-id" style="white-space:nowrap">${rt?('出 '+rt.out.map(x=>esc(x.name)+' '+x.perMin+'/分').join('、')):'—'}</span>
+          </div>`; }).join('')}
+      </div>
+      <div class="c-sub" style="margin-top:6px"><span class="c-id">缓存格是**静态推演**（该栋各反应的料去重），不代表游戏内实时时序；同池并行的栋数口径见产线闭环报告。</span></div>
+    </div>`;
+  })():'';
+  /* ⭐v135：池子的选择入口已改到「画布上点机器就地选」（LmacOpen）——左栏不再重复给（v104 同款：
+     双入口语义混乱）。下面这份 poolPanel 仅作占位不再渲染。 */
+  const recipeBlock=(rInfo&&rInfo.recipes.length)?(false?poolPanel:`
     <div class="lo-rp">
       <div class="lo-ph">🧾 配方 · <b>${esc(rInfo.building.name)}</b> — 可选 ${rInfo.recipes.length} 条${rInfo.count>1?' · 会同时改选中的 '+rInfo.count+' 台同机种':''}</div>
       <select class="lo-sel" onchange="LsetRecipe(this.value)">
@@ -5670,7 +5875,7 @@ function renderLayout(){
         <div class="c-sub" style="margin-top:4px"><span>单台进料要：${esc(rCarrier(rRt))}</span></div>
         <div class="c-sub" style="margin-top:4px"><span class="c-id">接口序号是<b>同类接口内的下标</b>，且只是「这几种料可以走哪几个口」的<b>集合</b>，不是一对一 —— 详见页面说明。</span></div>`:''}
       ${rInfo.chosen.length>1?`<div class="c-sub" style="margin-top:6px"><span class="c-id">选中的这几台配方不一致（共 ${rInfo.chosen.length} 种）；下拉里选一条会统一改。</span></div>`:''}
-    </div>`:'';
+    </div>`):'';
   /* ⭐v103 左栏气体选择块 → ⭐v104 改为**画布就地选**（博士：「想要点机器就地选」）：
      选中散布机时浮动条直接出现在机器正上方，左栏这份入口撤掉（双入口语义混乱）。
      范围/速率的完整说明挪进帮助手册💨区块。 */
@@ -5979,7 +6184,7 @@ function renderLayout(){
       <div class="lo-pal">${recipeBlock}${palHead}${pal||'<div class="empty">没有匹配的分类</div>'}</div>
       <div class="lo-stage">
         <div class="lo-canv" style="padding:${CELL+6}px">
-          <div class="lo-canvas" style="--locell:${CELL}px;width:${L.size*CELL}px;height:${L.size*CELL}px;transform:rotate(${L.viewRot||0}deg)">${presetBand}${envLayer}${cells}${gasBar}${dlvPop}</div>
+          <div class="lo-canvas" style="--locell:${CELL}px;width:${L.size*CELL}px;height:${L.size*CELL}px;transform:rotate(${L.viewRot||0}deg)">${presetBand}${envLayer}${cells}${gasBar}${dlvPop}${macPop}</div>
         </div>
         <div class="c-sub" style="margin-top:8px">
           <span>已放 <b>${L.objs.length}</b> 个 · 占地 <b>${used}</b> 格</span>
