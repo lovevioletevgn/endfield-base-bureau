@@ -3,7 +3,7 @@
 《明日方舟：终末地》的**基建数据库与产线排布器** —— 查数据、摆产线、规划跨地区货运，一个页面全办。
 （英文名 endfield-base-**bureau**，「bureau」就是「局」—— 中文名只是把原名翻译对了。）
 
-**🔗 在线使用**：<https://workbuddy.link/p/J3PhBsBNUGw3TAviQynHB3>（免安装免登录，永远指向最新版）
+**🔗 在线使用**：<https://workbuddy.link/p/YQO3ePeFiFgF6BrMKIpFbs>（免安装免登录，永远指向最新版）
 
 - **📊 数据查询** —— 建筑 / 配方 / 物品 / 矿区 / 基地面积 / 物流规则，全部对齐游戏 1.5.3 配置表，逐条给出来源可复核
 - **🏗️ 布局试摆** —— 多基地多画布页签，像游戏里一样摆机器、连传送带：供电范围、环境圈、准入口限速、就地选气/出货全都有
@@ -17,7 +17,7 @@
 
 ## 🔗 在线体验（无需安装）
 
-**👉 <https://workbuddy.link/p/J3PhBsBNUGw3TAviQynHB3>**
+**👉 <https://workbuddy.link/p/YQO3ePeFiFgF6BrMKIpFbs>**
 
 完整成品页托管在 WorkBuddy 资料库，打开即用 —— 查询、蓝图俯视图、产线排布器全都在里面，不用装 Python、不用 clone、不用构建，也**不需要注册或登录**。这条链接始终指向最新发布版，URL 永远不变。
 

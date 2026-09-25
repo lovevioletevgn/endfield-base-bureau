@@ -56,7 +56,7 @@ PY = sys.executable
 DEF_LIB = os.environ.get("KB_LIB_DIR") or (
     r"D:\Program Files\wb\WorkBuddy\resources\app.asar.unpacked"
     r"\resources\plugins\workbuddy-builtin\skills\library\page")
-DEF_NODE = os.environ.get("KB_NODE_ID") or "J3PhBsBNUGw3TAviQynHB3"
+DEF_NODE = os.environ.get("KB_NODE_ID") or "YQO3ePeFiFgF6BrMKIpFbs"
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROJ = os.path.dirname(HERE)
 WORK = os.path.join(PROJ, "_tx_push")
