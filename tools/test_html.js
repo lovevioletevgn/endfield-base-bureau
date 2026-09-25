@@ -4323,4 +4323,15 @@ chk('C6-b2 源码门禁：Lreroll（重排其余）落盘段必须重摆 sink（
     'Lreroll 段含 sink 重摆=' + /planRole\s*=\s*'sink'/.test(
       rawCode.slice(Math.max(0, rawCode.indexOf('function Lreroll')), rawCode.indexOf('function Lreroll') + 9000)));
 
+/* ⭐v156 协议容量文案：标题不得再写成「上限」（会被读成基地的墙，与正文「基地内不受限」矛盾）。
+   正向：必须出现「野外设备参考」；反向：不得出现旧的「📶 协议容量上限」措辞。 */
+chk('v156 协议容量标签：标题须定位为「野外设备参考」，不得再写「上限」',
+    (() => {
+      const hasNew = /协议容量（野外设备参考）/.test(rawCode);
+      const noOld = !/📶 协议容量上限/.test(rawCode);
+      return hasNew && noOld;
+    })(),
+    '协议容量标签改为「野外设备参考」=' + (/协议容量（野外设备参考）/.test(rawCode)
+      && !/📶 协议容量上限/.test(rawCode)));
+
 report();

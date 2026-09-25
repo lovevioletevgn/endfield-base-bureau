@@ -7404,9 +7404,11 @@ function renderLayout(){
           ${Object.keys(pw.byCat).length?`<span class="c-id">${Object.keys(pw.byCat).map(k=>esc(k)+' '+pw.byCat[k]).join(' · ')}</span>`:''}
         </div>
         <div class="c-sub" style="margin-top:4px">
-          ${/* ⭐v145：口径改成说明 —— 协议容量只约束集成核心区域**外**的野外设备，基地内不受限（博士 2026-09-24 游戏内确认）。 */''}
-          <span class="c-id">📶 协议容量上限 <b>${bw.cap!=null?bw.cap:'—'}</b>${bw.cap!=null?('（'+esc(bw.zone||'本区')+'满级档）'):'（未指定基地）'} —— <b>只约束集成核心区域外的野外设备，基地内不受限制</b></span>
-          <span class="c-id">（每座设备的 <code>bandwidth</code> 累加；上限取该建造区满级档 —— 配置表数据）</span>
+          ${/* ⭐v145/⭐v156：口径改成说明 —— 协议容量只约束集成核心区域**外**的野外设备，基地内不受限（博士 2026-09-24 游戏内确认）。
+                ⭐v156 措辞修正：原来标题写「协议容量上限 N」，容易被读成"基地的容量上限"（与正文自相矛盾）。
+                  改为「（野外设备参考）」并把数值定位成"该区野外上限"——本画布排布不受它约束。 */''}
+          <span class="c-id">📶 协议容量（野外设备参考）<b>${bw.cap!=null?bw.cap:'—'}</b>${bw.cap!=null?('（'+esc(bw.zone||'本区')+'上限）'):'（未指定基地）'} —— <b>只约束集成核心区域外的野外设备，基地内排布不受它限制</b></span>
+          <span class="c-id">（每座设备的 <code>bandwidth</code> 累加；上限取该建造区满级档 —— 配置表数据，此处仅作参考）</span>
         </div>
         ${presetBus?`
         <div class="c-sub" style="margin-top:4px">
