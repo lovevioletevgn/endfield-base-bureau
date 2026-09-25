@@ -150,6 +150,17 @@ def split_parts(s, label):
     return parts
 
 
+def _count_node_ids(s):
+    """统计**标签上**的 data-page-node-id（⭐不能用裸 str.count）。
+
+    裸 count 会把**页面正文里**的同名字符串也数进去 —— 实测踩过：v164 的版本说明里
+    写了「data-page-node-id 24/24」「把 data-page-node-id 挪到 lang 前」，这两处随
+    changelog 进入内联数据，导致统计 24 → 26，锚点校验误报拒收（实际锚点值集合完全相同）。
+    判据必须是「出现在 <tag ...> 内部」，且用 [^<>]* 保证不跨标签边界。
+    """
+    return len(re.findall(r'<[a-zA-Z][^<>]*\sdata-page-node-id="[^"]*"', s))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", required=True, help="线上产物（带平台注入）")
@@ -236,13 +247,13 @@ def main():
         return 1
 
     inj = {
-        "data-page-node-id": merged.count("data-page-node-id"),
+        "data-page-node-id": _count_node_ids(merged),
         "pnid 注释": merged.count("pnid:"),
         "inject.js": merged.count("page_comm/inject.js"),
     }
     print("\n✅ 剥注入后与新产物逐字节相等")
     print("   平台注入保留：%s" % "  ".join("%s×%d" % (k, v) for k, v in inj.items()))
-    base_inj = base.count("data-page-node-id")
+    base_inj = _count_node_ids(base)
     assert inj["inject.js"] > 0, "注入没保住（inject.js 丢了），别上传"
     # 锚点数量必须与线上基线**完全一致** —— 只判 >0 挡不住"从 24 掉到 7"这种
     assert inj["data-page-node-id"] == base_inj, \

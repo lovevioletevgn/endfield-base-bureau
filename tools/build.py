@@ -595,7 +595,10 @@ def main():
         if b.get("itemId"):
             used.add(b["itemId"])
     item_index = {}
-    for iid in used:
+    # ⚠️ 2026-09-25：`used` 是 set —— 迭代顺序受 PYTHONHASHSEED 随机化影响，
+    #    每次重跑 items.json 的**键顺序**都变，产生纯噪声的 git diff（427 键集合与内容完全相同）。
+    #    改 sorted() 让输出可复现。**只影响键顺序**，键集合与每个键的内容一字不动。
+    for iid in sorted(used):
         d = item_detail.get(iid)
         if not d:
             continue
