@@ -3926,6 +3926,21 @@ const RW_MERGE_MIN_SAVE=4;
 /* 【一句话】布线总控：把摆好的机器连成产线——多点对多点连接、传送带/管道分流，
    内部调 RwFindSplit/RwFindMerge 找分流汇流点、RwPath 算具体路径。
    分支多（8 种介质 × 多源多汇 × 已有线避让），但无深层嵌套；293 行是全项目最长函数。 */
+/* ⭐v153 外部接入失败的点名文案（纯 if/else —— 三元嵌套进双层模板里会绊语法检查） */
+function RfeedWhyTxt(f){
+  if(f.why==='port') return '没有空闲进料管口';
+  if(f.why==='edge') return '画布边缘没有空闲格';
+  if(f.s) return '走线过不去（接入点 ('+f.s.x+','+f.s.y+') → 端口外侧 ('+f.t.x+','+f.t.y+')）';
+  return '走线过不去';
+}
+/* ⭐v154 外部接入的双模式显示文案（直连 / 暗管对）—— 文案拼装在顶层做，模板里只插值 */
+function RfeedModeTxt(f){
+  if(f.mode==='udpipe'){
+    const org=f.directLen==null?'（直连原本铺不成）':('直连需 '+f.directLen+' 格，');
+    return '<b>暗管对</b>：入口 ('+f.entry.x+','+f.entry.y+') ↔ 出口 ('+f.exit.x+','+f.exit.y+') · 出口→机器 '+f.cells+' 格'+(f.saved>0?('（'+org+'省 '+f.saved+' 格）'):('（'+org+'占地持平）'));
+  }
+  return '接入点 <b>('+f.edge.x+','+f.edge.y+')</b>';
+}
 function RwRoute(placed, res, size, corr, extraBusy){
   /* 【分节总览】阶段一（连什么）：挑端口 → 定汇流分组 → 预留端点 → 自动摆分流器；
                  阶段二（怎么连）：统一走线（RwPath 寻路 + 桥格）→ 吞吐体检 → stats 落账。
@@ -4290,6 +4305,88 @@ function RwRoute(placed, res, size, corr, extraBusy){
                       -(Math.abs(b2.s.x-b2.t.x)+Math.abs(b2.s.y-b2.t.y))));
   const axis={};   /* 已铺线格的轴向（'h' 横 / 'v' 竖）—— 桥接穿越的判定依据 */
   const cellMed={};/* ⭐v152 已铺线格的介质（true=管）—— 管×带交叉不放假桥的判定依据（博士 2026-09-24 游戏实锤：3D 里管在上层、带在下层，交叉天然合法无需桥；只有同介质交叉才要桥） */
+  /* ⭐v154 暗管入口/出口对（博士 2026-09-25 实机规则：一对一定向绑定、同建筑同物料、
+     可旋转、地下虚拟管流速同普通管道）：直连 ≥12 格或直连失败时评估「入口 3×3 贴画布边
+     （input 口朝画布外）+ 出口 3×3 近机器（output 口外侧格起地面短管）」——
+     占地(18格)+短管 < 直连管格 才采用；短 feed 不评估（直连行为零变化）。 */
+  const udBldgs=[];      /* 摆下的入口/出口建筑（LawRun 落盘成 objs，planRole='udpipe'） */
+  let udPairN=0;         /* 配对编号（tooltip/报告用） */
+  const udFootFree=(ox,oy,w,d)=>{ for(let yy=oy;yy<oy+d;yy++) for(let xx=ox;xx<ox+w;xx++){
+      if(xx<0||yy<0||xx>=size||yy>=size) return false;
+      if(busy[K(xx,yy)]||reserved[K(xx,yy)]) return false; } return true; };
+  /* 出口找位：围绕机器端口外侧格 t 逐环找 3×3 空位 + 朝向，output 口外侧格 s2 → RwPath(s2,t) 最短者。
+     只在引号外的括号计数——RwPath 调用有上限（4 朝向 × 5 环 × 每环第一个合格格），不会拖慢铺线。 */
+  const udExitFor=(t, block)=>{
+    const ub=byBp('udpipe_unloader_1'); if(!ub) return null;
+    const fp=Lfp(ub), op=(ub.ports||[]).filter(p=>p.kind==='output')[0];
+    if(!op) return null;
+    let best=null;
+    for(let rot=0;rot<360;rot+=90){
+      const dm=Ldims(ub,rot);
+      const q=LportXY(op,rot,fp[0],fp[1]);
+      const dir=LportDirRot(op,rot,fp[0],fp[1]);
+      const dx=dir==='l'?-1:dir==='r'?1:0, dy=dir==='u'?-1:dir==='d'?1:0;
+      for(let r=0;r<=5;r++){
+        for(let ddx=-r;ddx<=r;ddx++){
+          for(let ddy=-r;ddy<=r;ddy++){
+            if(Math.max(Math.abs(ddx),Math.abs(ddy))!==r) continue;
+            const s2={x:t.x+ddx, y:t.y+ddy};
+            if(s2.x<0||s2.y<0||s2.x>=size||s2.y>=size) continue;
+            if(busy[K(s2.x,s2.y)]||reserved[K(s2.x,s2.y)]) continue;
+            const ox=s2.x-q.x-dx, oy=s2.y-q.z-dy;
+            if(!udFootFree(ox,oy,dm.w,dm.d)) continue;
+            const manh=Math.abs(ddx)+Math.abs(ddy);
+            if(best && manh>=best.manh) continue;          /* 曼哈顿是路径长下界，不可能更短 */
+            const sp=RwPath(s2, t, busy, size, block, axis);
+            if(!sp) continue;
+            best={sp:sp, s2:s2, rot:rot, ox:ox, oy:oy, manh:manh};
+          }
+        }
+        if(best) break;                                    /* 近环有解就不再扩环（朝向间用 manh 剪枝，不提前 break） */
+      }
+    }
+    return best;
+  };
+  /* 入口找位：input 口朝画布外（外侧格出界），贴边滑动取离出口最近者 */
+  const udEntryFor=(uPos, block)=>{
+    const lb=byBp('udpipe_loader_1'); if(!lb) return null;
+    const fp=Lfp(lb), ip=(lb.ports||[]).filter(p=>p.kind==='input')[0];
+    if(!ip) return null;
+    let best=null;
+    for(let rot=0;rot<360;rot+=90){
+      const dm=Ldims(lb,rot);
+      const q=LportXY(ip,rot,fp[0],fp[1]);
+      const dir=LportDirRot(ip,rot,fp[0],fp[1]);
+      const dx=dir==='l'?-1:dir==='r'?1:0, dy=dir==='u'?-1:dir==='d'?1:0;
+      for(let slide=0; slide<size; slide++){
+        const ox=dir==='l'?-q.x:(dir==='r'?size-1-q.x:slide);
+        const oy=dir==='u'?-q.z:(dir==='d'?size-1-q.z:slide);
+        const px=ox+q.x+dx, py=oy+q.z+dy;
+        if(px>=0&&px<size&&py>=0&&py<size) continue;       /* 口没朝界外，这个朝向不对 */
+        if(ox<0||oy<0||ox+dm.w>size||oy+dm.d>size) continue;
+        if(!udFootFree(ox,oy,dm.w,dm.d)) continue;
+        const dist=Math.abs(ox-uPos.x)+Math.abs(oy-uPos.y);
+        if(!best || dist<best.dist) best={x:ox, y:oy, rot:rot, dist:dist};
+      }
+    }
+    return best;
+  };
+  /* 单根 feed 的暗管对评估：成功返回 {loader, unloader, shortPath, shortLen, saved, foot}，失败 null */
+  const udTryPair=(j, path, block)=>{
+    const directLen=path?path.length:1e9;
+    const t=j.t;
+    const ex=udExitFor(t, block);
+    if(!ex) return null;
+    const en=udEntryFor({x:ex.ox, y:ex.oy}, block);
+    if(!en) return null;
+    const foot=18;                                          /* 两座 3×3 = 18 格 */
+    if(foot+ex.sp.length>=directLen) return null;           /* 不比直连省，不折腾 */
+    return {loader:{id:'udpipe_loader_1', x:en.x, y:en.y, rot:en.rot},
+            unloader:{id:'udpipe_unloader_1', x:ex.ox, y:ex.oy, rot:ex.rot},
+            shortPath:ex.sp, shortLen:ex.sp.length,
+            directLen:directLen>=1e9?null:directLen,
+            saved:(directLen>=1e9?null:directLen-foot-ex.sp.length), foot:foot};
+  };
   jobs.forEach(j=>{
     let s=j.s; let t=j.t;
     const mine=k=>k===K(s.x,s.y)||k===K(t.x,t.y);
@@ -4322,6 +4419,23 @@ function RwRoute(placed, res, size, corr, extraBusy){
             if(j.feedRef) j.feedRef.edge={x:ss.x, y:ss.y}; break; }
         }
         if(path) break;
+      }
+    }
+    /* ⭐v154 暗管对评估：直连失败，或直连 ≥12 格（18 格固定开销的临界）时——
+       「入口贴边 + 出口近机器 + 地下直连」总占地更省才采用；短 feed 一律维持直连（零变化）。 */
+    if(j.feed && (!path || path.length>=12)){
+      const up=udTryPair(j, path, block);
+      if(up){
+        udBldgs.push({id:up.loader.id, x:up.loader.x, y:up.loader.y, rot:up.loader.rot, pairId:'udp'+(udPairN++)});
+        udBldgs.push({id:up.unloader.id, x:up.unloader.x, y:up.unloader.y, rot:up.unloader.rot, pairId:'udp'+(udPairN-1)});
+        up.loaderCells=[];
+        for(let yy=up.loader.y; yy<up.loader.y+3; yy++) for(let xx=up.loader.x; xx<up.loader.x+3; xx++){ busy[K(xx,yy)]=1; up.loaderCells.push(K(xx,yy)); }
+        for(let yy=up.unloader.y; yy<up.unloader.y+3; yy++) for(let xx=up.unloader.x; xx<up.unloader.x+3; xx++){ busy[K(xx,yy)]=1; }
+        path=up.shortPath; s=up.shortPath[0];
+        if(j.feedRef){ j.feedRef.mode='udpipe'; j.feedRef.entry={x:up.loader.x, y:up.loader.y};
+          j.feedRef.exit={x:up.unloader.x, y:up.unloader.y}; j.feedRef.cells=up.shortLen;
+          j.feedRef.directLen=up.directLen>=1e9?null:up.directLen; j.feedRef.saved=up.saved;
+          delete j.feedRef.edge; }
       }
     }
     if(!path){
@@ -4379,7 +4493,8 @@ function RwRoute(placed, res, size, corr, extraBusy){
         to:j.parent.machineName, isPipe:j.isP, cells:path.length,
         /* ⭐v143 P3：存路径格（'x,y' 列表）—— 报告用它把画布上的准入口按格匹配到依赖 */
         path:path.map(c=>c.x+','+c.y), lines:RwLines(j.child.demand, j.isP),
-        viaMerge:!!j.fromMerge, viaSplit:!!j.fromSplit});
+        viaMerge:!!j.fromMerge, viaSplit:!!j.fromSplit,
+        fmode:(j.feedRef&&j.feedRef.mode==='udpipe')?'udpipe':'direct'});
     }
   });
   /* ---------- 吞吐体检（路线图 ②a）：每条依赖「要几条线 / 实际连了几条 / 单线负荷」----------
@@ -4398,6 +4513,7 @@ function RwRoute(placed, res, size, corr, extraBusy){
   });
   /* stats（⑤-2）：汇流/分流器实际摆了几个、有几条线被丢下 —— 报告与回归测试都看这几个数 */
   return {belts:belts, warns:warns, links:links, loads:loads, feeds:feeds, feedFail:feedFail,
+          bldgs:udBldgs,
           stats:{split:spN, merge:mgN, dropped:dropN}};
 }
 function RwFindSplit(size, src, busy, corr){
@@ -4715,6 +4831,12 @@ function LawRun(targetId, perMin){
     obj.planRole='link';
     if(bl.merge) obj.planRole='merge';
     if(bl.split) obj.planRole='split';
+    L.objs.push(obj);
+  });
+  (rt.bldgs||[]).forEach(b=>{
+    /* ⭐v154 暗管入口/出口对：作为普通建筑落盘（ports 渲染/接口统计全自动生效） */
+    const obj=Lmk(byBp(b.id), b.x, b.y, b.rot);
+    obj.planRole='udpipe'; obj.pairId=b.pairId;
     L.objs.push(obj);
   });
   L.plan={res:res, plan:plan, route:rt, rawNeed:rawNeedOf(res)};
@@ -6048,6 +6170,16 @@ function Rreport(P, pw, bw, th, lim, st, rawNeed, sc){
       ${P.route.links.length?`
       <div class="c-sub" style="margin-top:6px"><span><b>已连管线</b> ${P.route.links.length} 条</span></div>
       ${P.route.links.map(k=>`<div class="c-sub" style="margin-top:2px"><span>· ${esc(k.item)} ${k.perMin}/分：${esc(k.from)} → ${esc(k.to)} · ${k.isPipe?'管道':'传送带'} ${k.cells} 格</span></div>`).join('')}`:''}
+      ${/* ⭐v153 报告层：外部暗管接入清单（feeds + feedFail = 应铺总数，不静默丢）。
+           feeds[].edge 是**换格/换端口重试后的最终接入点**（走线循环里同步更新）；
+           feedFail 的 why：port=没空闲管口 / edge=边缘没空格 / path=走线过不去（带坐标）。 */
+        ''}
+      ${(P.route.feeds&&P.route.feeds.length)?`
+      <div class="c-sub" style="margin-top:6px"><span><b>外部暗管接入</b> <span class="lo-tag">v151/v154 · 直连或暗管对</span> —— ${P.route.feeds.length} 根进管，暗管在画布外接这些点</span></div>
+      ${P.route.feeds.map(f=>`<div class="c-sub" style="margin-top:2px"><span>· ${esc(f.item)} <b>${f.need}</b>/分 → ${esc(f.machineName)} · ${RfeedModeTxt(f)}</span></div>`).join('')}`:''}
+      ${(P.route.feedFail&&P.route.feedFail.length)?`
+      <div class="c-sub" style="margin-top:4px"><span><b style="color:${RW_COL.warn}">没铺成的外部接入 ${P.route.feedFail.length} 条</b> —— 画布内这一段自己拉管接上（按下面坐标）</span></div>
+      ${P.route.feedFail.map(f=>`<div class="c-sub" style="margin-top:2px"><span>· ${esc(f.item)} → ${esc(f.to)}：${RfeedWhyTxt(f)}</span></div>`).join('')}`:''}
       ${loads.length?`
       <div class="c-sub" style="margin-top:6px"><span><b>吞吐体检</b> <span class="lo-tag">路线图 ②a · 真并联</span> —— 每条依赖要几条线 / 实际连了几条 / 单线负荷${jam?('　<b style="color:'+RW_COL.bad+'">'+jam+' 段会堵</b>'):''}${tight?('　<b style="color:'+RW_COL.warn+'">'+tight+' 段没余量</b>'):''}</span></div>
       ${loads.map(k=>`<div class="c-sub" style="margin-top:2px"><span>· ${esc(k.item)} ${k.demand}/分：${esc(k.from)} → ${esc(k.to)} · ${k.isPipe?'管道':'传送带'} <b>${k.lines}</b> 条（上限算下来要 ${k.need} 条）· 单线 <b>${k.perLine}</b>/${k.cap} 个每分 → ${lstate[k.state]||''}</span></div>`).join('')}
@@ -6249,7 +6381,7 @@ function renderLayout(){
      截图红框三连：「这些是不是要接外部暗管啊，也没有弯」—— 就是它们）。 */
   const feedStart={};
   if(L.plan&&L.plan.route) L.plan.route.links.forEach(l=>{
-    if(l.from!=='画布外（暗管接入）') return;
+    if(l.from!=='画布外（暗管接入）'||l.fmode==='udpipe') return;   /* ⭐v154：暗管对 feed 的起点在出口旁，不是边缘格 */
     const ps=Array.isArray(l.path)?l.path:[];
     if(!ps.length) return;
     const p0=ps[0].split(',').map(Number), p1=ps.length>1?ps[1].split(',').map(Number):null;
@@ -6332,6 +6464,9 @@ function renderLayout(){
     if(!b||b.isLogi) return;
     const fp=Lfp(b);
     (b.ports||[]).forEach(p=>{
+      /* ⭐v154：暗管入口的 input 口接的是**画布外暗管**（博士自己拉），画布内永远「没接」——
+         不计入接口统计，否则「接口已接 N/M」永远凭空少几个、看着像漏接。 */
+      if(b.id.indexOf('udpipe_loader')===0 && p.kind==='input') return;
       const q=LportXY(p,o.rot,fp[0],fp[1]);
       if(q.x<0||q.x>=o.w||q.z<0||q.z>=o.d) return;
       const dir=LportDirRot(p,o.rot,fp[0],fp[1]);   /* ⭐v122：朝向跟 rot 转（原贴边猜，旋转后统计与色条全错） */
@@ -6518,7 +6653,9 @@ function renderLayout(){
       const pcx=dx?(dx>0?INW-E:E):(q.x*CELL+CELL/2-1.5);
       const pcy=dz?(dz>0?IND-E:E):(q.z*CELL+CELL/2-1.5);
       const col=p.kind==='input'?'#186C7D':'#C0561F';
-      const lk=!!dir&&LlogiAt(lgi,o.x+q.x+dx,o.y+q.z+dz,p.isPipe);
+      /* ⭐v154：暗管入口的 input 口接画布外暗管（博士自己拉），恒视为已接（亮灯），不误导 */
+      const lk=(!!dir&&LlogiAt(lgi,o.x+q.x+dx,o.y+q.z+dz,p.isPipe))
+        ||(b.id.indexOf('udpipe_loader')===0&&p.kind==='input');
       /* 物料流向：进料口从该边的对侧进来，出料口朝该边出去 */
       const f=dir?(p.kind==='input'?({u:'d',d:'u',l:'r',r:'l'})[dir]:dir):'';
       /* 按配方标「走 / 不走」：走的是该相态那套口（组级能力，不是一对一，见 recipe_groups.json） */

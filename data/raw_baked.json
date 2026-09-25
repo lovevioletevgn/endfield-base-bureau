@@ -1,6 +1,6 @@
 {
  "_note": "由 tools/bake_raw.py 从 raw/ 烘焙，勿手改；raw 在本地不复制的机器上靠它构建",
- "_bakedAt": "2026-09-25 00:11:16",
+ "_bakedAt": "2026-09-25 08:20:07",
  "_rawFiles": {
   "FactoryVaporizerTable.json": {
    "size": 733,

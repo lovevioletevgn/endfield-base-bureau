@@ -3826,11 +3826,18 @@ chk('v151 外部接入：赤铜块@10 = 8 台反应池 × 2 种外部流体，16
     && v151N.feeds.every(f => f.need === 5);
 })(), () => JSON.stringify(v151N && { ok: v151N.feeds.length, fail: v151N.fail.length, pools: v151N.pools }));
 
-chk('v151 外部接入：接入点全在画布边缘、两两不同格（不挤在同一个口上）', (() => {
-  const size = 80, es = v151N.feeds.map(f => f.edge.x + ',' + f.edge.y);
-  return es.length === v151N.feeds.length && new Set(es).size === es.length
-    && v151N.feeds.every(f => f.edge.x === 0 || f.edge.y === 0 || f.edge.x === size - 1 || f.edge.y === size - 1);
-})(), () => JSON.stringify(v151N.feeds.map(f => f.edge)));
+chk('v151 外部接入：直连接入点全在画布边缘、两两不同格；暗管对的入/出口也两两不同（v154）', (() => {
+  const size = 80;
+  const dir = v151N.feeds.filter(f => f.mode !== 'udpipe');
+  const es = dir.map(f => f.edge.x + ',' + f.edge.y);
+  const ud = v151N.feeds.filter(f => f.mode === 'udpipe');
+  const us = ud.map(f => f.entry.x + ',' + f.entry.y + '/' + f.exit.x + ',' + f.exit.y);
+  return es.length === dir.length && new Set(es).size === es.length
+    && dir.every(f => f.edge.x === 0 || f.edge.y === 0 || f.edge.x === size - 1 || f.edge.y === size - 1)
+    && us.length === ud.length && new Set(us).size === us.length;
+})(), () => JSON.stringify(v151N.feeds.map(f => f.mode === 'udpipe'
+  ? ('U' + f.entry.x + ',' + f.entry.y + '↔' + f.exit.x + ',' + f.exit.y)
+  : ('D' + f.edge.x + ',' + f.edge.y))));
 
 chk('v151 外部接入：铺不出的进管全部点名进 feedFail（不静默丢；why/to/坐标齐全）', (() => {
   return v151N.feeds.length + v151N.fail.length === 16 && v151N.fail.length <= 2
@@ -3842,14 +3849,20 @@ chk('v151 外部接入：内部连通率不被外部接入挤坏（赤铜块@10 
   return n <= 2;
 })(), () => String(A.LO.plan.route.warns.filter(w => w.indexOf('手动连') >= 0).length));
 
-chk('v151 外部接入：赤铜耐压罐@10（含惰气外部输入）6 根进管全铺成、零失败、接入点唯一贴边', (() => {
+chk('v151 外部接入：赤铜耐压罐@10（含惰气外部输入）6 根进管全铺成、零失败、接入点唯一', (() => {
   tab = 'layout'; A.Linit(); A.LO.objs = []; A.LO.sel = []; A.LO.size = 70;
   A.LawRun('item_copper_jar', 10);
   const R = A.LO.plan.route, size = 70;
-  const es = R.feeds.map(f => f.edge.x + ',' + f.edge.y);
-  return R.feeds.length === 6 && R.feedFail.length === 0 && new Set(es).size === 6
-    && R.feeds.every(f => f.edge.x === 0 || f.edge.y === 0 || f.edge.x === size - 1 || f.edge.y === size - 1);
-})(), () => JSON.stringify(A.LO.plan.route.feeds.map(f => f.item + ' [' + f.edge.x + ',' + f.edge.y + ']')));
+  const dir = R.feeds.filter(f => f.mode !== 'udpipe');   /* ⭐v154：暗管对模式的 feed 没有边缘接入点 */
+  const es = dir.map(f => f.edge.x + ',' + f.edge.y);
+  const ud = R.feeds.filter(f => f.mode === 'udpipe');
+  const us = ud.map(f => f.entry.x + ',' + f.entry.y + '/' + f.exit.x + ',' + f.exit.y);
+  return R.feeds.length === 6 && R.feedFail.length === 0
+    && new Set(es).size === es.length && new Set(us).size === us.length
+    && dir.every(f => f.edge.x === 0 || f.edge.y === 0 || f.edge.x === size - 1 || f.edge.y === size - 1);
+})(), () => JSON.stringify(A.LO.plan.route.feeds.map(f => f.mode === 'udpipe'
+  ? ('U' + f.entry.x + ',' + f.entry.y + '↔' + f.exit.x + ',' + f.exit.y)
+  : ('D' + f.edge.x + ',' + f.edge.y))));
 
 // ---- v151 末端朝向修复（博士截图实锤「进出口的弯道又不对了」）----
 // 根因：RwPath 的路径含终点格，铺线循环里最后一格 nx=path[k+1]||t 退化成自己指自己 →
@@ -3917,7 +3930,7 @@ chk('v151 出口弯头：连线起点（机器口/汇流器出格/暗管接入�
   const S = A.LO.size;
   const feedStart = {};
   (A.LO.plan && A.LO.plan.route ? A.LO.plan.route.links : []).forEach(l => {
-    if (l.from !== '画布外（暗管接入）') return;
+    if (l.from !== '画布外（暗管接入）' || l.fmode === 'udpipe') return;   // ⭐v154：暗管对 feed 起点在出口旁，非边缘格
     const ps = Array.isArray(l.path) ? l.path : [];
     if (!ps.length) return;
     const p0 = ps[0].split(',').map(Number), p1 = ps.length > 1 ? ps[1].split(',').map(Number) : null;
@@ -3989,7 +4002,10 @@ chk('v151 出口弯头：连线起点（机器口/汇流器出格/暗管接入�
     // 赤铜耐压罐@10 的 (0,24)：feed 起点管 + 后穿线叠的 FluidConnector 共存一格）
     if (isFeed) {
       const fin = flowIn(s0[0], s0[1], !!l.isPipe);
-      if (!fin) bad.push('F起 ' + ps[0] + ' ' + l.item);
+      if (l.fmode === 'udpipe') {
+        // ⭐v154：暗管对 feed 的起点 = 出口 output 口外侧格，进边由 portOut 自查给（出口是普通建筑）
+        if (!fin) bad.push('F起(ud) ' + ps[0] + ' ' + l.item);
+      } else if (!fin) bad.push('F起 ' + ps[0] + ' ' + l.item);
       else if (fin !== feedStart[ps[0]]) {
         const top = lgi[(!!l.isPipe ? 'p' : 'b') + ':' + ps[0]], tb = top && A.byBp(top.id);
         if (!tb || (tb.lgType !== 'FluidConnector' && tb.lgType !== 'Connector'))
@@ -4036,7 +4052,10 @@ chk('v152 交叉落件：桥的同格无异介质件（管×带交叉直接叠�
   return out; })()));
 
 // 断言②：场景里确实出现管×带叠加格（正样本，防「永远不交叉」的空锁）。
-chk('v152 交叉落件：场景里存在管×带叠加格（渲染两层齐全，管上带下）', (() => {
+// ⭐v154 场景改罐@30：v154 暗管对把 @10 场景的长管改走地下后叠加格归零，罐@30 仍有 11 个。
+chk('v152 交叉落件：罐@30 存在管×带叠加格（渲染两层齐全，管上带下）', (() => {
+  loReset(80); A.LO.size = 80;
+  A.LawRun('item_copper_jar', 30);
   const byCell = {};
   A.LO.objs.forEach(o => { const b = A.byBp(o.id); if (b && b.isLogi)
     (byCell[o.x + ',' + o.y] = byCell[o.x + ',' + o.y] || []).push(b); });
@@ -4053,6 +4072,60 @@ chk('v152 交叉落件：场景里存在管×带叠加格（渲染两层齐全�
     if (arr.some(x => x.lgMedium === '管道') && arr.some(x => x.lgMedium !== '管道')) ovl++;
   });
   return ovl; })());
+
+// ---- v153 报告层：外部暗管接入清单进报告（feeds + feedFail = 应铺总数）----
+chk('v153 报告层：外部暗管接入清单进报告（条数=route.feeds，接入点坐标与数据一致）', (() => {
+  loReset(70); A.LO.size = 70;
+  A.LawRun('item_copper_jar', 10);
+  setTab('layout'); A.render();
+  const F = (A.LO.plan && A.LO.plan.route.feeds) || [];
+  if (F.length < 6) return false;
+  const html = A.document.querySelector('#out').innerHTML;
+  return html.indexOf('外部暗管接入') >= 0
+    && F.every(f => f.mode === 'udpipe'
+      ? (html.indexOf('入口 (' + f.entry.x + ',' + f.entry.y + ')') >= 0 && html.indexOf('↔ 出口 (' + f.exit.x + ',' + f.exit.y + ')') >= 0)
+      : html.indexOf('(' + f.edge.x + ',' + f.edge.y + ')') >= 0);
+})(), () => 'feeds=' + JSON.stringify(((A.LO.plan && A.LO.plan.route.feeds) || []).map(f => f.mode === 'udpipe'
+  ? 'U' + f.entry.x + ',' + f.entry.y : 'D' + f.edge.x + ',' + f.edge.y)));
+chk('v153 报告层：外部接入全部有着落——赤铜块@10 feedFail=0（v154 暗管对救回）或点名进报告', (() => {
+  loReset(70); A.LO.size = 70;
+  A.LawRun('item_copper_nugget', 10);
+  setTab('layout'); A.render();
+  const FF = (A.LO.plan && A.LO.plan.route.feedFail) || [];
+  const html = A.document.querySelector('#out').innerHTML;
+  if (!FF.length) return html.indexOf('暗管对') >= 0;    // v154：直连铺不成的被暗管对救回
+  return html.indexOf('没铺成的外部接入 ' + FF.length + ' 条') >= 0
+    && FF.every(f => html.indexOf(f.item) >= 0 && html.indexOf(f.to) >= 0);
+})(), () => 'feedFail=' + JSON.stringify((A.LO.plan && A.LO.plan.route.feedFail) || []).slice(0, 200));
+
+// ---- v154 暗管入口/出口对（博士 2026-09-25 实机规则：一对一定向、同建筑同物料、可旋转）----
+chk('v154 暗管对：赤铜块@10 触发暗管对，入口/出口成对落盘且配对信息进报告', (() => {
+  const ud = (A.LO.objs || []).filter(o => o.planRole === 'udpipe');
+  const F = (A.LO.plan && A.LO.plan.route.feeds) || [];
+  const upipes = F.filter(f => f.mode === 'udpipe');
+  if (!upipes.length) return false;
+  const html = A.document.querySelector('#out').innerHTML;
+  return ud.length >= 2 && ud.length % 2 === 0
+    && upipes.every(f => f.entry && f.exit && html.indexOf('入口 (' + f.entry.x + ',' + f.entry.y + ')') >= 0);
+})(), () => 'udpipe objs=' + ((A.LO.objs || []).filter(o => o.planRole === 'udpipe')).length
+  + ' feeds=' + JSON.stringify(((A.LO.plan && A.LO.plan.route.feeds) || []).map(f => f.mode || 'direct')));
+
+chk('v154 择优：暗管对只在更省时采用（罐@10 全部 saved>0），短 feed 保持直连', (() => {
+  loReset(70); A.LO.size = 70;
+  A.LawRun('item_copper_jar', 10);
+  setTab('layout'); A.render();
+  const F = (A.LO.plan && A.LO.plan.route.feeds) || [];
+  if (F.length < 6) return false;
+  const ud = F.filter(f => f.mode === 'udpipe');
+  const dir = F.filter(f => f.mode !== 'udpipe');
+  const html = A.document.querySelector('#out').innerHTML;
+  return ud.length >= 1 && ud.every(f => f.saved > 0 && f.entry && f.exit)   // 更省才采用
+    && dir.every(f => f.edge)                                                // 直连的必有接入点
+    && (A.LO.objs || []).filter(o => o.planRole === 'udpipe').length === ud.length * 2
+    && html.indexOf('暗管对') >= 0;
+})(), () => 'feeds=' + JSON.stringify(((A.LO.plan && A.LO.plan.route.feeds) || []).map(f => f.mode === 'udpipe'
+  ? 'U(saved=' + f.saved + ')' : 'D' + (f.edge ? f.edge.x + ',' + f.edge.y : '?'))));
+loReset(50); A.render();
 
 // ---- C6 去路体检（2026-09-24 博士拍板「加」）----
 // 背景：游戏里物品有硬顶（社区口径「库存 50 + 在制 1」），净产出 > 0 且没有去路的物品**必然**满仓 →
