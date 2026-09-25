@@ -38,7 +38,7 @@ PROJ = os.path.dirname(HERE)
 LIB = os.environ.get("KB_LIB_DIR") or (
     r"D:\Program Files\wb\WorkBuddy\resources\app.asar.unpacked"
     r"\resources\plugins\workbuddy-builtin\skills\library\page")
-DEF_NODE = os.environ.get("KB_NODE_ID") or "YQO3ePeFiFgF6BrMKIpFbs"
+DEF_NODE = os.environ.get("KB_NODE_ID") or "J3PhBsBNUGw3TAviQynHB3"
 PREFIX = "终末地基建知识库/"
 DEFAULT_PREFIXES = ["raw/", ".workbuddy/", "_archive/"]
 PLACEHOLDER = "该文件属于本地工作资产，不应随产物发布，已移除。\n".encode("utf-8")

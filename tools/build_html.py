@@ -4,6 +4,7 @@
 """
 import json
 import os
+import re
 import sys
 import io
 
@@ -246,6 +247,48 @@ bundle["hubItems"] = _hub_items
 # 域 → 协议核心建筑 id（页面据此判「这台核心出什么」）；次级核心只进料不出货，不列。
 bundle["hubDomainMachine"] = ( (_baked.get("hubDomainMachine") if _baked else None)
                               or {"domain_1": "sp_hub_1", "domain_2": "sp_hub_1"} )
+
+# ⭐v162：更新历史注入（构建期从《排布器版本演进记录.md》自动抽取，页面「更新历史」tab 渲染）
+#   为什么构建期抽、不硬编码 HTML：版本记录是**单一数据源**（release_note.py 往那里写、check_docs 校验那里），
+#   硬编码进模板等于同一份事实存两处 → 必然会漂。
+#   ⚠️ 不能用 `<!-- changelog:next -->` 当锚点：check_docs.py 硬性要求该锚点**恰好 1 处**，
+#      查询页里再出现一次就会 FAIL。这里只做**格式匹配抽取**、不碰锚点。
+#   抽取口径 = 只认标准三行块 `**vN 更新（标题）**：正文` + `验证：…` + `影响：…`。
+#   更早的 v51~v120 混在文档上半部分的功能域叙述里（`- **v104 环境三连** —— …` 这类列表项），
+#   跨多行、无「验证/影响」结构、与三行块不同质 → **不抽**（硬抽会让清单参差、降低可信度）。
+#   页面会如实标注「更早版本见文档的功能域归档」，不假装完整。
+def _read_changelog():
+    path = os.path.join(ROOT, "排布器版本演进记录.md")
+    if not os.path.exists(path):
+        print("changelog: 未找到《排布器版本演进记录.md》，跳过注入")
+        return []
+    with open(path, encoding="utf-8") as fh:
+        raw = fh.read()
+    items = []
+    # 一条 = 从 `**vN 更新（标题）**：正文` 起，到下一个块/空行结构为止；正文可能跨行
+    for m in re.finditer(
+            r"^\*\*v(\d+)\s+更新（([^\n]*?)）\*\*：([\s\S]*?)(?=\n\*\*v\d+\s+更新（|\n<!-- changelog:next|\n## |\Z)",
+            raw, re.M):
+        ver, title, body = int(m.group(1)), m.group(2).strip(), m.group(3).strip()
+        text = verify = impact = ""
+        # body 里按行拆：验证：/ 影响： 是独立行，其余归正文
+        for ln in body.split("\n"):
+            t = ln.strip()
+            if not t:
+                continue
+            if t.startswith("验证："):
+                verify = t[len("验证："):].strip()
+            elif t.startswith("影响："):
+                impact = t[len("影响："):].strip()
+            else:
+                text = (text + " " + t) if text else t
+        items.append({"ver": ver, "title": title, "text": text,
+                      "verify": verify, "impact": impact})
+    items.sort(key=lambda x: x["ver"], reverse=True)
+    print("changelog 注入:", len(items), "条（最新 v%d）" % (items[0]["ver"] if items else 0))
+    return items
+
+bundle["changelog"] = _read_changelog()
 
 payload = json.dumps(bundle, ensure_ascii=False, separators=(",", ":"), indent=0)
 
@@ -668,6 +711,30 @@ details.lo-help[open]>summary:before{content:'▾ '}
 .rl-src{flex:0 0 auto;font-family:ui-monospace,Consolas,monospace;font-size:10.5px;color:#6B7A8F;
   background:#EFF2F6;padding:1.5px 6px;border-radius:3px;white-space:nowrap;margin-top:1px}
 
+/* changelog（v162 更新历史页） */
+.chg-bar{display:flex;gap:12px;align-items:center;margin-bottom:14px}
+.chg-q{flex:0 1 340px;padding:7px 12px;border:1px solid var(--line);border-radius:var(--radius);
+  background:var(--panel);color:var(--ink);font-size:12.5px;outline:none}
+.chg-q:focus{border-color:var(--accent)}
+.chg-cnt{font-size:12px;color:var(--ink3);font-variant-numeric:tabular-nums}
+.chg-list{display:flex;flex-direction:column;gap:6px}
+.chg-card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+  overflow:hidden;transition:.12s}
+.chg-card.open{border-color:var(--accent)}
+.chg-hd{display:flex;gap:12px;align-items:baseline;padding:11px 15px;cursor:pointer}
+.chg-hd:hover{background:var(--chip)}
+.chg-v{flex:0 0 auto;font-family:ui-monospace,Consolas,monospace;font-size:12px;font-weight:650;
+  color:var(--accent);min-width:48px}
+.chg-t{flex:1 1 auto;font-size:13px;color:var(--ink);font-weight:500}
+.chg-x{flex:0 0 auto;color:var(--ink3);font-size:15px;font-weight:600;min-width:14px;text-align:center}
+.chg-detail{padding:2px 15px 13px 15px;border-top:1px dashed var(--line2)}
+.chg-p{font-size:12.5px;line-height:1.8;color:var(--ink2);padding:9px 0 4px}
+.chg-l{display:flex;gap:9px;align-items:baseline;padding:5px 0;font-size:12px;line-height:1.75;color:var(--ink2)}
+.chg-l .tag{flex:0 0 auto}
+.chg-more{padding:12px 0;text-align:center}
+.chg-more a{font-size:12.5px;color:var(--accent)}
+.chg-empty{padding:24px;text-align:center;color:var(--ink3);font-size:12.5px}
+
 /* overview */
 .ov-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:24px}
 .ov-card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:15px 17px}
@@ -728,6 +795,7 @@ const TABS = [
   {k:'manual',   label:'手工配方'},
   {k:'item',     label:'物品链路'},
   {k:'overview', label:'数据概览'},
+  {k:'history',  label:'更新历史'},
 ];
 let tab='building', kw='', f1='', f2='', openSet=new Set();
 
@@ -753,6 +821,9 @@ $('#nav').addEventListener('click',e=>{
   const b=e.target.closest('button'); if(!b) return;
   tab=b.dataset.k; kw=''; f1=''; f2=''; openSet.clear();
   $('#q').value='';
+  /* ⭐v162 更新历史页自带搜索框，顶部那个全局搜索对它无效 → 切进来时隐藏，别摆个点了没反应的框 */
+  $('#q').style.display = (tab==='history') ? 'none' : '';
+  histReset();
   $('#nav').innerHTML=navHtml(); render();
 });
 
@@ -8200,6 +8271,70 @@ function renderOverview(){
   </div>`;
 }
 
+/* ⭐v162 更新历史页的页面级状态（与沙盘状态 LO 完全解耦——LO 只服务于布局页） */
+const HIST = { kw:'', open:new Set(), all:false };
+/* 切 tab 时重置历史页的搜索/展开（与其他 tab 的 kw/f1/openSet 同样语义：换页即清） */
+function histReset(){ HIST.kw=''; HIST.open.clear(); HIST.all=false; }
+
+function chgFiltered(){
+  const all = DB.changelog || [];
+  const kwl = (HIST.kw || '').trim().toLowerCase();
+  if(!kwl) return all;
+  return all.filter(x =>
+      (('v'+x.ver).indexOf(kwl) !== -1) || x.title.toLowerCase().indexOf(kwl) !== -1 ||
+      (x.text||'').toLowerCase().indexOf(kwl) !== -1);
+}
+
+/* 只出列表部分的 HTML（搜索时单独刷新它，避免重建输入框导致失焦） */
+function chgListHtml(){
+  const rows = chgFiltered();
+  const open = HIST.open;
+  const cap = HIST.all ? rows.length : Math.min(rows.length, 20);
+  const shown = rows.slice(0, cap);
+  const body = shown.map(x => {
+    const isOpen = open.has(x.ver);
+    const detail = isOpen ? `
+      <div class="chg-detail">
+        ${x.text ? `<div class="chg-p">${esc(x.text)}</div>` : ''}
+        ${x.verify ? `<div class="chg-l"><span class="tag">验证</span><span>${esc(x.verify)}</span></div>` : ''}
+        ${x.impact ? `<div class="chg-l"><span class="tag">影响</span><span>${esc(x.impact)}</span></div>` : ''}
+      </div>` : '';
+    return `<div class="chg-card${isOpen?' open':''}" data-ver="${x.ver}">
+      <div class="chg-hd">
+        <span class="chg-v">v${x.ver}</span>
+        <span class="chg-t">${esc(x.title)}</span>
+        <span class="chg-x">${isOpen?'−':'+'}</span>
+      </div>${detail}
+    </div>`;
+  }).join('');
+  const more = (!HIST.all && rows.length > 20)
+    ? `<div class="chg-more"><a href="javascript:void(0)" id="chgAll">显示全部 ${rows.length} 版 →</a></div>` : '';
+  return `<div class="chg-list">${body || '<div class="chg-empty">没有匹配的版本。</div>'}</div>${more}`;
+}
+function chgCntTxt(){
+  const rows = chgFiltered(), all = DB.changelog || [];
+  const kwl = (HIST.kw || '').trim();
+  return `${rows.length} / ${all.length} 版${kwl?'（筛选后）':''}`;
+}
+
+function renderHistory(){
+  /* ⭐v162：更新历史页。数据来自构建期从《排布器版本演进记录.md》抽取的 DB.changelog（倒序，最新在前）。
+     抽取口径见 build_html.py 的 _read_changelog()：只认标准三行块（标题/验证/影响）。
+     更早的 v51~v120 混在文档上半部分的功能域叙述里（列表项格式、无验证/影响结构）→ 未收录，
+     页面如实说明去向，不假装完整。 */
+  const all = DB.changelog || [];
+  return `<div class="note" style="margin-bottom:14px">
+    <b>📜 更新历史</b>　下列为排布器的版本改动记录，<b>最新在最上</b>；点击任一条展开「做了什么 / 验证 / 影响」三行。<br>
+    数据来自项目《排布器版本演进记录.md》（构建时自动抽取，与发布记录同源）。<br>
+    <b>更早的 v51~v120</b> 记在该文档上半部分的<b>功能域归档</b>里（按模块叙述、非逐版条目），本页未收录。
+  </div>
+  <div class="chg-bar">
+    <input id="chgQ" class="chg-q" type="text" placeholder="搜索版本号或关键词…" value="${esc(HIST.kw||'')}">
+    <span class="chg-cnt" id="chgCnt">${chgCntTxt()}</span>
+  </div>
+  <div id="chgBox">${chgListHtml()}</div>`;
+}
+
 function render(){
   let html='', n=0;
   /* 布局页左栏是可滚动长列表：每摆一座都重建 DOM，不还原 scrollTop 就会跳回顶部 */
@@ -8216,12 +8351,13 @@ function render(){
   else if(tab==='build'){ html=renderBuild(); n=DB.build_recipes.length; }
   else if(tab==='manual'){ html=renderManual(); n=DB.manual_recipes.length; }
   else if(tab==='item'){ html=renderItem(); n=Object.keys(DB.items).length; }
+  else if(tab==='history'){ html=renderHistory(); n=(DB.changelog||[]).length; }
   else { html=renderOverview(); }
   $('#out').innerHTML=html;
   if(palTop){ const p2=$('.lo-pal'); if(p2) p2.scrollTop=palTop; }
   /* ⭐v144 清单挂在画布左侧空白里，宽度按当时的可用空白算（画布位置不受影响） */
   if(tab==='layout') LpalFit();
-  $('#cnt').textContent = tab==='overview' ? '' : `库中 ${n} 条`;
+  $('#cnt').textContent = (tab==='overview') ? '' : (tab==='history' ? `共 ${n} 版` : `库中 ${n} 条`);
   refreshFilters();
 }
 
@@ -8236,10 +8372,26 @@ $('#f1').addEventListener('change',e=>{ f1=e.target.value; openSet.clear(); rend
 $('#out').addEventListener('click',e=>{
   /* 布局页画布的交互走 mousedown/mousemove/mouseup（要支持拖拽），click 阶段只吞掉 */
   if(tab==='layout' && e.target.closest('.lo-canvas')) return;
+  /* ⭐v162 更新历史页：展开/折叠单条 + 「显示全部」——独立于下面 .card/openSet 那套 */
+  if(tab==='history'){
+    if(e.target.closest('#chgAll')){ HIST.all=true; $('#chgBox').innerHTML=chgListHtml(); return; }
+    const c=e.target.closest('.chg-card'); if(!c) return;
+    const v=+c.dataset.ver;
+    if(HIST.open.has(v)) HIST.open.delete(v); else HIST.open.add(v);
+    $('#chgBox').innerHTML=chgListHtml();
+    return;
+  }
   const card=e.target.closest('.card'); if(!card) return;
   const id=card.dataset.id;
   if(openSet.has(id)) openSet.delete(id); else openSet.add(id);
   render();
+});
+/* ⭐v162 更新历史搜索：只刷新列表容器，不重建输入框（否则每次输入都失焦） */
+$('#out').addEventListener('input',e=>{
+  if(tab!=='history' || e.target.id!=='chgQ') return;
+  HIST.kw=e.target.value;
+  const box=$('#chgBox'); if(box) box.innerHTML=chgListHtml();
+  const c=$('#chgCnt'); if(c) c.textContent=chgCntTxt();
 });
 $('#out').addEventListener('mousedown',e=>{ if(tab==='layout') LonMouseDown(e); });
 document.addEventListener('mousemove',LonMouseMove);
