@@ -19,18 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-## 第三方数据与素材声明（非软件许可范围）
-
-- **游戏数据**：《明日方舟：终末地》的游戏数据（物品名、配方、数值、文案等）版权归
-  **鹰角网络及相关权利方**所有。本项目仅供学习、交流与研究使用，不得用于侵犯权利方
-  权益或其他非法用途。仓库**不包含**任何游戏解包原始表（`raw/` 不入版本库），
-  仅包含由公开数据域提取的结构化产物。
-- **数据来源**：[AKEDatabase](https://github.com/NagiYume/AKEDatabase)（数据域
-  `data.akedata.wiki`，该项目代码采用 AGPL v3.0）。本项目**未复制其任何代码**，
-  仅按其公开的数据域路径规则拉取数据表。
-- **规则调研**：分/汇/桥等物流生成规则参考了
-  [IndustrialPlanner](https://github.com/hsyhhssyy/IndustrialPlanner)（MIT），
-  调研记录见仓库《IP源码规则提炼.md》，未复制其代码。
