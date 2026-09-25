@@ -3,7 +3,7 @@
 """
 bake_raw.py —— 把 build_html.py 需要的 raw 派生数据预烘焙进 data/raw_baked.json
 
-为什么存在（2026-09-23，博士定策略「版权风险最低」）：
+为什么存在（2026-09-23，作者定策略「版权风险最低」）：
   raw/ 是游戏解包 TableCfg（14.3 MB，含 I18nTextTable_CN 11.4 MB 全文案），
   版权归鹰角网络。上云 = 数据落到第三方服务器，风险等级升高。
   → 策略：raw/ 一张表都不上云（本地保留 + .gitignore）。

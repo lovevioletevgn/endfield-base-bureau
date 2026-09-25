@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""release_note.py —— 版本条目一键生成（2026-09-22，博士拍板的 README 提效三招之二/三）
+"""release_note.py —— 版本条目一键生成（2026-09-22，作者拍板的 README 提效三招之二/三）
 
 做什么：
   1. 自动取版本号：扫候选文档里现有 vNN 的最大值，+1 作为本次版本；

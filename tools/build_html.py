@@ -29,7 +29,7 @@ for f in FILES:
         with open(p, encoding="utf-8") as fh:
             bundle[f.replace(".json", "")] = json.load(fh)
 
-# ⭐ 2026-09-21（博士反馈：「装什么东西显示不出来」）：瓶装液体 / 气罐类物品在配置表里
+# ⭐ 2026-09-21（作者反馈：「装什么东西显示不出来」）：瓶装液体 / 气罐类物品在配置表里
 #    全是同一个名字 + 同一句描述（赤铜耐压罐 ×21），区别只在 id 后缀。
 #    但配方表能反推：灌装配方的「液/气态输入」就是内容物；拆解配方反向印证；空容器也由此标记。
 #    → 构建期给 items 加 content 字段（"装：水蒸气（气态）" / "空罐（可灌装）"），页面直接显示、可搜索。
@@ -67,7 +67,7 @@ for _iid, _c in _content.items():
         _n += 1
 print("content 字段注入", _n, "个物品")
 
-# ⭐ v95 数据瘦身（博士：「数据会越来越多」）：注入层裁剪 —— data/*.json 保持完整底账不动，
+# ⭐ v95 数据瘦身（作者：「数据会越来越多」）：注入层裁剪 —— data/*.json 保持完整底账不动，
 #    只在打包进页面 DB 前丢掉**页面与测试均零引用**的字段。2026-09-22 五重验证：
 #    直接引用 / 「input」+「Ports」类动态拼接 / Object.keys 遍历 / for-in 遍历 / test_html.js
 #    断言引用 —— 五项全为 0。页面消费的接口数据来自 blueprint 的 ports（build.py 加工的精简版），
@@ -91,7 +91,7 @@ for _k in ("buildings", "blueprint"):
                     _ntrim += 1
 print("注入层裁剪死字段", _ntrim, "处（buildings/blueprint 的接口原始明细）")
 
-# ⭐ v103 气体散布机（博士 2026-09-23：游戏里环境圈可见、圈色随通入的气体变）：
+# ⭐ v103 气体散布机（作者 2026-09-23：游戏里环境圈可见、圈色随通入的气体变）：
 #    数据链两张表：FactoryVaporizerTable（rangeExtend 外扩格数 + 四种气体的消耗与 GenEnv 映射）
 #    + FactoryEnvDisplayTable（GenEnv → 特效资源名里的颜色词）。
 #    此前本地漏拉了 Vaporizer 表，2026-09-23 从数据域补拉（已存 raw/ 并记 _download_log）。
@@ -101,7 +101,7 @@ _env_p = os.path.join(ROOT, "raw", "FactoryEnvDisplayTable.json")
 _bp = bundle.get("blueprint")
 _bp_arr = _bp.get("buildings") if isinstance(_bp, dict) else None
 
-# ⭐v110 版权隔离（博士 2026-09-23「版权风险最低的」）：
+# ⭐v110 版权隔离（作者 2026-09-23「版权风险最低的」）：
 #    build_html.py 对 raw/ 的依赖全部收敛到 tools/bake_raw.py 的烘焙产物 data/raw_baked.json。
 #    raw/ 是游戏解包 TableCfg，不上云、不进 git；云端/无 raw 的机器靠烘焙文件构建。
 #    优先级：raw_baked.json（存在即用，不再读 raw）> raw/ 实时加工（本地兜底）> 跳过（两者皆无）。
@@ -173,7 +173,7 @@ else:
     bundle["recipeEnv"] = {}
     print("⚠️ 无 raw/ 也无 data/raw_baked.json —— 环境圈与出货数据将为空，请跑 tools/bake_raw.py")
 
-# ⭐v148 供电范围（博士 2026-09-24：「画布里供电桩也不显示供电范围，放的时候怎么确定设备在不在供电范围里」）：
+# ⭐v148 供电范围（作者 2026-09-24：「画布里供电桩也不显示供电范围，放的时候怎么确定设备在不在供电范围里」）：
 #    FactoryPowerPoleTable 的 rangeExtend 与气体散布机**同字段、同口径**（外扩 N 格）：
 #    供电桩/息壤供电桩（本体 2×2）±5 → 12×12；中继器/息壤中继器 ±2 → 7×7。
 #    之前「配置表没有射程」的结论是错的 —— 当时只查了建筑表，没查这张杆件表。注入到蓝图建筑 powerPole 字段。
@@ -190,7 +190,7 @@ if os.path.exists(_pole_p) and isinstance(_bp_arr, list):
             _n_pole += 1
     print("powerPole 注入: %d 座（供电桩/息壤供电桩 12×12、中继器/息壤中继器 7×7 + 配线长）" % _n_pole)
 
-# ⭐v109 协议核心出货（博士 2026-09-23：「游戏里的协议核心出货口可以点击选择物品出货」）：
+# ⭐v109 协议核心出货（作者 2026-09-23：「游戏里的协议核心出货口可以点击选择物品出货」）：
 #    数据在 FactoryItemTable —— deliverItemTypeList 非空 = 这件物品可以走协议核心出货，
 #    值 [3,1] 的 1 / [3,2] 的 2 是**目标域序号**（1=四号谷地 domain_1、2=武陵 domain_2），
 #    与 FactoryConst.domain2SpHubId(=map02_lv002_sp_hub_1) 对得上：一域一台协议核心。
@@ -358,7 +358,7 @@ nav button.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:
 .lo-stage{min-width:0;max-width:100%;overflow:auto}
 .lo-bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
 /* ⭐v144 建筑清单 = 画布左侧的浮层侧栏。**绝对定位脱离文档流** → 无论收起还是展开，
-   画布的位置与宽度都完全不变（曾试过 flex 定宽栏：展开时把画布推右 260px，博士当即否掉 ——「画布又被挪了」）。
+   画布的位置与宽度都完全不变（曾试过 flex 定宽栏：展开时把画布推右 260px，作者当即否掉 ——「画布又被挪了」）。
    宽度由 LpalFit() 按 #out 左边的实际空白自适应（上限 246，收起见 CSS 的 34）。 */
 .lo-pal{position:absolute;top:0;right:100%;margin-right:12px;width:246px;
   max-height:620px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px;background:var(--panel)}
@@ -410,7 +410,7 @@ nav button.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:
   box-shadow:inset 0 0 0 1px var(--envline,#1B6E9E);
   background-image:linear-gradient(var(--envline,#1B6E9E) 1px,transparent 1px),linear-gradient(90deg,var(--envline,#1B6E9E) 1px,transparent 1px);
   background-size:var(--locell,20px) var(--locell,20px);background-position:-1px -1px}
-/* ⭐v104 就地选气条：点选散布机后浮在机器正上方（博士：「想要点机器就地选」）。
+/* ⭐v104 就地选气条：点选散布机后浮在机器正上方（作者：「想要点机器就地选」）。
    跟随画布坐标（随格子大小/移动/撤销一起重渲染）；z-index 压过建筑层，只占一行高度。 */
 .lo-gasbar{position:absolute;z-index:5;display:flex;align-items:center;gap:4px;
   background:#FFFDF9;border:1px solid var(--line2);border-radius:6px;padding:3px 6px;
@@ -418,7 +418,7 @@ nav button.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:
 .lo-gasbar b{font-size:11px;color:var(--ink2)}
 .lo-gasbar button{width:18px;height:18px;border-radius:4px;border:1.5px solid;cursor:pointer;padding:0}
 .lo-gasbar button.on{outline:2px solid var(--accent);outline-offset:1px}
-/* ⭐v109 协议核心出货：出料口格**内侧**的指向箭头（博士：「内部空白面积大，选货在内部给个
+/* ⭐v109 协议核心出货：出料口格**内侧**的指向箭头（作者：「内部空白面积大，选货在内部给个
    机器口对应的箭头」）。贴在口格靠里一侧、朝外指；点它开物品清单。hitbox 撑到 16px。 */
 .lo-dlv{position:absolute;z-index:4;width:12px;height:12px;transform:translate(-50%,-50%);
   display:flex;align-items:center;justify-content:center;cursor:pointer;border-radius:3px;
@@ -470,7 +470,7 @@ nav button.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:
 .lo-dlvpop .it .cc{color:var(--ink3);font-size:10px}
 .lo-dlvpop .it .ck{color:#0F6E56;flex:none;font-size:11px}
 .lo-dlvpop .em{font-size:11.5px;color:var(--ink3);padding:6px 4px}
-/* ⭐v126 选货浮层筛选工具条：搜索框 + 稀有度 chip + 计数（博士「东西几百个太多了」） */
+/* ⭐v126 选货浮层筛选工具条：搜索框 + 稀有度 chip + 计数（作者「东西几百个太多了」） */
 .lo-dlvpop .ft{display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding:0 2px 5px;
   border-bottom:1px solid var(--line2);margin-bottom:5px}
 .lo-dlvpop .ft .dlvq{flex:1;min-width:0;font-size:11.5px;padding:2px 6px;
@@ -505,7 +505,7 @@ nav button.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:
 .lo-port.use{box-shadow:0 0 0 1px #fff,0 0 0 2.5px #2E8B9E}
 /* 产线闭环（排布器）的输入控件与报告 */
 .lo-num{width:76px;padding:5px 8px;border:1px solid var(--line2);border-radius:6px;background:var(--panel);color:var(--ink);font-family:inherit;font-size:12.5px}
-/* ⑥-1 收货物选择网格（2026-09-22 博士：「像游戏里那样给我个传输物品的选择器」）——
+/* ⑥-1 收货物选择网格（2026-09-22 作者：「像游戏里那样给我个传输物品的选择器」）——
    候选卡片（稀有度色条 + 名 + 数字）点选切换；选中态沿用 .lo-btn.sel 的 accent 范式，主题自适应 */
 .lo-pickgrid{display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 4px}
 .lo-pickcard{position:relative;min-width:150px;border:1px solid var(--line2);border-left-width:4px;border-radius:8px;background:var(--panel);padding:5px 10px 6px;cursor:pointer;font-family:inherit;text-align:left;transition:.12s;color:var(--ink)}
@@ -524,12 +524,12 @@ nav button.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:
 .lo-cell{position:absolute;border:1.5px solid var(--accent);background:rgba(15,110,86,.10);border-radius:3px;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--accent);overflow:visible}
 /* ⚠️ 上面必须是 overflow:visible，别改回 hidden。
    接口标记是压在**格线上**的（一半在建筑里、一半挑出去），一旦父级 clip，标记会被裁成贴着边框的
-   一两条细线 —— 就是 2026-09-21 博士报的「物品进出口看不见」。名字自己带省略号，不靠父级裁。 */
+   一两条细线 —— 就是 2026-09-21 作者报的「物品进出口看不见」。名字自己带省略号，不靠父级裁。 */
 /* 字形/名字字号跟着格子等比走：14px 格时就是原来的 13px / 8px，放大格子后不会显得空。 */
 .lo-glyph{font-size:calc(var(--locell,20px) * .93);line-height:1;font-weight:600}
 .lo-name{font-size:calc(var(--locell,20px) * .57);color:var(--ink2);font-weight:400;white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis}
 /* 接口标记：贴在建筑**内侧**、紧挨边框画（不是压格线）。
-   为什么要贴内侧：压格线时标记有一半伸到邻格里，一旦邻格放了传送带/管道就会互相压字（博士 2026-09-21 指出）。
+   为什么要贴内侧：压格线时标记有一半伸到邻格里，一旦邻格放了传送带/管道就会互相压字（作者 2026-09-21 指出）。
    贴内侧后标记外沿离自己的边框只有 0.5px、离邻格还有 2.5px 以上，任何情况下都不会重叠。
    颜色/形状不变：青=进料、橙=出料；方=传送带口、圆=管道口。 */
 .lo-port{position:absolute;width:7px;height:7px;border-radius:1px;transform:translate(-50%,-50%);box-shadow:0 0 0 1px #fff;z-index:3}
@@ -543,11 +543,11 @@ nav button.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:
 .lo-cell > svg{position:absolute;left:0;top:0;width:100%;height:100%;display:block;overflow:visible}
 /* 选中态（框选/单选共用）：暖色描边，和默认的墨绿区分开 */
 .lo-cell.sel{border-color:var(--warn);background:rgba(154,91,30,.13);color:var(--warn);box-shadow:0 0 0 2px rgba(154,91,30,.22)}
-/* 存取线未连接：跟游戏一样标红（博士 2026-09-21 实拍：游戏把没连上的预览块变红并提示）。
+/* 存取线未连接：跟游戏一样标红（作者 2026-09-21 实拍：游戏把没连上的预览块变红并提示）。
    写在 .sel 之后 —— 未连接比"选中"更该被看见。 */
 .lo-cell.bad{border:2px dashed #C0392B;background:repeating-linear-gradient(45deg,rgba(192,57,43,.16) 0 6px,rgba(192,57,43,.36) 6px 12px);color:#8E2418}
 /* ⚠️ 选中态（.sel）是橙色，未连接（.bad）必须是与之拉开距离的斜纹红 ——
-   博士曾把"刚摆完还在选中态"的橙色误读成"没接上的红"。别把两者改成相近的颜色。 */
+   作者曾把"刚摆完还在选中态"的橙色误读成"没接上的红"。别把两者改成相近的颜色。 */
 /* 局部锁定（路线图 ⑤-1）：锁 =「这台我满意了，别动它」。
    双线铁灰描边 + 右上角小锁，和选中（橙）/未连接（红）都区分得开。 */
 .lo-cell.lock{border-style:double;border-width:3px;border-color:#4A5560;box-shadow:0 0 0 1px rgba(74,85,96,.22)}
@@ -840,7 +840,7 @@ function opt(vals, emptyLabel){
     .concat(vals.map(v=>`<option value="${esc(v)}">${esc(v)}</option>`)).join('');
 }
 /* 试摆的分类下拉只列「选得出东西」的分类 —— 拉黑清单（LO_SKIP_IDS）可能整类清空
-   （博士 2026-09-21 把「功能设备」（v131 前旧名「物流辅助」）下的洒水机/给水器/滑索架/便捷存取站/留言信标全部点名去掉），
+   （作者 2026-09-21 把「功能设备」（v131 前旧名「物流辅助」）下的洒水机/给水器/滑索架/便捷存取站/留言信标全部点名去掉），
    留一个空选项只会让人点进去看到「没有匹配的分类」。回归测试也要求每个筛选项都有结果。 */
 function loCatOptions(){
   return uniq(DB.blueprint.buildings
@@ -1256,13 +1256,13 @@ function renderLogistics(){
    网格 + 建筑外框 + 分类配色字标 + 接口方块/圆点 + 朝外的接口引线。
    颜色只表达 进/出、传送带/管道 与 分类；边名仍是格坐标，不声称游戏内绝对方位。 */
 /* 配置表里「协议核心 / 次级核心」的 quickBarType 是空字符串，build.py 的兜底映射把它们归进了
-   「装饰与其他」，界面上就显示成「饰」。它们不是装饰 —— 博士 2026-09-21 指出。
+   「装饰与其他」，界面上就显示成「饰」。它们不是装饰 —— 作者 2026-09-21 指出。
    这里在数据载入后统一改分类：之后所有按 categoryName 走的逻辑（分类字标 / 配色 / 两个分类
    下拉 / 试摆左栏筛选）一次性全对，不用逐处打补丁。
    ⚠️ 改 build.py 或重跑构建都不影响这里 —— 页面数据是构建时内联进 HTML 的，只能在这儿改。
    （同样是兜底分类的 liquid_recycle_gate_1 / liquid_clean_gate_1 / power_port_1 是野外固定件，
      不进试摆，分类保持原样。） */
-/* ⭐v136（博士 2026-09-24：「都说了只要扩容反应池了，我要只显示反应池，反应池的数据是扩容反应池的就行」）：
+/* ⭐v136（作者 2026-09-24：「都说了只要扩容反应池了，我要只显示反应池，反应池的数据是扩容反应池的就行」）：
    界面上**只呈现一个「反应池」**，它的数据（占地 6×5 / 100 电 / 8 缓存格 / 3 条并行）就是扩容反应池
    mix_pool_2 的；基础反应池 mix_pool_1 从沙盘清单移除（LO_SKIP_IDS，见下），不作独立条目出现。 */
 const POOL_DISPLAY_NAME={'mix_pool_2':'反应池'};
@@ -1279,7 +1279,7 @@ const CORE_STRUCT_IDS={'sp_hub_1':1,'sp_sub_hub_1':1};
     if(b&&SIZE_OVERRIDE[b.id]) b.gridFootprint=SIZE_OVERRIDE[b.id];   /* ⭐v136 扩容池实占 5×5 */
     /* ⭐v136 端口覆盖：扩容池实机端口 = 基础池那套（每边各 2：带 2 进 2 出 / 管 2 进 2 出，共 8 个）。
        配置表按 6 格宽写成了「4 带进 + 4 带出 + 2 管进 + 2 管出」（12 个，管道出口 x=5 在 5×5 上越界），
-       博士 2026-09-24 实机核实为每边各 2 —— 以游戏为准，整组沿用基础池坐标。 */
+       作者 2026-09-24 实机核实为每边各 2 —— 以游戏为准，整组沿用基础池坐标。 */
     if(b&&b.id==='mix_pool_2'&&_POOL_BASE_PORTS) b.ports=JSON.parse(JSON.stringify(_POOL_BASE_PORTS));
     /* 端口绑定同步：端口数组换成 8 个后，扩容池配方组的绑定索引也要换成基础池那套（[0,1]/[2,3]），
        否则旧绑定 [4,5] 会越界（test_html「接口序号越界」断言会红）。 */
@@ -1374,7 +1374,7 @@ const LG_IN='#186C7D', LG_OUT='#C0561F';
    中心放功能字形；传送带/管道改放一个流向箭头（并配一进一出两条色条）。 */
 function lgSvg(b, rot, inSide){
   const ps=lgPortSides(b, rot), role={};
-  /* ⭐v106（博士 2026-09-23 游戏截图「一格拐弯画不了」）：带/管的**进色条**要用真实拓扑
+  /* ⭐v106（作者 2026-09-23 游戏截图「一格拐弯画不了」）：带/管的**进色条**要用真实拓扑
      （renderLayout 用 flowIn 由邻居反推的 inSide）——弯头格 rot 单值推的「进=出的反向」
      与真实进边不同轴，旧版色条画上边、弧却从左边绕，自相矛盾。
      功能件（汇/分/桥/阀）是多边进出，单进边覆盖不适用，保持按配置表画。 */
@@ -1392,7 +1392,7 @@ function lgSvg(b, rot, inSide){
     }
   });
   if(b.lgType==='Belt'||b.lgType==='Pipe'){
-    /* ⭐ 2026-09-21（博士反馈：拐弯箭头不直观）：知道进边时，弯道格画成 L 形圆弧带
+    /* ⭐ 2026-09-21（作者反馈：拐弯箭头不直观）：知道进边时，弯道格画成 L 形圆弧带
        （进边中点 → 圆角 → 出边中点 + 出口小箭头），和游戏里的弯道一个观感；
        直线格 / 线头（不知道进边）保持原来的直箭头。 */
     const outD=(ps.out&&ps.out[0])||'r';
@@ -1418,10 +1418,10 @@ function lgSvg(b, rot, inSide){
   }
   return `<svg viewBox="0 0 9 9" aria-hidden="true">${s}</svg>`;
 }
-/* 采集类建筑的「无线传输」信息（2026-09-22 博士问的）：
+/* 采集类建筑的「无线传输」信息（2026-09-22 作者问的）：
    矿机在配置表里确实挂着 3 个传送带出料口，但**电驱矿机默认是「无线传输模式」**（hasDroneMode / 10 秒一次），
    产物直接回仓库 —— 所以那 3 个口平时不用接带子。展示层必须把这件事画/写出来，
-   否则「矿机顶着 3 个出货口」会让人以为要拉带子（博士原话：矿机挖完是无线传回仓库的）。 */
+   否则「矿机顶着 3 个出货口」会让人以为要拉带子（作者原话：矿机挖完是无线传回仓库的）。 */
 function gatherInfo(id){
   return ((DB.mining_power||{}).gather||[]).filter(g=>g.id===id)[0]||null;
 }
@@ -1445,7 +1445,7 @@ function footprintSvg(b){
   const cells={};
   (b.ports||[]).forEach(pt=>{
     if(pt.z<0||pt.z>=D||pt.x<0||pt.x>=W) return;
-    /* ⭐⭐ 矿机的**传送带出料口不画**（博士 2026-09-22 两次指出，并问「那这样 4 还用吗，玩家都是用无线传输的」）：
+    /* ⭐⭐ 矿机的**传送带出料口不画**（作者 2026-09-22 两次指出，并问「那这样 4 还用吗，玩家都是用无线传输的」）：
        配置表里矿机确实记着 3 个传送带出料口，但**两种模式都用不上** ——
        默认「无线传输模式」产物直接回仓库；切「仓储模式」也只是进缓存区、**手动取出**（文案原文：
        「切换到仓储模式后，会和源石矿机一样不会将矿物送回仓库，必须从缓存区手动取出」）。
@@ -1573,9 +1573,9 @@ function renderBlueprint(){
     只表示"口在这块地的哪条边"，<b>不声称游戏内绝对方位</b>。<br>
     角上的口会同时命中两条边。经验规律：加工机多为「进料在 <code>z=D-1</code> 边、出料在 <code>z=0</code> 边」，
     但并非全员适用，<b>以每座自己的示意为准</b>。<br>
-    <b>⚠️ 矿机的出料口一律不画</b>（博士 2026-09-22 指出并追问「那这样 4 还用吗，玩家都是用无线传输的」）：
+    <b>⚠️ 矿机的出料口一律不画</b>（作者 2026-09-22 指出并追问「那这样 4 还用吗，玩家都是用无线传输的」）：
     配置表里矿机记着 3 个传送带出料口，但<b>两种模式都用不上</b> —— 默认<b>无线回传仓库</b>
-    （电驱 / 二型电驱 / 水驱矿机；水驱是博士实机确认），切「仓储模式」也只是进<b>缓存区、手动取出</b>。
+    （电驱 / 二型电驱 / 水驱矿机；水驱是作者实机确认），切「仓储模式」也只是进<b>缓存区、手动取出</b>。
     所以示意图直接在建筑上标 <b>⇡ 无线回传仓库</b>（或便携源石矿机的 <b>⇥ 缓存区 · 手动收取</b>），
     不再画那 3 个用不上的口（数据仍保留在 <code>ports</code>）；水驱矿机的<b>管道进料口</b>是真的，照常画。
   </div><div class="list">`+arr.map(b=>{
@@ -1743,7 +1743,7 @@ function maxBaseTable(){
 function busSvgOne(z){
   const side=z.side||40;
   const S=Math.max(70,Math.round(side*1.5)), t=Math.max(5,Math.round(S*0.10));
-  /* 游戏里的真实关系（博士 2026-09-21 实拍）：源桩自己占一角、和基段同宽，基段紧贴着它往两个方向延伸；
+  /* 游戏里的真实关系（作者 2026-09-21 实拍）：源桩自己占一角、和基段同宽，基段紧贴着它往两个方向延伸；
      副基地没有源桩，自动铺好的一条边横贯整个上边缘，直接用就行。源桩必须与基段条严丝合缝，不能凸出。 */
   const hasSrc=!!z.source;
   const src=t, o=hasSrc?src:0;
@@ -1867,7 +1867,7 @@ function renderBase(){
    选中后 R 原地转 90°、Del 删除、Ctrl+D 复制、Ctrl+Z / Ctrl+Y 撤销重做。
    坐标靠 getBoundingClientRect 反算 —— 真实浏览器可用；vm 回归不触发事件，
    但 Lput/Lrot/Ldel/Lundo/Ldup 都是纯函数，回归脚本直接调它们做断言。 */
-/* 格子边长（px）。2026-09-21 博士反馈「格子太小、物流件的流向箭头看不清」，
+/* 格子边长（px）。2026-09-21 作者反馈「格子太小、物流件的流向箭头看不清」，
    默认值从 14 提到 20，并在工具栏加了 14/20/26/32 四档可以随时调。
    这个数同时决定：画布像素尺寸、鼠标坐标反算（Lxy）、框选橡皮筋、拖动预览位置，
    以及 .lo-canvas 的背景网格间距（经 CSS 变量 --locell 传过去）—— 改一处就得同步另一处。 */
@@ -1890,11 +1890,11 @@ function byBp(id){
   return e?LO_LG(e):null;
 }
 /* ⭐v104 气体散布机：范围/气体来自 FactoryVaporizerTable（rangeExtend + gasGroups）。
-   ENV_HEX 按**游戏 UI 实拍**校准（博士 2026-09-23 截图「本设备可生成的环境一览」）：
+   ENV_HEX 按**游戏 UI 实拍**校准（作者 2026-09-23 截图「本设备可生成的环境一览」）：
    稳定=青蓝 / 湿润=白 / 酸性=橙黄 / 息壤=翠绿。
    ⚠️ v103 曾按特效资源名 P_fxfac_vaporizer_scope_<色>_ 的颜色词猜色，把稳定/湿润对反了 ——
    资源名是内部命名（white/blue 指特效白模/模板），**不是**显示色；仍保留在 envDisplay.color 里做溯源。
-   键直接用 GenEnv 1-4（博士问「哪来的第五种」：gray 只是查不到时的防御性兜底，游戏只有 4 种环境）。 */
+   键直接用 GenEnv 1-4（作者问「哪来的第五种」：gray 只是查不到时的防御性兜底，游戏只有 4 种环境）。 */
 const ENV_HEX={1:'#3D9FD8',2:'#F4F7F8',3:'#E7AC3F',4:'#43B06E',gray:'#B4B2A9'};
 const ENV_EDGE={1:'#1B6E9E',2:'#93A8B4',3:'#96660F',4:'#1F7040',gray:'#5F5E5A'};
 const ENV_NAME={1:'稳定',2:'湿润',3:'酸性',4:'息壤'};
@@ -1910,7 +1910,7 @@ function envOpOf(env){ return ENV_OP[env]||ENV_OP.gray; }
 function envGasName(env){ const b=byBp('vaporizer_1'); const g=b&&b.vaporizer&&((b.vaporizer.gasGroups||[]).find(x=>x.env===env)); return g?g.name:('环境 '+env); }
 /* 环境圈边长（格）：占地 外扩*2；返回 [宽, 深, 外扩] */
 function vaporizerSide(b){ const vp=vaporizerOf(b); const ext=(vp&&vp.rangeExtend&&vp.rangeExtend.x)||0; const fp=Lfp(b); return [fp[0]+ext*2, fp[1]+ext*2, ext]; }
-/* ⭐v109 协议核心出货（博士 2026-09-23：「游戏里的协议核心出货口可以点击选择物品出货」+
+/* ⭐v109 协议核心出货（作者 2026-09-23：「游戏里的协议核心出货口可以点击选择物品出货」+
    「内部空白面积大，选货能不能在内部给个机器口对应的箭头什么的」）。
    数据来自构建期注入的 DB.hubItems（raw/FactoryItemTable.deliverItemTypeList 非空者，
    key = 物品 id，value = {name, rarity, domains}）；domains 里的域决定**哪台核心**能出它。
@@ -1960,10 +1960,10 @@ function hubPickItem(o,idx){ const iid=hubPickGet(o,idx); return iid?((DB.hubIte
 /* 稀有度 → 星串（列表里用，纯字符不给字号列表加样式负担） */
 function hubStars(r){ r=Math.max(1,Math.min(6,r|0)); return '★'.repeat(r); }
 /* 打开某台核心的出料口选货清单 */
-/* ⭐v123（博士「鼠标一移动到机器口上就只能选择物品」）：手里拿着东西时点出货箭头
+/* ⭐v123（作者「鼠标一移动到机器口上就只能选择物品」）：手里拿着东西时点出货箭头
    不再弹选货浮层 —— 手拿物流件时 mousedown 已分流去「口格拉线」（见 LonMouseDown），
    但 mouseup 后 click 照样派发到箭头的 onclick，不拦会把刚起手的线头顶出浮层。
-   ⭐v125（博士「又选不了货了」）：守卫收窄为只拦物流件 —— Lput 摆放成功后 pick 不清
+   ⭐v125（作者「又选不了货了」）：守卫收窄为只拦物流件 —— Lput 摆放成功后 pick 不清
    （连续摆放交互），摆完核心手里还拿着核心，v123 的 if(L.pick) 把手拿建筑点箭头选货
    也拦死了；选货是核心属性操作，手拿建筑不冲突。 */
 function LdlvOpen(uid,idx){
@@ -1975,7 +1975,7 @@ function LdlvOpen(uid,idx){
   L.dlvPop={uid:uid, idx:idx, q:'', rare:0, jar:0}; render();
 }
 function LdlvClose(){ const L=Linit(); L.dlvPop=null; render(); }
-/* ⭐v135「点机器就地选」（博士 2026-09-24：「我要在这里选，要做到以后能逐步完善到其他基建都能在这里选」）：
+/* ⭐v135「点机器就地选」（作者 2026-09-24：「我要在这里选，要做到以后能逐步完善到其他基建都能在这里选」）：
    单击沙盘上的机器 → 机器正上方弹出该机器的**选择浮层**（游戏同款交互）。
    浮层内容按机器类型分派（RmacPanelOf）——新增基建只需在分派里加一个分支。
    与协议核心出货浮层（dlvPop）同一套定位/样式语言。 */
@@ -1994,7 +1994,7 @@ function RmacPanelOf(b, o){
   if(Rof(b.id).length) return RmacRecipeHtml(b, o);      /* 其他有配方的机器：配方选择 */
   return null;
 }
-/* ⭐v138 准入口面板（博士：「准入口可以选择准入物品…像上面反应池和协议核心那样在画布中选择」+
+/* ⭐v138 准入口面板（作者：「准入口可以选择准入物品…像上面反应池和协议核心那样在画布中选择」+
    「准入口还可以进行限速」）：
    · 限速档位 = 6/分一档；**传送带最高 30、管道最高 60**（社区/攻略核实；管速本身 120，准入口限不到 120）
    · 准入物品 = 允许通过的材料（多选；被拦的料会堵线，所以默认「不限」）
@@ -2080,11 +2080,11 @@ function RmacRecipeHtml(b, o){
       </select>
       ${rt?`<div class="c-sub" style="margin-top:6px"><span>单台产能 <b>${rt.out.map(x=>esc(x.name)+' '+x.perMin+'/分').join('、')}</b> · ${rt.seconds} 秒/轮 · ${rt.roundsPerMin} 轮/分</span></div>`:''}`;
 }
-/* ⭐v126 选货浮层搜索 + 稀有度筛选（博士「东西几百个太多了」——281 件翻不动）：
+/* ⭐v126 选货浮层搜索 + 稀有度筛选（作者「东西几百个太多了」——281 件翻不动）：
    oninput / 点 chip 只走轻量 DOM 过滤（LdlvRefilter），**不走 render** —— render
    重建整个画布 DOM，输入框每敲一个字就丢焦点。状态存 L.dlvPop（q/rare/jar），选中
    物品后的 render 用同状态服务端过滤重绘，筛选跨 render 保持。
-   ⭐v127（博士「你这里全是一样的瓶罐」）：搜索口径扩到灌装物标注 ct —— 「紫晶质瓶」
+   ⭐v127（作者「你这里全是一样的瓶罐」）：搜索口径扩到灌装物标注 ct —— 「紫晶质瓶」
    同名 ×10+ 只有 content 能分清，搜「息壤」要能命中「装：息壤液」的那瓶。 */
 function LdlvRefilter(){
   const L=Linit(), pop=L.dlvPop; if(!pop) return;
@@ -2157,7 +2157,7 @@ function LportDir(q,W,D){
   return '';
 }
 /* ⭐v122：接口朝向跟着 rot 转，不再对旋转后的格子重新贴边猜。
-   事故（博士实测截图「旋转个方向进出货口就不齐了」）：旧代码对 LportXY 转完的坐标
+   事故（作者实测截图「旋转个方向进出货口就不齐了」）：旧代码对 LportXY 转完的坐标
    再调 LportDir —— 角上的口两条边都压、固定取 z 边，rot=0 时进料口数据恰好在 z 边
    所以猜对；机器一转，口的位置被转到了 x 边，贴边猜仍返回 z 边方向 → 朝向全错，
    「口外那一格」算错，端点吸附 / 从口拉线 / 自动布线全都不齐。
@@ -2183,9 +2183,9 @@ function LlogiAt(idx,x,y,isPipe){
 }
 function Linit(){
   if(!LO) LO={size:50,pick:null,pickRot:0,objs:[],sel:[],undo:[],redo:[],seq:0,msg:'',lastT:0,lastUid:'',showPort:true,showGas:true,showPwr:true,zone:'',viewRot:0,base:'',plan:null,plans:[],tgt:'item_iron_cmpt',rate:10,selfLoop:false,shipIn:false,tv:0,tvHours:1,mt:[],shipPick:'',shipCands:[],shipDmap:null,shipRawSet:null,
-    /* ⭐⑥-3 收货方向（2026-09-22 博士：两地对称互传，现在用谷地→武陵；下拉为未来新地区留口） */
+    /* ⭐⑥-3 收货方向（2026-09-22 作者：两地对称互传，现在用谷地→武陵；下拉为未来新地区留口） */
     shipFrom:'domain_1', shipTo:'domain_2', pickShow:false,
-      /* ⭐v144 建筑清单默认收起（博士：那 45 项的大块一直摊在画布上方，换基建很麻烦） */
+      /* ⭐v144 建筑清单默认收起（作者：那 45 项的大块一直摊在画布上方，换基建很麻烦） */
       palOpen:false,
     /* ⭐v109 协议核心出货：{uid:{口index:物品id}} + 当前打开的选货浮层 {uid,idx} */
     hubPicks:{}, dlvPop:null,
@@ -2330,7 +2330,7 @@ function Lfree(x,y,w,d,ign){
 /* ⭐v148 供电范围层开关 */
 function LtogglePwr(){ const L=Linit(); L.showPwr=!L.showPwr; render(); }
 /* ⭐v148 待放置供电范围预览：手拿供电桩/中继器悬在画布上时，光标处浮出范围预览（不 re-render）。
-   博士：「放的时候怎么确定设备在不在供电范围里」—— 这就是答案。放下（pick 清空）或离开画布即消失。 */
+   作者：「放的时候怎么确定设备在不在供电范围里」—— 这就是答案。放下（pick 清空）或离开画布即消失。 */
 let LpwrPreEl=null;
 function LpwrPreMove(e){
   if(typeof tab==='undefined'||tab!=='layout'){ if(LpwrPreEl){LpwrPreEl.remove();LpwrPreEl=null;} return; }
@@ -2403,14 +2403,14 @@ function Lclear(){
   if(!L.objs.length){ L.msg='画布本来就是空的'; render(); return; }
   Lpush(); L.objs=[]; L.sel=[]; L.msg='已清空（可撤销）'; render();
 }
-/* ⭐ 2026-09-21（博士反馈「放不上去」）：游戏里分/汇流器可以「替换」线上的普通物流段 ——
+/* ⭐ 2026-09-21（作者反馈「放不上去」）：游戏里分/汇流器可以「替换」线上的普通物流段 ——
    手里拿分/汇流器、点（或拖到）一个「介质匹配的传送带/管道格」→ 删掉那段、放分/汇流器。
    机器与其他建筑依然拒绝（汇流器不能压机器）。命中并替换返回 true。 */
 function LreplaceCell(x,y){
   const L=Linit();
   if(!L.pick||!L.pick.isLogi) return false;
   const pk=L.pick;
-  /* ⭐ 2026-09-21（博士：物流桥和准入口犯了同样的毛病）——两类行为不同：
+  /* ⭐ 2026-09-21（作者：物流桥和准入口犯了同样的毛病）——两类行为不同：
      串接类（分/汇流器、准入口）→ **替换**线上普通段；桥类（物流桥/管道桥）→ **叠加**（原线保留，立体跨线）。 */
   const kind=(pk.lgType==='Router'||pk.lgType==='FluidRepeater'||pk.lgType==='BoxValve'||pk.lgType==='FluidValve') ? 'replace'
            : (pk.lgType==='Connector'||pk.lgType==='FluidConnector') ? 'overlay' : null;
@@ -2421,7 +2421,7 @@ function LreplaceCell(x,y){
   const ob=byBp(occ.id);
   if(!ob||!ob.isLogi||(ob.lgType!=='Belt'&&ob.lgType!=='Pipe')||ob.lgMedium!==pk.lgMedium) return false;
   /* ⭐v138 串接类必须「顺着物流方向」：转角格（该格进向 ≠ 出向）不能放 ——
-     博士核实：「转角格不能放的原因是没有沿着物流方向建造」。 */
+     作者核实：「转角格不能放的原因是没有沿着物流方向建造」。 */
   if(kind==='replace' && (pk.lgType==='BoxValve'||pk.lgType==='FluidValve')){
     /* ⭐v140 合规判定走唯一出处 LvalveBad（该格现在是带子 occ，用它的流向判） */
     const _why=LvalveBad(x, y, pk.lgMedium);
@@ -2433,7 +2433,7 @@ function LreplaceCell(x,y){
   Lpush();
   if(kind==='replace') L.objs=L.objs.filter(o=>o!==occ&&o.uid!==occ.uid);
   /* ⭐v140 朝向：串接件沿用原格流向，但**准入口的 rot 基准差 90°**（传送带 rot0=流向右 /
-     准入口 rot0=下进上出）→ 必须映射，否则竖着放会变横（博士截图 1）。 */
+     准入口 rot0=下进上出）→ 必须映射，否则竖着放会变横（作者截图 1）。 */
   const o=Lmk(pk,x,y,kind==='replace'?LtwinRot(pk,occ.rot):L.pickRot);
   o.planRole='link';
   L.objs.push(o); L.sel=[o.uid];
@@ -2441,13 +2441,13 @@ function LreplaceCell(x,y){
   render();
   return true;
 }
-/* ⭐v138（博士 2026-09-24：「准入口只可以放在传送带和管道上」）：这类件**只能叠在同类带/管上**，
+/* ⭐v138（作者 2026-09-24：「准入口只可以放在传送带和管道上」）：这类件**只能叠在同类带/管上**，
    不许放空格 —— 串接类（分/汇流器、准入口）替换线上普通段，桥类叠加。判定沿用 LreplaceCell 的 kind。 */
 const LO_ONLINE_TYPES={'BoxValve':1,'FluidValve':1};
 function LisOnLine(b){ return !!(b&&b.isLogi&&LO_ONLINE_TYPES[b.lgType]); }
 /* ⭐v140 物流件的「rot ↔ 方向」明文映射：**传送带/管道** rot=0 表示「流向右」，90=下、180=左、270=上
    （与 LdirName 一致）。⚠️ 但**准入口**的 rot 基准不同（测试锁定：rot=0 时「下进上出」）——
-   两者差 90°，换件时必须做映射，否则竖着放会变成横的（博士 2026-09-24 截图 1）。 */
+   两者差 90°，换件时必须做映射，否则竖着放会变成横的（作者 2026-09-24 截图 1）。 */
 function LrotDir(rot){ return ({0:'r',90:'d',180:'l',270:'u'})[((rot%360)+360)%360]||'r'; }
 function LtwinRot(pk, rot){
   return (pk.lgType==='BoxValve'||pk.lgType==='FluidValve') ? (((rot+90)%360)+360)%360 : rot;
@@ -2465,7 +2465,7 @@ function LvalveBad(x, y, med){
   const me=cellAt(x,y);
   const _meB=me?byBp(me.id):null;
   /* ⭐v141 关键修正：**阀门类的 rot 基准差 90°** —— 读方向前必须先转回传送带语义，
-     否则竖直段上会被读成横向、误判成拐角（博士截图 3：竖直带中间放准入口也标红）。 */
+     否则竖直段上会被读成横向、误判成拐角（作者截图 3：竖直带中间放准入口也标红）。 */
   const _meRot=(me&&_meB&&LisOnLine(_meB))?(((me.rot-90)%360)+360)%360:(me?me.rot:0);
   const myDir=me?LrotDir(_meRot):'r';
   const UP=[[0,-1,'d'],[0,1,'u'],[-1,0,'r'],[1,0,'l']];      /* [dx,dy, 该邻居「指向我」时应有的流向] */
@@ -2481,7 +2481,7 @@ function LvalveBad(x, y, med){
   return null;
 }
 /* ⭐v141 阀门朝向重算：把选中/移动过的阀门 rot 按**新位置所在的线段流向**重设 ——
-   拖到别的线上时 rot 不会自己更新，会一直被标红/朝向不对（博士截图 2）。 */
+   拖到别的线上时 rot 不会自己更新，会一直被标红/朝向不对（作者截图 2）。 */
 function LvalveResync(uids){
   const L=Linit();
   const toBelt={r:0,d:90,l:180,u:270};
@@ -2524,13 +2524,13 @@ function Lput(x,y){
 }
 /* 物流件连铺：空白格按下即起手，拖动沿直线把这一排铺满（横还是竖由拖拽主轴决定）。
    整段手势只压一次撤销栈（按下时 Lpush），拖动过程中来回改的是同一批格子。 */
-/* ⭐ 2026-09-21（博士截图反馈）：拉线升级成游戏的手感 ——
+/* ⭐ 2026-09-21（作者截图反馈）：拉线升级成游戏的手感 ——
    ① L 形拐弯：拖拽主轴先走、再转第二轴，弯头格的朝向自动衔接（渲染层按 rot 画，弯道箭头自动拐）；
    ② 端点吸附：起手/落点压在机器上时，自动吸到该机「输出口/输入口」外一格（口外那格 = 游戏里
       「出口旁边那格开始拉」；机器占格本身画布上被机器占着，带子贴着机器铺，视觉一致）。 */
-/* ⭐v107（博士图2「想要红箭头那种」）：拐弯先走哪条轴**跟手势**——
+/* ⭐v107（作者图2「想要红箭头那种」）：拐弯先走哪条轴**跟手势**——
    轨迹里第一个偏移过 1 格的点，它的主轴就是第一轴（先往上拖就先铺竖段）；
-   旧版按总位移大小（|dx|>=|dy| 先横），博士想先竖后横时被强行画成镜像。
+   旧版按总位移大小（|dx|>=|dy| 先横），作者想先竖后横时被强行画成镜像。
    轨迹退化/斜拖同帧双轴时回退旧判定（构造 LODRAG 没 hist 的旧调用方同样回退）。 */
 function LlayAxis(st){
   const fb=Math.abs(st.ex-st.sx)>=Math.abs(st.ey-st.sy)?'h':'v';
@@ -2616,7 +2616,7 @@ function LlayTo(ex,ey){
   /* 先把本手势上一帧铺的格摘掉，再整体重铺 —— 逐格 push 会让判定把自己的格子当障碍 */
   if(st.uids&&st.uids.length) L.objs=L.objs.filter(o=>st.uids.indexOf(o.uid)<0);
   const base=L.objs.slice(), added=[];
-  /* ⭐v136 相交自动建桥（博士 2026-09-24：「游戏里两条传送带相交后会自动建物流桥，试摆里没有」）：
+  /* ⭐v136 相交自动建桥（作者 2026-09-24：「游戏里两条传送带相交后会自动建物流桥，试摆里没有」）：
      连铺时目标格被**同类介质的普通带/管**占着 → 不再跳过，而是在那格叠一座桥
      （传送带 → log_connector 物流桥；管道 → log_pipe_connector 管道桥）—— 与游戏同款行为。
      其他占用（建筑 / 分汇流器 / 已有桥 / 异类介质）仍按原样跳过。 */
@@ -2641,7 +2641,7 @@ function LlayTo(ex,ey){
     if(!LfreeIn(added,c[0],c[1])) return;   /* 自己重叠的格跳过 */
     added.push(Lmk(L.pick,c[0],c[1],rot));
   });
-  /* ⭐v128（博士 2026-09-24「连续放传送带时，在上一条传送带的末尾拐弯放置，
+  /* ⭐v128（作者 2026-09-24「连续放传送带时，在上一条传送带的末尾拐弯放置，
      末尾那格不会自动变成拐弯」）：链尾自动拧转。弯头渲染靠 flowIn 拓扑反推
      （邻居指向我才有进边）——「从旧带末尾拐出去」时旧尾格没有任何邻居指向它，
      推断必然失效，永远画直条。游戏口径是新带衔接旧链尾时旧尾格自动变弯头：
@@ -2838,13 +2838,13 @@ function LhitPort(o,fx,fy){
 function LonMouseDown(e){
   if(tab!=='layout'||e.button!==0) return;
   /* ⭐v104 就地选气条浮在画布内（.lo-gasbar）：点它的按钮不能被当成「点画布摆放」——
-     否则手里拿着散布机时点色块会**再放一座**（博士 2026-09-23 实测），还顺带清掉选中。
+     否则手里拿着散布机时点色块会**再放一座**（作者 2026-09-23 实测），还顺带清掉选中。
      这里直接放行，让按钮自己的 onclick=LgasSet 接手。 */
   if(e.target.closest&&e.target.closest('.lo-gasbar')) return;
   /* ⭐v109 协议核心出货：内部箭头（.lo-dlv）与选货浮层（.lo-dlvpop）自成一套点击 ——
      放行给它们自己的 onclick，否则点箭头会被当成「点画布 → 清选中 / 摆新件」。
      点画布别处则顺手关掉浮层（浮层外点击 = 收起）。
-     ⭐v123（博士「手拿传送带一移到口上就只能选货」）：箭头压在口格上，v109 的无条件
+     ⭐v123（作者「手拿传送带一移到口上就只能选货」）：箭头压在口格上，v109 的无条件
      放行把 v108「从口格拉线」挡死了。改为**手拿物流件时不放行** —— 往下走到 portpend
      分支（原地松手=拉线、拖动=移机器）；空手点箭头仍放行开选货浮层（click 链由
      LdlvOpen 的「手里有东西不开」守卫兜底）。 */
@@ -2868,7 +2868,7 @@ function LonMouseDown(e){
        全是锁定件就只做选中、不起拖（也顺带挡掉双击删除）。 */
     const dragSel=L.sel.filter(u=>{ const q=L.objs.filter(x=>x.uid===u)[0]; return !!q&&!q.lock; });
     if(!dragSel.length){ LODRAG=null; L.msg='选中的是锁定件，动不了（工具栏「解锁选中」或按 L 解锁）'; render(); return; }
-    /* ⭐v109（博士 2026-09-23「点机器口机器会被拖动」）：手拿物流件、按在**该机的口格**上 →
+    /* ⭐v109（作者 2026-09-23「点机器口机器会被拖动」）：手拿物流件、按在**该机的口格**上 →
        先只选中、进「待决态」不起拖。原地松手 = 从口外起手连铺；拖过 4px 才转成移动机器。
        旧版命中机器就直接进 move，v108 的「口外起手」分支在后面永远走不到 —— 想从口红圈拉线，
        一动就把机器拖走了。 */
@@ -2888,7 +2888,7 @@ function LonMouseDown(e){
   /* 手里拿着物流件、按在空白格上 → 起手连铺，不走框选 */
   if(L.pick&&L.pick.isLogi){
     const lx=Math.floor(p.fx), ly=Math.floor(p.fy);
-    /* ⭐v108（博士图：「游戏里是从红圈里开始拉」）：起手格压在机器上、但出口外侧格空着
+    /* ⭐v108（作者图：「游戏里是从红圈里开始拉」）：起手格压在机器上、但出口外侧格空着
        → 从**口外那一格**起手（在机器的「红圈」口上拉带子，游戏手感）。
        先只探测、不动状态；确认能起手才 Lpush（整段手势只压一次撤销栈）。 */
     const free=Lfree(lx,ly,1,1,null);
@@ -2950,7 +2950,7 @@ function LonMouseUp(){
   if(tab!=='layout') return;
   const L=Linit();
   if(st.mode==='lay'){
-    /* ⭐ 2026-09-21（博士「拖拽到传送带上还是不行」）：拖拽的**落点**压在同类介质物流段上时，
+    /* ⭐ 2026-09-21（作者「拖拽到传送带上还是不行」）：拖拽的**落点**压在同类介质物流段上时，
        松手 = 把该格替换成分/汇流器（游戏同款）—— 拖动过程只预览、不破坏已有线。 */
     if(L.pick && LreplaceCell(st.ex, st.ey)){ render(); return; }
     L.sel=(st.uids||[]).slice();
@@ -2973,7 +2973,7 @@ function LonMouseUp(){
     }
     render(); return;
   }
-  /* ⭐v109 待决态原地松手 = 从口外起手拉线（博士「游戏里是从红圈里开始拉」）：
+  /* ⭐v109 待决态原地松手 = 从口外起手拉线（作者「游戏里是从红圈里开始拉」）：
      点口不再拖走机器，而是从这里开始铺。 */
   if(st.mode==='portpend'){
     const lx=Math.floor(st.fx), ly=Math.floor(st.fy);
@@ -3004,7 +3004,7 @@ function LonMouseUp(){
       LvalveResync(st.sel);   /* ⭐v141 移动到新线路上 → 阀门朝向跟着重算 */
       L.msg='已移动 '+st.sel.length+' 座（'+st.dx+', '+st.dy+'）';
     } else {
-      /* ⭐ 2026-09-21（博士「拖到传送带上放不上」）：拖的是分/汇流器（Router/FluidRepeater 单选）
+      /* ⭐ 2026-09-21（作者「拖到传送带上放不上」）：拖的是分/汇流器（Router/FluidRepeater 单选）
          且落点格恰好是「同类介质的普通物流段」→ 替换该格：删段、分/汇流器移过去。 */
       if(st.sel.length===1){
         const o=L.objs.filter(q=>q.uid===st.sel[0])[0];
@@ -3069,29 +3069,29 @@ function LonKeyDown(e){
    见前面的 CORE_STRUCT_IDS 段。
    ⚠️ 这里曾经把「产物排出口 liquid_recycle_gate_1 / 污水接入口 liquid_clean_gate_1」也一并放行 ——
    它们是武陵净水节点上的野外固定闸口（allowPlayerMove=false、canDelete=false），不在基地里，
-   博士 2026-09-21 在游戏里找不到、核查后移除。
+   作者 2026-09-21 在游戏里找不到、核查后移除。
    默认不列：资源开采（矿机/水泵只能放野外矿点）、战斗辅助、装饰（玩偶/立牌/田块等）。
    要单独看某一类，用上方的分类下拉直接选。 */
 const LO_KEEP_CATS=['仓储存取','基础生产','合成制造','电力','功能设备'];
 const LO_KEEP_IDS=['sp_hub_1','sp_sub_hub_1'];
 /* 沙盘里一概不提供的建筑（按 ID 拉黑，含多地区同名变体）：
-     中继器 power_pole_2 / 息壤中继器 power_pole_3 —— 博士 2026-09-21 要求去掉。
+     中继器 power_pole_2 / 息壤中继器 power_pole_3 —— 作者 2026-09-21 要求去掉。
      洒水机 squirter / 给水器 dumper / 滑索架 travel_pole（含长距滑索架 travel_pole_2）
-     / 便捷存取站 carrier_1 / 留言信标 marker_1 —— 博士 2026-09-21 要求不出现在试摆里。
+     / 便捷存取站 carrier_1 / 留言信标 marker_1 —— 作者 2026-09-21 要求不出现在试摆里。
    拉黑对「默认清单」和「分类下拉单独看」都生效；要放回来，把 ID 从这里删掉即可。 */
 const LO_SKIP_IDS=['power_pole_2','power_pole_3',
-  'mix_pool_1',                         /* ⭐v136 基础反应池不作独立条目 —— 界面上的「反应池」= 扩容池（博士只用扩容） */
+  'mix_pool_1',                         /* ⭐v136 基础反应池不作独立条目 —— 界面上的「反应池」= 扩容池（作者只用扩容） */
   'squirter_1','squirter_nop_1',        /* 洒水机 */
   'dumper_1','dumper_nop_1',            /* 给水器 */
   'travel_pole_1','travel_pole_nop_1',  /* 滑索架 */
-  'travel_pole_2',                      /* 长距滑索架（同类，博士 2026-09-21 一并去掉） */
-  'carrier_1','marker_1'];            /* 便捷存取站 / 留言信标（博士 2026-09-21） */
-/* 免电变体（id 带 _nop_，如 storager_nop_1）不在试摆里列 —— 博士 2026-09-21：同名只留正常版。
+  'travel_pole_2',                      /* 长距滑索架（同类，作者 2026-09-21 一并去掉） */
+  'carrier_1','marker_1'];            /* 便捷存取站 / 留言信标（作者 2026-09-21） */
+/* 免电变体（id 带 _nop_，如 storager_nop_1）不在试摆里列 —— 作者 2026-09-21：同名只留正常版。
    要放回来，把下面改成 false 即可。 */
 const LO_HIDE_NOP=true;
 const LO_IS_NOP=b=>String(b.id).indexOf('_nop_')>=0;
 /* ---------- 基地 / 地区：武陵与四号谷地的存取线是两套规则，别混着算 ----------
-   博士 2026-09-21：「布局试摆我看不见四号谷地的预设存取线，能把武陵和四号谷地分开讨论吗」。
+   作者 2026-09-21：「布局试摆我看不见四号谷地的预设存取线，能把武陵和四号谷地分开讨论吗」。
    两地差别（依据：data/bases.json 的 busObservations、zones[].busCap）：
      · 四号谷地：存取线由基地升级后**自动铺在基地外侧边缘**，玩家不用摆；配置表档位里也没有数量。
      · 武陵：源桩 + 基段**要自己摆**，有满级上限（源桩 2 / 基段 12·25），没接上的件游戏里会标红。
@@ -3099,7 +3099,7 @@ const LO_IS_NOP=b=>String(b.id).indexOf('_nop_')>=0;
      · 选谷地 → 左栏不给源桩 / 基段；也不判「贴靠」（预设线坐标属关卡场景数据，配置表里是 0，判不了）。
      · 选武陵 → 原样：自己摆 + 上限 + 标红。
      · 自由模式（不选基地）→ 沿用武陵那套，只是不带地区名。
-   ⚠️ 谷地预设线**暂不画**（博士 2026-09-21 定的：等他在游戏里给截图再按实测收录）。
+   ⚠️ 谷地预设线**暂不画**（作者 2026-09-21 定的：等他在游戏里给截图再按实测收录）。
       将来画的时候按「只做可视参考、不占格、不挡摆放」的口径叠在画布最外圈。 */
 const LO_BUS_IDS=['log_hongs_bus_source','log_hongs_bus'];
 const LO_PRESET_BUS_REGIONS=['四号谷地'];
@@ -3125,7 +3125,7 @@ function LbusZone(){
   const z=(((DB.bases||{}).busObservations||{}).zones)||[];
   return z.filter(r=>r.levelId===L.base)[0]||null;
 }
-/* ---------- ⭐⑥-3 收货方向：从 / 到（2026-09-22 博士定）----------
+/* ---------- ⭐⑥-3 收货方向：从 / 到（2026-09-22 作者定）----------
    两地对称互传（规则原文：「各地区仓库互相独立，可以从其他地区的仓库传输物品到本地区仓库」），
    现在实际用的是 四号谷地 → 武陵；方向做成**下拉**、地区清单从 DB.bases.domains 动态读，
    以后新地区开放（domain_3…）不用改代码。 */
@@ -3154,9 +3154,9 @@ function LshipDirV(which, id){
   if(L.plan&&L.plan.res) LawRun(L.tgt, L.rate); else render();
 }
 /* ---------- 谷地预设存取线：贴在**画布外缘**的带子 ----------
-   博士 2026-09-21 定的口径：「就是贴在画布外缘，不占基地格子」——
+   作者 2026-09-21 定的口径：「就是贴在画布外缘，不占基地格子」——
    所以整条带子画在画布框**外面**（负偏移），一格都不占，也不参与碰撞与撤销。
-   摆法按基地面积页那张示意图（博士 2026-09-21 确认「就按这张示意图画」）：
+   摆法按基地面积页那张示意图（作者 2026-09-21 确认「就按这张示意图画」）：
      · 枢纽区   源桩占左上角 + 与之相连的上、左两条边铺满（busObservations.edges=2, source=true）
      · 三个副基地 一条边铺满、没有源桩（edges=1, source=false）
    ⚠️ 这是**示意图的摆法**，不是游戏内实测的绝对方位 —— 具体哪条边随镜头变，
@@ -3214,7 +3214,7 @@ function LbaseSet(id){
      ② 组声明的是**能力上限**（组内并集，可能含预留），不保证每个配方都用得上；
         强制方向只有「配方需要的 ⊆ 组声明的」——已用 317 条配方全量回代，0 漏声明。
      ③ 已知 2 处「组多声明」记在 recipe_groups.json 的 anomalies（天有洪炉的流体产出口），别当解析错误。
-   下面这组函数是**纯函数、不碰 DOM** —— 博士 2026-09-21 要求「产能配比在后台按最优计算，
+   下面这组函数是**纯函数、不碰 DOM** —— 作者 2026-09-21 要求「产能配比在后台按最优计算，
    为以后全生产基地产线最精简 / 产能最大化基建摆放做准备」，所以它们是给以后排布器用的地基。 */
 function RbyId(id){ return (DB.machine_recipes||[]).filter(r=>r.id===id)[0]||null; }
 function Rof(machineId){
@@ -3222,7 +3222,7 @@ function Rof(machineId){
     .sort((a,b)=>((a.sortId||0)-(b.sortId||0))||(a.id<b.id?-1:a.id>b.id?1:0));
 }
 function Rgroup(r){ return r?((((DB.recipe_groups||{}).groups)||{})[r.group]||null):null; }
-/* ⭐v134 反应池面板（博士 2026-09-24：「布局试摆里反应池也要像游戏里那样显示缓存槽和选择输出产物」）。
+/* ⭐v134 反应池面板（作者 2026-09-24：「布局试摆里反应池也要像游戏里那样显示缓存槽和选择输出产物」）。
    游戏事实（v133 三重核实）：一栋池子有 N 个缓存格、可同时跑多条**不同**配方（同一条不叠加提速）；
    扩容池（mix_pool_2）8 格 / 最多同时 3 条反应；基础池（mix_pool_1）格少（社区口径「以前只有 5 个口」）。
    数据依据：FactoryMachineCraftTable.buffers = 每条反应涉及的缓冲物（= 占格）。
@@ -3352,7 +3352,7 @@ function RselectedInfo(){
           recipe:ids.length===1?RbyId(ids[0]):null};
 }
 /* ========== 产线闭环 · 排布器 v1（2026-09-21）==========
-   博士：「做排布器，先做一次产线闭环」+「连连线也自动」+「按有启动料算，
+   作者：「做排布器，先做一次产线闭环」+「连连线也自动」+「按有启动料算，
    产线如何启动时告诉我要在哪个机器塞什么启动料」。
    流程：目标物品 + 目标速率 → 展开配方树 → 按深度分层摆机器 → 自动连传送带/管道 → 出报告。
    ⚠️ 三个真问题（都已在数据里查实，不是假设）：
@@ -3367,7 +3367,7 @@ function RselectedInfo(){
 const RW_BELT=30, RW_PIPE=120;
 function RwMade(regionName){
   /* itemId → 能产出它的配方列表（按地区过滤缓存）。
-     ⭐⑥-3 对称互传（2026-09-22 博士）：「出发地能产」要按**出发地的机器**算 ——
+     ⭐⑥-3 对称互传（2026-09-22 作者）：「出发地能产」要按**出发地的机器**算 ——
      天有洪炉（息壤/重息壤/膨地啪的唯一产地）是武陵限定，谷地集成工业产不了它们，
      所以从谷地出发就不能传这三件（游戏口径：本地区集成工业可生产的任意一种物品）。
      不传 regionName = 不过滤（评分/展开/老路径全都不受影响，缓存键分开）。 */
@@ -3441,7 +3441,7 @@ const RW_STOP_AT_RECYCLE=true;
    而且报告里会明确写「按外部输入处理」，不会悄悄少算。 */
 const RW_MAX_DEPTH=3;
 /* 规模闸门：展开超过这么多台就不生成，改成报告里说明原因（免得画布上堆一坨垃圾）。
-   ⭐v159（2026-09-25）：60 → 180。博士实测「一堆产线自动生成不出来」，根因就是这个自设闸门
+   ⭐v159（2026-09-25）：60 → 180。作者实测「一堆产线自动生成不出来」，根因就是这个自设闸门
      （**不是游戏限制**）。探针 probe_tier 用**修正口径**实测（201 个「目标×地区」组合）：
        判据 = 「占地装得下（est ≤ 该地区最大基地可用格）的链，就不该被台数拦掉」。
        实测「本该能生成」的 199 条里，**最大台数 = 174**（中容武陵电池@武陵，est 6151 ≤ 6319）。
@@ -3456,7 +3456,7 @@ const RW_MAX_DEPTH=3;
      ⚠️ 未来「多个成品一起摆」时不要靠继续抬高此值：它是「单条链的合理上限」，
         多目标的总量控制应放在 RbaseBest（按基地累计 Σ占地/Σ台数）。 */
 const RW_MAX_MACHINES=180;
-/* ⭐⭐ ⑥-4 建筑专属限摆（2026-09-22 博士拍板 + 查证）：
+/* ⭐⭐ ⑥-4 建筑专属限摆（2026-09-22 作者拍板 + 查证）：
    配置表 buildings.json 的 hasPlaceLimit 字段**不含「科技解锁型限摆」数据域** —— 天有洪炉在
    1.5.3 配置表里 hasPlaceLimit=false，但游戏里息壤工业科技满级也只许摆 **12 台**（武陵合计；
    1.2 工业计划从 8 抬到 12，3DM/TapTap/NGA/1.4 蓝图攻略四源印证）。这类是运行时系统数值
@@ -3497,7 +3497,7 @@ function RwCost(iid, path, depth, budget){
   });
   return best;
 }
-/* ⭐⭐ ⑥-1 跨地区供货（2026-09-22，博士：只用「四号谷地 → 武陵」超库存传输）
+/* ⭐⭐ ⑥-1 跨地区供货（2026-09-22，作者：只用「四号谷地 → 武陵」超库存传输）
    口径（全部来自配置表 / 文案，见 DB.rules 里的 rule_domain_transfer）：
      · 出发地 = 四号谷地（domain_1），可传「本地区集成工业可生产的任意一种物品」；
      · 超库存传输**不扣出发地库存**、目的地直接获得 → 出发地只需要「有产能」就行，
@@ -3516,7 +3516,7 @@ function RwCanReceive(iid){
    纯函数（selfLoop 走 opt 传进来，不读全局，方便测试）。
    opt.selfLoop=true = 「闭环自持」开关：
      只有回收路线的物品**照样往里展开**，靠 载体 / 链上绕回 形成闭环，
-     并把启动时要塞的东西记进 seeds —— 博士 2026-09-21 要的就是这个。
+     并把启动时要塞的东西记进 seeds —— 作者 2026-09-21 要的就是这个。
    默认 false = 那种料按「外部输入」处理（链短、好摆）。 */
 function Rexplode(targetId, perMin, opt){
   /* 【分节总览】递归展开主循环（从叶子回溯，不是自顶向下）：
@@ -3639,7 +3639,7 @@ function Rexplode(targetId, perMin, opt){
     /* ⚠️⑥-2：多目标路径的这条警告挪到 RexplodeFinal（台数按合并需求重算后再判才有意义） */
     if(!useDedup && n.actualOut>r3(demand)+1e-6) warns.push(n.name+'：按整台算，实际产出 '+n.actualOut+'/分，比需要的 '+n.demand+'/分 多 '+r3(n.actualOut-n.demand));
     const oc=(r.outcomes.filter(x=>x.id===iid)[0]||r.outcomes[0]||{}).count||1;
-    /* ⭐C6-b 阶段1（2026-09-25，博士拍板）：**配方副产物入图**。
+    /* ⭐C6-b 阶段1（2026-09-25，作者拍板）：**配方副产物入图**。
        背景：`outcomes` 原先只用来取主产物的 count，第二产出（污水 / 壤晶废液 / 沉积酸…）
        在产线图里**完全不存在** → 排布器看不见、不摆、不算，而社区实例里引发全基地断电的
        正是这类东西（赤铜精炼的污水）。C6-a 体检只能事后扫配方兜底；C6-b 让它们进图。
@@ -3732,7 +3732,7 @@ function Rexplode(targetId, perMin, opt){
           poolMerge:poolMerge,
           totalMachines:machines.reduce((s,n)=>s+n.machines,0)};
 }
-/* ⭐v133 扩容反应池「同池并行」（博士 2026-09-24 实机 + 官方文案 + 社区实测三重核实）：
+/* ⭐v133 扩容反应池「同池并行」（作者 2026-09-24 实机 + 官方文案 + 社区实测三重核实）：
    官方文案：「拥有更多的端口并可同时进行更多的化学反应」；实机口径：一栋 8 个缓存格，
    最多同时跑 3 条不同反应；NGA 实测补充：多条**不同**配方同池并行、各跑各的额定速度，
    **同一条配方不能并行提速**（速度不叠加）。因此我们按「一条配方一栋」算会多算池子
@@ -3740,7 +3740,7 @@ function Rexplode(targetId, perMin, opt){
    合并口径：同池并行配方的 buffers 物品并集 ≤ RW_POOL_SLOTS → 栋数 = 组内 max(n_i)
    （每栋对其中每条配方各贡献 1 份产能）；并集超限 → 贪心分组、组间栋数相加。
    ⚠️ 只改「物理池子数」：各配方的需求 / 产出 / 下游传播一律不动（产出不变，与实机一致）。
-   范围：只处理扩容反应池（RW_POOL_FACILITY）；基础反应池保持现状（博士 2026-09-24 定）。 */
+   范围：只处理扩容反应池（RW_POOL_FACILITY）；基础反应池保持现状（作者 2026-09-24 定）。 */
 const RW_POOL_SLOTS=8;
 const RW_POOL_FACILITY='mix_pool_2';
 /* ⭐v133 池子变体升级：默认选基础反应池（更便宜更小）；只有当**同组出现 ≥2 条不同配方**
@@ -4349,13 +4349,13 @@ function RwRoute(placed, res, size, corr, extraBusy){
     }
   });
 
-  /* ⭐v151 外部流体接入口（博士 2026-09-24 定稿）—————————————————————————————————
+  /* ⭐v151 外部流体接入口（作者 2026-09-24 定稿）—————————————————————————————————
      背景：野外的液体/气体原料（清水、气体、溶液…）在 `Rexplode` 里被标成 `external`（machines=0），
      原来画布上**不摆也不连** —— 报告只写一句「建议外部供应」，产线在画布上是**断的**。
-     博士的实际用法：他用**暗管**把野外流体拉到**画布旁边**（画布外，不在画布内），
+     作者的实际用法：他用**暗管**把野外流体拉到**画布旁边**（画布外，不在画布内），
      所以排布器只要**在画布边缘占一格当接入点**，从那一格铺管道接到用料机器的进料管口。
-     → 报告给出接入点坐标，博士照着把暗管出口贴在画布外面那一格的外侧。
-     ⚠️ **画布外那段归博士，排布器一概不管**（也管不了：库里没有矿点逐点坐标）。
+     → 报告给出接入点坐标，作者照着把暗管出口贴在画布外面那一格的外侧。
+     ⚠️ **画布外那段归作者，排布器一概不管**（也管不了：库里没有矿点逐点坐标）。
      ⚠️ 没有 external 流体时**一行都不多跑** —— 老行为逐字节不变（回归锁靠这个）。
      ⚠️ 放在阶段一之后、阶段二之前：这样能直接复用 `used`（端口占用）/`reserved`（端点格）/
         `busy`（已占格）三张表，不必另起一套状态。 */
@@ -4431,7 +4431,7 @@ function RwRoute(placed, res, size, corr, extraBusy){
         (m.children||[]).forEach(c=>{ if(!c.recipeId && c.itemId===iid) users.push({m:m, d:c.demand}); });
       });
       if(!users.length) return;
-      /* ⭐每台消费机器各拉**一条**边缘进管 —— 博士 2026-09-24 截图实锤：他实际玩法就是拉很多根
+      /* ⭐每台消费机器各拉**一条**边缘进管 —— 作者 2026-09-24 截图实锤：他实际玩法就是拉很多根
          水管分别供给多台设备（上一版把「画个管道」误读成「一个流体只接一条」，已纠正）。
          拥塞对策（曾经 8 池 × 2 流体 = 16 条管子堵掉 4 条的教训，靠下面三条解决而不是靠砍线）：
          ① 接入点候选 = **整条四边**按「离这台机器的距离」排序 —— 只取中心 ±4 时 16 根管子
@@ -4522,8 +4522,8 @@ function RwRoute(placed, res, size, corr, extraBusy){
                     ||((Math.abs(a2.s.x-a2.t.x)+Math.abs(a2.s.y-a2.t.y))
                       -(Math.abs(b2.s.x-b2.t.x)+Math.abs(b2.s.y-b2.t.y))));
   const axis={};   /* 已铺线格的轴向（'h' 横 / 'v' 竖）—— 桥接穿越的判定依据 */
-  const cellMed={};/* ⭐v152 已铺线格的介质（true=管）—— 管×带交叉不放假桥的判定依据（博士 2026-09-24 游戏实锤：3D 里管在上层、带在下层，交叉天然合法无需桥；只有同介质交叉才要桥） */
-  /* ⭐v154 暗管入口/出口对（博士 2026-09-25 实机规则：一对一定向绑定、同建筑同物料、
+  const cellMed={};/* ⭐v152 已铺线格的介质（true=管）—— 管×带交叉不放假桥的判定依据（作者 2026-09-24 游戏实锤：3D 里管在上层、带在下层，交叉天然合法无需桥；只有同介质交叉才要桥） */
+  /* ⭐v154 暗管入口/出口对（作者 2026-09-25 实机规则：一对一定向绑定、同建筑同物料、
      可旋转、地下虚拟管流速同普通管道）：直连 ≥12 格或直连失败时评估「入口 3×3 贴画布边
      （input 口朝画布外）+ 出口 3×3 近机器（output 口外侧格起地面短管）」——
      占地(18格)+短管 < 直连管格 才采用；短 feed 不评估（直连行为零变化）。 */
@@ -4673,7 +4673,7 @@ function RwRoute(placed, res, size, corr, extraBusy){
     if(!path){
       if(j.feed){
         /* ⭐口径分离：外部接入失败**不进**「手动连」计数（那是 ⑤-3 内部连通率的回归口径），
-           进 feedFail 正式点名 —— 博士自己拉暗管时，画布内补这一小段本就在他的操作流里。 */
+           进 feedFail 正式点名 —— 作者自己拉暗管时，画布内补这一小段本就在他的操作流里。 */
         feedFail.push({item:j.child.name, to:j.parent.machineName, s:{x:s.x,y:s.y}, t:{x:t.x,y:t.y}, why:'path'});
         warns.push('外部接入：'+j.parent.machineName+' 要的'+j.child.name+'没铺出边缘进管（画布内这段被产线占满了）——'
           +'暗管出口可贴在 ('+s.x+','+s.y+') 外侧，画布内这一小段自己补管');
@@ -4686,7 +4686,7 @@ function RwRoute(placed, res, size, corr, extraBusy){
     path.forEach((c,k)=>{
       const kk=K(c.x,c.y);
       const isBr=!!axis[kk];
-      /* ⭐v151 末端朝向修复（博士截图实锤「进出口的弯道又不对了」）：最后一格的 path[k+1]
+      /* ⭐v151 末端朝向修复（作者截图实锤「进出口的弯道又不对了」）：最后一格的 path[k+1]
          是 undefined → RwRotTo(t,t) 落到 LrotFrom 的 return 270 →
          **每条自动线的终点格箭头恒朝上**，与真实流向对撞（上游 ↓ 它 ↑）。
          修法：job 带 tInto（流向最终进入的那格 = 机器端口格 / 汇分流体本体），rot 指向 tInto
@@ -4700,7 +4700,7 @@ function RwRoute(placed, res, size, corr, extraBusy){
       if(!axis[kk]) axis[kk]=myAx;
       busy[kk]=1;
       if(isBr){
-        /* ⭐v152：交叉落件**分介质**（博士 2026-09-24 游戏实锤：3D 里管道在上层、传送带在下层
+        /* ⭐v152：交叉落件**分介质**（作者 2026-09-24 游戏实锤：3D 里管道在上层、传送带在下层
            —— 管×带交叉直接叠加，不放桥；同介质交叉才占同一层，要物流桥/管道桥立体跨线）。
            桥格/叠加格都对后续寻路关闭（一格最多一带一管，第三条线绕路）。 */
         delete axis[kk];
@@ -4874,7 +4874,7 @@ function LawRun(targetId, perMin){
   if(perMin<=0){ L.msg='目标速率要大于 0'; render(); return; }
   L.tgt=targetId; L.rate=perMin;
   /* ── [2] 两趟展开（跨地区收货两遍走）───────────────── */
-  /* ⭐⑥-1 跨地区收货（博士 2026-09-22：「只用从四号谷地向武陵超库存传输」）
+  /* ⭐⑥-1 跨地区收货（作者 2026-09-22：「只用从四号谷地向武陵超库存传输」）
      做法是**两趟展开**：第一趟按老口径展开，拿到它认出来的「原料」清单；
      第二趟把其中**能被跨地区传输**的（FactoryItemTable.transferDomainIds 非空，243 件）
      挑出**一种**标成「收货」（一条路线一次只能传一种 —— 见下面单选注释），其余回退本地自产
@@ -4890,7 +4890,7 @@ function LawRun(targetId, perMin){
   const opt0={selfLoop:!!L.selfLoop}, opt1={selfLoop:!!L.selfLoop, shipFromName:LshipFromName()};
   if(ex){ opt0.seeds=ex.seeds; opt1.seeds=ex.seeds; }
   const res0=Rexplode(targetId, perMin, opt0);
-  /* ⭐⑥-1 单选（2026-09-22 博士指出 + 三源核实）：一条传输路线**一次只能传一种物品** ——
+  /* ⭐⑥-1 单选（2026-09-22 作者指出 + 三源核实）：一条传输路线**一次只能传一种物品** ——
      协议管理里 Edit → 选一种物品 → 启动；换物品 = 停止重设、计时重置回 1 小时（GameRant/GameWith/Game8 一致）。
      所以「能传的自动全收」只在链里恰有 1 种可传原料时成立；≥2 种时必须**挑一种**走传输，
      其余回退**本地自产**（产线照建）。默认挑「需求最大的那一种」（最值得省的产能），报告里可换选。 */
@@ -4910,7 +4910,7 @@ function LawRun(targetId, perMin){
       +(res.externals.length?('；这条链里已按外部输入处理的：'+res.externals.map(RwItemName).join('、')):'');
     render(); return;
   }
-  /* ⭐⭐ C6-b 阶段 2 门禁（2026-09-25，博士拍板「软门禁」）：
+  /* ⭐⭐ C6-b 阶段 2 门禁（2026-09-25，作者拍板「软门禁」）：
      在**生成阶段**拦住「无去路物品」—— 这是 C6 从体检升级为硬约束的那一步。
      ⚠️ 必做成门禁而非扣分项（红线）：扣分项会让排布器在「补 sink」与「换贵配方」间权衡，
         而 sink 成本照常计入 → 账本骗自己（详见 RflowSinkPlan 头部注释）。
@@ -5056,7 +5056,7 @@ function LawRun(targetId, perMin){
     +'（连通 '+best.sc.ok+' 段 · 手动连 '+best.sc.manual+' · 线 '+best.sc.belts+' 格'
     +(st0&&(st0.merge||st0.split)?(' · 汇流 '+st0.merge+' / 分流 '+st0.split):'')+'）';
   const rt=route;
-  /* ⭐⭐ C6-b 阶段 2 软门禁最后一环（博士 2026-09-25 拍板）：
+  /* ⭐⭐ C6-b 阶段 2 软门禁最后一环（作者 2026-09-25 拍板）：
      **摆位预检必须先于 Lpush** —— 否则「摆不下就拒绝」会把画布留成半清空的坏状态。
      这里用 plan.objs + rt.belts + rt.bldgs 先算一遍占用，模拟摆池子；
      放不下就干净利落地 return（画布一字未动），放得下再进落盘。
@@ -5151,7 +5151,7 @@ function LawClear(){
   L.objs=L.objs.filter(o=>!o.planRole); L.sel=[]; L.plan=null;
   L.msg='已清掉排布器生成的 '+n+' 个件（可撤销）'; render();
 }
-/* ⭐ ⑤-1「重排其余」（2026-09-22，博士：锁住满意的机器，只重排其余）
+/* ⭐ ⑤-1「重排其余」（2026-09-22，作者：锁住满意的机器，只重排其余）
    锁定件原地不动（当固定件 / 障碍），其余机器重新分层摆位并绕开它们，管线整条重铺。
    ⚠️ 台数口径：把每个树节点的台数**减去已锁台数**再交给 LawPlan，锁定件自己拼回摆放列表 ——
       机器总数守恒、产量不变。RwRoute 拿的是**原始 res**（依赖与总台数没变，线才连得对）。 */
@@ -5268,12 +5268,12 @@ function Lreroll(){
 }
 /* 目标物品 / 速率的选择 —— 不进撤销栈，也不重渲染速率框（重渲染会让输入框失焦） */
 function Ltgt(v){ const L=Linit(); L.tgt=v;
-  /* ⭐v82（博士截图：换了目标，选货网格还挂着旧链的蓝铁矿/蓝铁块）：候选是按目标链算的，
+  /* ⭐v82（作者截图：换了目标，选货网格还挂着旧链的蓝铁矿/蓝铁块）：候选是按目标链算的，
      换目标必须重算。LshipPanel 里「旧选中不在新候选里就回退默认原料叶」会顺手把 shipPick 纠正过来；
      链没换过（新旧目标共用一条链）时重算结果一致，多跑一趟 Rexplode 无感。 */
   if(L.shipIn) LshipPanel(null);
-  /* ⭐v160（2026-09-25，博士拍板方案 B）：切目标 → **该地区所有基地的产线自动跟着换**。
-     病灶：原来这里只改 L.tgt，画布上的件与目标毫无绑定 → 必须手动清空才生效（博士实测）。
+  /* ⭐v160（2026-09-25，作者拍板方案 B）：切目标 → **该地区所有基地的产线自动跟着换**。
+     病灶：原来这里只改 L.tgt，画布上的件与目标毫无绑定 → 必须手动清空才生效（作者实测）。
      触发条件：① 在某个基地里（L.base 非空、有地区）② 该地区至少有一片基地画布上有排布器生成的产线。
      不满足 → 走老路径（只改目标 + 提示），行为与改动前一字不差（自由模式 / 空画布都不受影响）。 */
   const region=(L.base?((Lbases().filter(r=>r.levelId===L.base)[0]||{}).domainName||''):'');
@@ -5304,20 +5304,20 @@ function LselfLoop(){
     : '闭环自持：关 —— 环里的料按「外部输入」处理（链更短、更好摆）';
   render();
 }
-/* ⭐⑥-1「跨地区收货」（2026-09-22，博士：只用四号谷地 → 武陵超库存传输）
+/* ⭐⑥-1「跨地区收货」（2026-09-22，作者：只用四号谷地 → 武陵超库存传输）
    开了之后：这条链里的**原料**能由别的地区传过来的，就不在本地建产线，按「收货」处理。
    判定 = 「这个料能不能被超库存传输」（FactoryItemTable.transferDomainIds 非空）——
    出发地（四号谷地）那边可传「本地区集成工业可生产的任意一种物品」，
    而能传的物品清单是全库打通的（243 件，两地区通用）。
-   ⭐ 单选修正（2026-09-22 博士指出 + 三源核实）：一条路线**一次只能传一种物品** ——
+   ⭐ 单选修正（2026-09-22 作者指出 + 三源核实）：一条路线**一次只能传一种物品** ——
    链里可传原料 ≥2 种时，只挑一种走传输（默认需求最大的），其余回退本地自产。 */
-/* ⭐⭐ v81（博士：「我要在布局试摆里选怎么还是看不到啊，怎么就能选源矿和蓝铁矿，其他一堆东西都能传啊」）
+/* ⭐⭐ v81（作者：「我要在布局试摆里选怎么还是看不到啊，怎么就能选源矿和蓝铁矿，其他一堆东西都能传啊」）
    两处产品级修正：
    ① 候选不再限定原料叶 —— 链上**任何**能被传输的物品都能选（含半成品/中间件）。
       引擎本来就支持：shipIn 物品在 Rexplode 里被剔除出 made → pick 返回 null → 落 raw 并标 shipIn
       （见展开器 2426-2431），选中半成品 = 它的整棵上游子树不用建。排除目标本身（含 ＋ 目标）——
       传目标等于整条链消失，没有意义。
-   ② 开关打开**立刻**能选 —— 之前选货网格只在报告里（要先点「生成产线」），博士在布局试摆开开关
+   ② 开关打开**立刻**能选 —— 之前选货网格只在报告里（要先点「生成产线」），作者在布局试摆开开关
       什么都看不到。现在 LshipIn 开时若无产线，只做**轻量展开**算候选（Rexplode 一趟，毫秒级，
       不摆机器、不动画布），选货条直接显示在产线面板开关下方；选好再点「生成产线」即可。
       有产线时开/关照旧整条重算（v80 的开关即重算语义不变）。 */
@@ -5337,7 +5337,7 @@ function LshipPanel(res0){
   });
   const tgtSet={}; tgtSet[L.tgt]=1;
   (L.mt||[]).forEach(x=>{ if(x&&x.id) tgtSet[x.id]=1; });
-  /* ⭐v82（博士：「怎么还是只有两种，我要所有能传的东西，不行上网查」）：
+  /* ⭐v82（作者：「怎么还是只有两种，我要所有能传的东西，不行上网查」）：
      Game8 / GameWith 三源核实 —— 游戏里协议管理的候选 = **出发地（四号谷地）集成工业能产出的全部物品**
      （解锁过就行、仓库里有没有都行；只能传出发地能产的，武陵特产的西岚矿就不行）。
      所以候选 = 链上可传（这条链用得上的，排前面）∪ 全库「有机器配方且能送到」的物品（RwMade ∩ RwCanReceive）。
@@ -5361,7 +5361,7 @@ function LshipPanel(res0){
    withTitle=false（报告用）维持 v80 行为：单候选只出一张选中卡、≥2 候选才带标题。
    ⭐v82：链上候选平铺在前，全库可传物品收进折叠区（details + 搜索框 + 滚动容器）
    —— 游戏里就是一份可传物品长列表，全平铺会把面板撑爆。
-   ⭐v88（博士，二次澄清：「点开跨区域传输时我就看见这个下拉表就行」）：**平铺区取消**——
+   ⭐v88（作者，二次澄清：「点开跨区域传输时我就看见这个下拉表就行」）：**平铺区取消**——
    链上原料/半成品不再单独立在外面，全部收进「全部可传物品」折叠下拉（链上的排最前）；
    summary 常显当前选中，收起时也知道选了谁。 */
 function LpickGridHtml(withTitle){
@@ -5376,7 +5376,7 @@ function LpickGridHtml(withTitle){
   const _chain=L.shipChain||{};
   const _card=c=>{
     const _v=RshipVal(c), _r=(DB.items[c]||{}).rarity||1, _isRaw=!!_raw[c], _inChain=!!_chain[c];
-    /* ⭐v89（博士：「瓶罐里装的什么我看不到」）：构建期已按灌装/拆解配方反推出 content 字段
+    /* ⭐v89（作者：「瓶罐里装的什么我看不到」）：构建期已按灌装/拆解配方反推出 content 字段
        （"装：水蒸气（气态）"/"空容器（可灌装）"），选货卡上显示——同名瓶罐变体一眼可分。 */
     const _ct=(DB.items[c]||{}).content;
     return `<button type="button" class="lo-pickcard${(L.shipPick===c)?' on':''}" style="border-left-color:${(_RC[_r]||_RC[1])}" onclick="LshipPick('${c}')">`
@@ -5414,9 +5414,9 @@ function LpickFilter(q){
 function LshipIn(){
   const L=Linit();
   L.shipIn=!L.shipIn;
-  // 满级口径（博士 2026-09-22：只要超库存传输、按满级状态）—— 开关打开时若传输总值还空着，自动预填满级 1500（仍可手改）
+  // 满级口径（作者 2026-09-22：只要超库存传输、按满级状态）—— 开关打开时若传输总值还空着，自动预填满级 1500（仍可手改）
   if(L.shipIn && !(+L.tv>0)) L.tv=1500;
-  /* ⭐v80（博士发来游戏截图揪出）：关掉开关要**清掉单选状态**——shipCands/shipPick 留着的话，
+  /* ⭐v80（作者发来游戏截图揪出）：关掉开关要**清掉单选状态**——shipCands/shipPick 留着的话，
      报告还挂着旧收货版的选择网格，看着像没关掉。v81 连 shipDmap/shipRawSet 一起清。 */
   if(!L.shipIn){ L.shipCands=[]; L.shipPick=''; L.shipDmap=null; L.shipRawSet=null; L.shipChain=null; }
   L.msg=L.shipIn
@@ -5424,7 +5424,7 @@ function LshipIn(){
     : '跨地区收货：关 —— 原料一律按野外采集 / 本地自产处理';
   /* ⭐v80：开关即重算 —— 之前只 render()，画布和报告还是**旧 plan**（收货段纹丝不动），
      要手动再点「生成产线」开关才真的生效，用起来就像个假开关。有 plan 时直接重跑，与 LshipPick 同款。
-     ⭐v81（博士：「我要在布局试摆里选怎么还是看不到啊」）：**还没有产线时**也立刻能选 ——
+     ⭐v81（作者：「我要在布局试摆里选怎么还是看不到啊」）：**还没有产线时**也立刻能选 ——
      轻量展开算候选（不摆机器、不动画布），选货条显示在产线面板开关下方，选好再生成。 */
   if(L.plan && L.tgt && (+L.rate>0)){ LawRun(L.tgt, L.rate); }
   else if(L.shipIn){
@@ -5439,8 +5439,8 @@ function LshipIn(){
 }
 /* ⑥-1 换选「走传输的是哪一种」：游戏里换物品 = 停止重设、计时重置回 1 小时（报告里有提醒），
    这里重跑一遍把另一种回退本地自产。
-   ⭐v81：加 plan 守卫 —— 面板选货条让「还没生成产线」也能先选（博士：选好再生成），
-   此时点卡片只换选 + 刷新选货条，**不**悄悄把产线生成出来（那会覆盖博士手摆的画布）。
+   ⭐v81：加 plan 守卫 —— 面板选货条让「还没生成产线」也能先选（作者：选好再生成），
+   此时点卡片只换选 + 刷新选货条，**不**悄悄把产线生成出来（那会覆盖作者手摆的画布）。
    有产线时照旧整条重算（v79/v80 语义不变）。 */
 function LshipPick(v){
   const L=Linit();
@@ -5452,7 +5452,7 @@ function LshipPick(v){
    · 每批数量上限 = 传输总值 ÷ 单位物品价值（文案 1845235994830423548）
    · 传输总值：配置表里**没有**每档的具体数值（DomainDataTable 的建设等级效果只有
      bandwidth / battleBuildingLimit / travelPoleLimit / isMineOutputUp）——
-     所以只能用博士从界面上读到的数反推；没填就按档位未知、只用数值口径说明。
+     所以只能用作者从界面上读到的数反推；没填就按档位未知、只用数值口径说明。
    · 间隔：FactoryConst.domainTransportIntervalTime = 3600（客户端常量，单位以游戏内为准）。 */
 const RW_TRANSFER_INTERVAL_S = 3600;
 function RshipVal(itemId, tvOverride, hoursOverride){
@@ -5468,14 +5468,14 @@ function RshipVal(itemId, tvOverride, hoursOverride){
 /*  ⚠️ perMin 里的 /60 不能丢：hours 是「每批间隔小时数」，perMin 要的是「个/分」——
      3000 个/批、1 小时一批 = 50 个/分。少了这一刀就是虚高 60 倍，
      「比需求低要标红」的警告会永不触发（真机回归抓出来的）。
-     ⭐v90（博士：「每小时一次性传多少，不是每分钟传多少」）：显示层一律用 perHour 主显
+     ⭐v90（作者：「每小时一次性传多少，不是每分钟传多少」）：显示层一律用 perHour 主显
      （perBatch/hours，无 /60）——到货是整批一小时的节奏，不是流式速率；perMin 只留作
      与「个/分」计的产线需求做喂不饱判定的内部换算，不再上卡。 */
 }
-/* 传输总值输入（博士从协议管理界面读到的实际值）——不进撤销栈 */
+/* 传输总值输入（作者从协议管理界面读到的实际值）——不进撤销栈 */
 function Ltv(v){ const L=Linit(); L.tv=Math.max(0, +v||0); render(); }
 function LtvH(v){ const L=Linit(); L.tvHours=Math.max(0.1, +v||1); render(); }
-/* ⭐⑥-3「从/到」方向下拉（2026-09-22 博士）：地区清单动态读 DB.bases.domains ——
+/* ⭐⑥-3「从/到」方向下拉（2026-09-22 作者）：地区清单动态读 DB.bases.domains ——
    以后新地区（domain_3…）开放，这里自动多出选项，不用改代码。面板与报告两处共用。 */
 function LshipDirHtml(){
   const opts=sel=>Ldomains().map(d=>`<option value="${esc(d.id)}"${d.id===sel?' selected':''}>${esc(d.name)}</option>`).join('');
@@ -5484,7 +5484,7 @@ function LshipDirHtml(){
     +`<span>到</span><select class="lo-sel" onchange="LshipDirV('to',this.value)">`+opts(LshipToId())+`</select>`
     +`<span class="lo-tag">出发地能产的才能传 · 每方向每批只传一种</span></div>`;
 }
-/* ========== ⭐⑥-3 跨基地选点（2026-09-22 博士拍板：v1 建议器；两地对称互传）==========
+/* ========== ⭐⑥-3 跨基地选点（2026-09-22 作者拍板：v1 建议器；两地对称互传）==========
    问题：N 个目标（主 + ＋目标，≤4）放哪个地区的基地「更省」。
    数据依据（全部在库，不造数）：
      · 矿脉按地区（mining_power.ores.beds.mapMax）：紫晶只在谷地(240)、赤铜只在武陵(510)、
@@ -5492,7 +5492,7 @@ function LshipDirHtml(){
      · 机器地区限定（buildings.domainNames）：天有洪炉等 9 座武陵限定 → 相关链谷地建不了（硬否决）
      · 跨地区传输（rule_domain_transfer）：每方向每批只传 1 种、上限 = 传输总值 ÷ 单价（满级 1500）、
        间隔 1h；两地对称 —— 每个方向各是独立一条协议
-   口径①（地区合计，2026-09-22 博士定）：同地区多目标要同一种收货物 → 喂不饱判定按
+   口径①（地区合计，2026-09-22 作者定）：同地区多目标要同一种收货物 → 喂不饱判定按
      「地区合计需求」对每批可到货量反推，不是各基地各算各的（区内基地共享一个地区仓库）
    口径②（取货段）：地区仓库取货口（unloader_1「仓库取货口」3×1×3）→ 各基地产线要建模；
      占格与单边路数有数据（slotRule：(边长-1)÷3 向下取整 → 谷地 23/13 实测、武陵 26/16 推算），
@@ -5655,13 +5655,13 @@ function RxlBest(targets){
   combos.sort((a,b)=>a.cost-b.cost);
   return {regions:regions, combos:combos, best:combos[0]};
 }
-/* ⭐⭐ 第 3 期（2026-09-25，博士选「跨地区全自动一键」）：目标 → **地区**的分配（一键生成第一层）。
+/* ⭐⭐ 第 3 期（2026-09-25，作者选「跨地区全自动一键」）：目标 → **地区**的分配（一键生成第一层）。
    ────────────────────────────────────────────────────────────────────────────
    与 RxlBest 的关系：RxlBest 分的是「收货方向下拉那两个端点」，服务「选点建议」报告，**不改**；
    RxlAll 是它的泛化 —— 地区来源换成「有可用基地的地区」（RbRegions），供「一键生成」用。
    成本公式**逐项复用** RxlBest 那套（同方向收货冲突 > 喂不饱 > 分两地重复建共享料 > 矿缺口量），
    保证两个入口对「哪片地区更省」的判断同源 —— 不会出现「选点建议说放武陵、一键生成放谷地」
-   这种自相矛盾（博士 2026-09-25 明确要的一致性口径）。
+   这种自相矛盾（作者 2026-09-25 明确要的一致性口径）。
    硬约束 D1：目标至少在一个地区 RxlAnalyze.ok，否则进 unassigned（kind='region'）并点名。
    ⚠️ 组合数 = Π(每目标可行地区数)；现状 2 地区 × ≤4 目标 → 最多 16 组，够小。
       若未来地区/目标变多导致 >4096 组，走下面的贪心兜底（并已在注释里标出该改剪枝）。
@@ -5784,24 +5784,24 @@ function RxlAll(targets){
      · 同一地区 4 个基地的**地域限定完全相同**（能产的机器一样）→ B1 在基地间不区分；
      · **矿点数据只有地区级粒度**（mining_power.ores.beds[].mapMax 按地区名），**没有基地级分布**；
      · 因此真正能区分 4 个基地的**只有「可用面积」一维** → 本函数本质是**带容量约束的装箱**。
-   装箱顺序（博士 2026-09-25 定）：
+   装箱顺序（作者 2026-09-25 定）：
      · **主基地优先** —— 默认所有目标先试主基地（枢纽区/武陵城），装不下才溢到副基地。
-       理由：主基地最大、离核心最近、存取口路数最多；现实中博士也优先建在主基地。
+       理由：主基地最大、离核心最近、存取口路数最多；现实中作者也优先建在主基地。
        （放弃了「best-fit 挤最小基地」——数学上省面积，但把东西挤到副基地、主基地空着，不合直觉。）
-     · **销毁专区（地区级开关，仅 RbaseSinkZone 里列的地区启用）** —— 博士 2026-09-25：
+     · **销毁专区（地区级开关，仅 RbaseSinkZone 里列的地区启用）** —— 作者 2026-09-25：
        「四号谷地是新手村不用做，只做武陵，以后新地区开了可能也要做销毁」。
        启用时：**带 C6 销毁支线且副基地装得下的产线**，挪到专用副基地（选第一个副基地），
        让主基地摆脱 C6 脏活；装不下的（如 6151 格的大链）只能留主基地，如实报告。
        ⚠️ 实测依据（probe_p2_e）：仅谷地独有的 sink 产线 = **0 条**（谷地不必做），
-          仅武陵独有的 = 8 条（息壤系列，谷地根本产不了）→ 与博士判断一致。
+          仅武陵独有的 = 8 条（息壤系列，谷地根本产不了）→ 与作者判断一致。
    硬约束：B1 地区可行（RxlAnalyze.ok，基地间同过同不过）/ B2 容量可行（ΣareaEst ≤ usableCells）。
    优化（逐层）：① 溢出基地数最少 ② 面积浪费最少（已用/可用 之和最小）。
    纯函数、无副作用、不碰 DOM —— 便于回归锁直接断言。 */
-/* 需要「销毁专区」的地区（博士 2026-09-25：谷地不做，武陵做；新地区开放后在此追加即可） */
+/* 需要「销毁专区」的地区（作者 2026-09-25：谷地不做，武陵做；新地区开放后在此追加即可） */
 const RW_SINK_ZONE_REGIONS=['武陵'];
 /* ⭐v159（2026-09-25，方案 B）**真判据试摆**：目标能不能摆进 size×size 的画布。
    ────────────────────────────────────────────────────────────────────────────
-   为什么需要它（v158 假成功的第二形态，博士实测「一堆产线生成不出来」）：
+   为什么需要它（v158 假成功的第二形态，作者实测「一堆产线生成不出来」）：
      RbaseBest 原来用 `areaEst`（= 机器格数 × 2.2）判容量，实测**系统性低估 2~2.5 倍**
      （探针 probe_minside2：赤铜块 est 占 9% 实际占 25%；高晶装备原件 est 43% 实际 100%；
       赤铜装备原件 110 台**根本摆不进 80×80**）。
@@ -5863,12 +5863,12 @@ function RbaseBest(targets, regionName){
     rate:x.t.rate, why:'地区不可行：'+((x.a.blocked||[])[0]||'无机器配方'), kind:'region'}); } });
   /* ⭐v159（2026-09-25）判据同源修复：分配层必须**和生成层用同一个台数闸门**。
      v158 缺陷：这里只看容量（B2），没查 RW_MAX_MACHINES → 超限目标照样被「分配成功」，
-     到 LawRun 才被拒 → 报告说分好了、画布一件没有 = 假成功（博士实测：「一堆产线自动生成不出来」）。
+     到 LawRun 才被拒 → 报告说分好了、画布一件没有 = 假成功（作者实测：「一堆产线自动生成不出来」）。
      ⚠️ 未分配原因要**区分**「超机器上限」与「装不下」，且**容量优先**：
         两者都不合格时（如中容武陵电池@谷地：174 台且 6151 格）报「装不下」——
-        因为它调速率也救不了（容量是物理上限）；只报台数会误导博士去降速白试一场。
+        因为它调速率也救不了（容量是物理上限）；只报台数会误导作者去降速白试一场。
      ⚠️ 地区不可行（B1）优先级最高，已在上面单独挑出。
-     ⭐⭐ v159 方案 B（博士 2026-09-25 拍板）：**容量判据从 est 估算升级为真试摆**。
+     ⭐⭐ v159 方案 B（作者 2026-09-25 拍板）：**容量判据从 est 估算升级为真试摆**。
         原来用 areaEst（机器格数×2.2）判，实测系统性低估 2~2.5 倍（probe_minside2）→
         低估的 est 判「装得下」、LawRun 真实摆位放不下 = 假成功的第二形态（换了道墙）。
         现在对每个目标**按各基地真实 side 跑 RfitSide 试摆**，得出「哪些基地真装得下」；
@@ -6117,7 +6117,7 @@ function RgenHtml(alloc, rbs, advice, ships, trans){
   h+=RtransHtml(trans);
   return h;
 }
-/* ⭐⭐ 第 4 期（2026-09-25，博士选「同地区基地间 + 跨地区都做」）：跨基地转运清单 + 带宽校验。
+/* ⭐⭐ 第 4 期（2026-09-25，作者选「同地区基地间 + 跨地区都做」）：跨基地转运清单 + 带宽校验。
    ────────────────────────────────────────────────────────────────────────────
    两段转运统一成一份清单：
      ① 跨地区：谷地 ↔ 武陵（走传输协议，一条路线一次只能传一种）—— 取第 3 期 RgenShipOf 的 recvNeed
@@ -6268,11 +6268,11 @@ function RtransHtml(tp){
     +'载具口径：传送带 '+tp.belt+'/分、管道 '+tp.pipe+'/分。</span></div>';
   return h;
 }
-/* ⭐⭐ v160（2026-09-25，博士拍板方案 B「换目标自动重排」）：切换目标物品 → 该地区所有基地的产线**自动跟着换**。
+/* ⭐⭐ v160（2026-09-25，作者拍板方案 B「换目标自动重排」）：切换目标物品 → 该地区所有基地的产线**自动跟着换**。
    ────────────────────────────────────────────────────────────────────────────
-   病灶（博士实测）：`Ltgt(v)` 只改 L.tgt + L.msg，不碰 L.objs；画布上 planRole='machine' 的件与 L.tgt
+   病灶（作者实测）：`Ltgt(v)` 只改 L.tgt + L.msg，不碰 L.objs；画布上 planRole='machine' 的件与 L.tgt
    之间没有绑定 → 切完目标画布纹丝不动，必须**先「清空画布」再重排**才生效。
-   为什么是「全地区」而不是「当前基地」（博士 2026-09-25 选）：tgt/rate 本来就是**全局字段**
+   为什么是「全地区」而不是「当前基地」（作者 2026-09-25 选）：tgt/rate 本来就是**全局字段**
    （见 Linit 注释「显示开关与产线目标参数跨基地共享」）→ 只重排当前基地的话，切到别的基地会看到
    「目标已变而画布还是旧的」= 新的不一致。所以对齐 LapplyAssign 的形态逐基地换。
    ⭐ 保护条件（关键）：**只重排「画布上本来就有排布器生成的产线」的基地**。空基地一字不动 ——
@@ -6317,7 +6317,7 @@ function LretargetAll(newTgt, region){
     let n=0, why='';
     try{
       /* v160：换目标时清掉「＋目标」的额外链 —— 那些是旧目标的搭配，跟着换没有意义；
-         等博士在新目标下重新加。主目标只有一个（就是 newTgt）。 */
+         等作者在新目标下重新加。主目标只有一个（就是 newTgt）。 */
       L.mt=[];
       LawRun(newTgt, rate);
       n=L.objs.filter(o=>o.planRole).length;
@@ -6335,7 +6335,7 @@ function LretargetAll(newTgt, region){
   /* ③ 裁掉循环内 LawRun 自 push 的快照 → 整批只留 ① 那一个撤销点 */
   if(L.undo.length>undoMark) L.undo.length=undoMark;
   L.redo.length=0;
-  /* ④ 视线落回**原基地**（切目标不该把博士甩去别的画布） */
+  /* ④ 视线落回**原基地**（切目标不该把作者甩去别的画布） */
   L.base=origBase;
   L.msg='目标已切到「'+RwItemName(newTgt)+'」：'+done.length+' 片基地产线已重排'
     +(done.length?('（'+done.map(d=>d.zone+' '+d.objs+' 件').join('；')+'）'):'')
@@ -6357,7 +6357,7 @@ function LapplyAssign(rb){
   if(!rb || !rb.assign || !rb.bases || !rb.bases.length){ L.msg='先做基地级分配，再落画布'; render(); return; }
   const withItems=rb.assign.filter(a=>a.items.length);
   if(!withItems.length){ L.msg='这次分配没有任何目标落到基地上（见分配报告）—— 先检查目标是否该地区可产'; render(); return; }
-  const origBase=L.base;                 /* 记住博士原来的落点，整批做完切回去 */
+  const origBase=L.base;                 /* 记住作者原来的落点，整批做完切回去 */
   Lpush();                               /* ① 整批作为**一次**撤销点（快照含 basesAll → 整体回退） */
   const undoMark=L.undo.length;          /* ② 记录：循环里 LawRun 自 push 的多余快照要裁掉 */
   const done=[], failed=[];
@@ -6372,7 +6372,7 @@ function LapplyAssign(rb){
     const items=a.items.slice();
     const main=items[0], rest=items.slice(1);
     const savedMt=L.mt;
-    /* ⭐v159 失败隔离：合图里只要有一个目标生成失败，**整包都不出**（博士实测「一堆产线出不来」）。
+    /* ⭐v159 失败隔离：合图里只要有一个目标生成失败，**整包都不出**（作者实测「一堆产线出不来」）。
        做法 = 失败时把目标逐个丢给 LawRun 试一遍，能出的留下（用 L.mt 重跑其余），
        单独失败的记进 failed 并**带上完整原因**（含它自己的名字）。
        ⚠️ 只在首轮失败时才走这条路（首轮成功就不多花时间）；多数情况首轮就成，开销为零。 */
@@ -6412,8 +6412,8 @@ function LapplyAssign(rb){
        这样一次 Ctrl+Z 就能整体回到落画布前（与「整批是一次操作」的语义一致）。 */
   if(L.undo.length>undoMark) L.undo.length=undoMark;
   L.redo.length=0;
-  /* ④ 视线落点：**有落点就切到第一个落点基地**（v159.1，博士 2026-09-25 选①）。
-     原来固定切回 origBase → 若落点不在原基地，博士点完「一键分配」看到的是**空画布**（件落到别的基地去了），
+  /* ④ 视线落点：**有落点就切到第一个落点基地**（v159.1，作者 2026-09-25 选①）。
+     原来固定切回 origBase → 若落点不在原基地，作者点完「一键分配」看到的是**空画布**（件落到别的基地去了），
      容易以为没生效。现在改成落点优先：done[0].levelId 就是「最该看的这片」。
      全失败（done 为空）则切回原基地 —— 没什么可看的，别乱跳。
      ⚠️ 这里直接写 L.base，**不能调 LbaseSet**（它会 Lpush() 多出一个撤销点，破坏「整批一次撤销」的语义）；
@@ -6435,7 +6435,7 @@ function LapplyAssign(rb){
     : '';
   L.msg='基地级落画布：'+done.length+' 片基地完成'
     +(done.length?('（'+done.map(d=>d.zone+' '+d.items+' 目标 / '+d.objs+' 件').join('；')+'）'):'')
-    /* ⭐v159：失败原因**不截断**（v158 写 slice(0,40) → 博士只看到「失败」看不出为什么）；
+    /* ⭐v159：失败原因**不截断**（v158 写 slice(0,40) → 作者只看到「失败」看不出为什么）；
        每条都带目标名 + 完整原因，多个用「；」分隔。 */
     +(failed.length?('；⚠ '+failed.length+' 个目标没生成出来：'
       +failed.map(f=>f.zone+'·'+(f.name||'?')+'（'+f.why+'）').join('；')):'')
@@ -6558,7 +6558,7 @@ function RgenShipOf(items, region){
   keys.forEach(k=>{ if(need[k]>mx){ mx=need[k]; pick=k; } });
   return {keys:keys, need:need, pick:pick};
 }
-/* ⭐⭐ 第 3 期（2026-09-25，博士选「跨地区全自动一键」）：「一键生成（全地区）」入口。
+/* ⭐⭐ 第 3 期（2026-09-25，作者选「跨地区全自动一键」）：「一键生成（全地区）」入口。
    R1：**不要求先选基地** —— 地区与基地都由系统决定。这是与第 2 期「一键分配落画布」的核心差异：
        那个用 Lregion()＝当前基地所在地区，必须先选基地、且只在一个地区内工作。 */
 function LgenAll(){
@@ -6585,7 +6585,7 @@ function LgenAll(){
   }
   LapplyAssignAll(rbs);   /* 内部自带 render */
 }
-/* 「一键分配并落画布」入口：分配 + 立即落盘（博士 2026-09-25 选的完整版） */
+/* 「一键分配并落画布」入口：分配 + 立即落盘（作者 2026-09-25 选的完整版） */
 function LassignRun(){
   const L=Linit();
   L.rgen=null; L.rgenRbs=null; L.rgenAdv=[]; L.rgenShip=[];   /* 与第 3 期的跨地区报告互斥 */
@@ -6727,7 +6727,7 @@ function RxlHtml(){
 /* 可排产的物品清单（有机器配方的），按名字排 */
 function RwTargets(){
   const m=RwMade(), out=[];
-  /* ⭐v146 同名物品区分（博士 2026-09-24：目标下拉里「赤铜瓶（灌装机）」重复了 12 条）：
+  /* ⭐v146 同名物品区分（作者 2026-09-24：目标下拉里「赤铜瓶（灌装机）」重复了 12 条）：
      根因不是重复 —— 是 12 个不同的物品 id 都叫「赤铜瓶」（灌装机把不同液体/气体灌进瓶里，
      灌水/酸液/息壤气各是独立物品），只显示物品名自然分不出来。
      修法：同名多 id 时，从该配方原料里挑「非容器本身」的那个名字缀上 ——「赤铜瓶·水（灌装机）」。 */
@@ -6768,7 +6768,7 @@ function Rpower(objs){
 /* 这个原料能不能野外采到、基础速率多少（能就报出来，不能就返回 null）
    ⚠️ 2026-09-21 修正：**必须查 DB.mining_power.gather（7 座采集建筑的全集）**，
       不能只看 miners（那只有矿机表里的 3 台）—— 会漏掉 **水驱矿机（采赤铜矿）**、
-      气体收集泵（采惰气）、二型耐酸水泵。博士当场指出过这个漏项。
+      气体收集泵（采惰气）、二型耐酸水泵。作者当场指出过这个漏项。
    ⚠️ 水驱矿机等 3 台**配置表里没有开采速率字段**，perMin 会是 null —— 这时要如实说"速率配置表无"。 */
 function RmineRate(itemId){
   const mp=DB.mining_power||{};
@@ -6801,7 +6801,7 @@ function RmineRate(itemId){
 /* ========== 第 1 层：约束硬校验（2026-09-21）==========
    ① 协议容量 —— 配置表 ✅（bandwidth 累加 vs 建造区上限，上限在 bases.json 的 caps）
    ② 发电 —— 用电是配置表 ✅；**发电量是社区数值**。
-      博士 2026-09-21 定：**谷地用谷地电池、武陵用武陵电池**；一台热能池发电功率 = 燃料功率值。
+      作者 2026-09-21 定：**谷地用谷地电池、武陵用武陵电池**；一台热能池发电功率 = 燃料功率值。
    ③ 野外采集上限 —— 矿点属关卡场景数据（配置表无），用社区矿脉数 × 每脉点数 × 纯度速率算**区间**。 */
 /* ⭐v145 修 bug：协议容量以前恒算成 0 —— byBp() 读的是「占地蓝图」注入版，注入层把 bandwidth 裁掉了
    （实测 byBp('furnance_1') 没有该字段，而 DB.buildings 里是 2）→ 页面「📶 协议容量」长期显示 0/200，
@@ -6842,8 +6842,8 @@ function Rtheories(usePower, regionName){
       一个矿脉只放 1 台矿机 —— 四号谷地实测 560/240/1080 除以 20 正好是 28/12/54 个矿点，
       与 TapTap 地图工具的矿脉数逐项相等。（游戏里一个矿脉视觉上有 2~6 个矿石簇，那是外观、不是矿机位；
       早期按「脉数 × 每脉 2~6 点」算出来的 2320~6960/分**虚高 2~6 倍**。）
-   `theoreticalMax` 是**游戏内**的「理论最大开采值」（博士可核），有它就用它。
-   `mapMax` 是按**大地区**（四号谷地 / 武陵）的最大理论值 —— 博士要核对的那张表。 */
+   `theoreticalMax` 是**游戏内**的「理论最大开采值」（作者可核），有它就用它。
+   `mapMax` 是按**大地区**（四号谷地 / 武陵）的最大理论值 —— 作者要核对的那张表。 */
 function RoreCapacity(){
   const mp=DB.mining_power||{}, ores=mp.ores||{}, per=ores.perNodePerMin||20;
   return (ores.beds||[]).map(b=>{
@@ -6917,7 +6917,7 @@ function RrawLoop(P, rawNeed){
     let line='· '+esc(it.name)+' 需 <b>'+it.need+'</b>/分 → 要 <b>'+rigs+'</b> 台矿机'
       +'（'+c.perNode+'/分·台，'+esc(c.rig||'电驱矿机')+'）';
     if(c.isPoint){
-      /* ⭐ ④ 里「能做的那一半」：供水与供电的**配比清单**（博士 2026-09-22 给的口径：
+      /* ⭐ ④ 里「能做的那一半」：供水与供电的**配比清单**（作者 2026-09-22 给的口径：
          1 台水泵最多带 3 台水驱矿机满效率）。走线本身做不了（无线回仓、野外不是网格、没有地形数据），
          但「几台泵 / 怎么分 / 几条管 / 要不要通电」全是纯计算，直接给。 */
       const water=rigs*WRIG_WATER, pumps=Math.ceil(rigs/PUMP_MAX_RIG);
@@ -6950,7 +6950,7 @@ function RrawLoop(P, rawNeed){
     +shipRow
     +(items.length?('<div class="c-sub" style="margin-top:2px"><span>'+rows+'</span></div>'):'')
     +'<div class="c-sub" style="margin-top:2px"><span class="c-id">⚠️ <b>只算到「要几台 / 哪个区够 / 水与电够不够」这一层；野外段的实际摆放与走线，本工具不做</b>'
-    +'（博士 2026-09-22 追问「那这样 ④ 还用做吗」，答案：不用按原样做）。两条原因：<br>'
+    +'（作者 2026-09-22 追问「那这样 ④ 还用做吗」，答案：不用按原样做）。两条原因：<br>'
     +'　　① <b>野外没有需要连的线</b> —— 三种矿机的产物都是<b>无线回传仓库</b>（水驱 / 电驱 / 二型电驱）'
     +'或<b>缓存区手动取</b>（便携源石矿机），每个矿点独立放一台就完事，没有连线 / 避让 / 优化可言；<br>'
     +'　　② <b>野外不是网格</b>，配置表里也没有地形与障碍（只有单段线长上限：供电桩 <code>autoConnectLength</code> 30m / 中继器 80m）'
@@ -6989,7 +6989,7 @@ function oreZoneTable(){
 }
 /* 每个大地区的最大理论值
    ✅ 两列都是实测（2026-09-21 闭环）：四号谷地 = NGA 两帖 + 游民星空 + sticweb 四方一致（560/240/1080），
-      除以 20 正好是本表的点数；武陵 = 博士武陵简报截图逐区计数（540/0/120/510），
+      除以 20 正好是本表的点数；武陵 = 作者武陵简报截图逐区计数（540/0/120/510），
       赤铜矿 23 高×20 + 5 低×10 = 510，与游戏内 UI「理论最大开采值」完全一致。 */
 function oreMapMaxTable(){
   const caps=RoreCapacity(), maps=['四号谷地','武陵'];
@@ -7018,7 +7018,7 @@ function RoreCapOf(itemId){ return RoreCapacity().filter(x=>x.itemId===itemId)[0
        （battleBuildingLimit / travelPoleLimit），跟协议容量同一张表、同一套「按当前建造区取」的口径。
      · **存电** —— **社区实测**（DB.mining_power.power.generation.storageMax = 100000），配置表里没有这一项。
    ⚠️ 滑索架（travel_pole_1 / travel_pole_2 / travel_pole_nop_1）现在在 LO_SKIP_IDS 里
-      —— 博士 2026-09-21 要求它不出现在试摆清单里，所以沙盘上一般摆不出滑索，这一项通常是 0。
+      —— 作者 2026-09-21 要求它不出现在试摆清单里，所以沙盘上一般摆不出滑索，这一项通常是 0。
       校验照样算：将来把它放回清单、或从别处带进来，这一行会立刻起作用（不写死 0）。 */
 const RW_DEF_CAT='战斗辅助';
 const RW_TRAVEL_IDS=['travel_pole_1','travel_pole_nop_1','travel_pole_2'];
@@ -7124,7 +7124,7 @@ function Rscore(res, plan, route, rawNeed){
     {k:'料耗效率', w:RW_W.waste, now:r2(out-demand), best:0, unit:'/分富余', v:clamp(out>0?(demand/out):1)},
   ];
   const pens=[];
-  /* ⭐v145 撤项（2026-09-24 博士游戏内确认）：协议容量**只约束集成核心区域外的野外设备**
+  /* ⭐v145 撤项（2026-09-24 作者游戏内确认）：协议容量**只约束集成核心区域外的野外设备**
      （本页建筑详情与基地面积页都这么写），基地内不受限 → 不再对「超协议容量」扣分。
      原惩罚：超协议容量 −30。Rbandwidth 函数保留（将来野外排布要用）。 */
   if(oreOver>0) pens.push({t:'原料超全图采集上限 +'+r2(oreOver)+'/分', p:25});
@@ -7199,7 +7199,7 @@ function planCompareHTML(){
   </div>`;
 }
 /* 产线报告（① 评价函数 + ② 吞吐体检 + 第 1 层约束校验）—— 抽成函数，渲染层只管调用 */
-/* ⭐C6「物品必须有去路」去路体检（2026-09-24 博士拍板「加」）—————————————————————————
+/* ⭐C6「物品必须有去路」去路体检（2026-09-24 作者拍板「加」）—————————————————————————
    为什么要有它：游戏里物品有硬顶（社区口径「库存 50 + 在制 1」），某物品净产出 > 0 且没有去路时
    **必然**满仓（只是时间问题，不是概率问题）→ 满仓后在制格卡死 → 该机停机 →
    沿产线**反向逐级堵死** → 整条支线停产；而且会跨线连锁
@@ -7252,15 +7252,15 @@ function RflowAudit(res){
   out.targets.sort((a,b)=>b.over-a.over);
   return out;
 }
-/* ⭐⭐ C6-b 阶段 2（2026-09-25，博士拍板「有现成消费者就接、否则销毁 + 软门禁」）：
+/* ⭐⭐ C6-b 阶段 2（2026-09-25，作者拍板「有现成消费者就接、否则销毁 + 软门禁」）：
    **把每个「无去路」物品接上去路** —— 这是 C6 从「体检」升级为「门禁」的那一步。
 
-   【为什么必须是门禁，不能是扣分项】（博士 2026-09-24 晚定的红线）
+   【为什么必须是门禁，不能是扣分项】（作者 2026-09-24 晚定的红线）
    C6 若做成扣分项 → 排布器会在「补 sink」与「选更贵的无副产物配方」之间权衡，
    而 sink 成本（用电/占地/线长）**照常计入不豁免**（规格 §2.2）→ 账本才不骗自己。
    做成门禁 = 生成阶段就要求每个物品都有去路，产不出「第一天能跑、第三天停产」的方案。
 
-   【去路优先级】（博士 2026-09-25 拍板）
+   【去路优先级】（作者 2026-09-25 拍板）
      ① 图里已有机器吃它（且吃得完）→ 不需要 sink（RflowAudit 已按 used 扣掉）
      ② 图里有机器吃它但**吃不掉全部** → 剩余部分走 ③（溢流销毁）
      ③ 电池 → 热能池 power_station_1（唯一「销毁即发电」）
@@ -7275,10 +7275,10 @@ function RflowAudit(res){
    多口暗管输出优先：机器有多个出口时走**负载较轻**的那条。出口 a 直连主路、出口 b 接池子
    → 主路没满走 a，主路满了自动溢到 b。所以排布器**不需要拉一条常供线**给池子，
    只要把池子摆好 + 垫子接好，游戏侧自己会溢流。
-   ⚠️ 但**旁路线仍要铺**（博士 2026-09-25 选「摆池子+垫子+连旁路」）——
+   ⚠️ 但**旁路线仍要铺**（作者 2026-09-25 选「摆池子+垫子+连旁路」）——
       因为它告诉玩家「从哪台机器引过来」，否则玩家不知道该接谁。
 
-   【软门禁口径】（博士 2026-09-25 拍板）
+   【软门禁口径】（作者 2026-09-25 拍板）
    补不上（建筑不存在 / 总池数超上限）→ **拒绝出方案 + 明确报原因**，不静默作废。
    ⚠️ 池子自身是故障点（社区多次报告会无声卡死）→ 报告必须如实告知，不假装万无一失。
 
@@ -7287,12 +7287,12 @@ const RW_SINK_POOL_CAP=30;        /* 单池销毁速率上限（/分，社区口
 const RW_SINK_MAX_POOLS=16;       /* 单条产线最多自动摆的池数（防病态方案把画布铺满） */
 const RW_SINK_POOL_ID='mix_pool_2';   /* 扩容反应池（唯一能塞多条并行配方的池子） */
 const RW_SINK_HEAT_ID='power_station_1';  /* 热能池（烧电池） */
-/* ⭐ 微量溢出阈值（博士 2026-09-25 拍板）：净溢出 ≤ 该值 → **只提醒不拦截**。
+/* ⭐ 微量溢出阈值（作者 2026-09-25 拍板）：净溢出 ≤ 该值 → **只提醒不拦截**。
    为什么需要：机器必须**整台**摆，于是「产 15 / 用 10」这种取整差普遍存在。
    实测 102 个可排目标里 47 个有净溢出，其中 50 项 ≤20/分 —— 大多是取整噪声，
    若无阈值则几乎所有链都要挂池子，方案会明显变重、且与玩家的实际体验不符
    （玩家会调速率或让那台机器吃不饱，而不是真去销毁 5/分）。
-   ⚠️ 阈值不是忽略：≤阈值的项仍进 `minor` 并在报告里如实列出（博士要求「只提醒」）。 */
+   ⚠️ 阈值不是忽略：≤阈值的项仍进 `minor` 并在报告里如实列出（作者要求「只提醒」）。 */
 const RW_SINK_MINOR=5;
 /* 垫子配方：故意接 2 条**不接输出**的配方让其永久堵塞 → 池内 ≥2 条不同配方
    同时堵塞才触发清空（单条堵着什么都不做）。
@@ -7432,7 +7432,7 @@ function Rreport(P, pw, bw, th, lim, st, rawNeed, sc){
   const r1=x=>Math.round(x*10)/10;
   const wAll=P.res.warns.concat(P.route.warns);
   const loads=P.route.loads||[];
-  /* ⭐v143 P3 准入口限速联动（博士 2026-09-24：「看看这对排布器计算有什么影响」）：
+  /* ⭐v143 P3 准入口限速联动（作者 2026-09-24：「看看这对排布器计算有什么影响」）：
      线上装了准入口且设了限速 → 该段上限 = min(线速, 限速)，原 cap 判定会**低估堵塞**。
      实现：扫描画布上的准入口（x,y → 限速），按格匹配每条依赖的路径，
      命中就**就地修正**该条 loads 的 cap/state，并在报告里点名。每次渲染重算（准入口随时可加可改）。 */
@@ -7509,7 +7509,7 @@ function Rreport(P, pw, bw, th, lim, st, rawNeed, sc){
       <div class="c-sub" style="margin-top:2px"><span>${esc(s.name)}：<b>${s.machines}</b> 台（合并需求 ${s.demand}/分 · 按整台实出 ${s.actualOut}/分）→ ${Object.keys(s.sharedTo).map(k=>esc(k)+' '+Math.round(s.sharedTo[k]*1000)/1000+'/分').join('、')}</span></div>`).join('')}
       `:''}
       ${(function(){
-        /* ⭐v104 环境依赖透明化（博士 2026-09-23「气体环境会影响生产，会不会影响最优计算」）：
+        /* ⭐v104 环境依赖透明化（作者 2026-09-23「气体环境会影响生产，会不会影响最优计算」）：
            排布器的配方选择按子树代价排序，**天然选中省料的环境版配方**（实测息壤粉链/富集气链全中）——
            即产线从第一天起就隐式依赖环境，但不摆散布机这些机器在游戏里不工作，方案静默失效。
            这里扫实际选中的配方把它点名。数据 DB.recipeEnv（build 注入层从 FactoryMachineCraftTable.gasEnv 补）。 */
@@ -7546,10 +7546,10 @@ function Rreport(P, pw, bw, th, lim, st, rawNeed, sc){
         return `<div class="c-sub" style="margin-top:2px"><span>· <b>${esc(s.name)}</b> 需要 <b>${d}</b>/分 · 单位物品价值 <b>${v.value}</b> · 每批间隔 <b>${v.hours}</b> 小时${sup}</span></div>`;
       }).join('')}
       ${/* ⭐v82：选中了链外的物品 —— 这条链的收货明细一行都没有，必须讲清楚「货只进仓库、产线不变」，
-             不然博士会以为收货开关没生效。 */
+             不然作者会以为收货开关没生效。 */
         (Linit().shipPick && !(P.res.shipIn||[]).some(s=>s.itemId===Linit().shipPick))?`
       <div class="c-sub" style="margin-top:4px"><span style="color:${RW_COL.warn}">选中的「<b>${esc(RwItemName(Linit().shipPick))}</b>」<b>不在这条产线的链上</b> —— 传过来的货<b>只进仓库</b>，这条链没有任何地方用它（产线与机器都不变）。要它参与生产就改选链上的物品，或把排产目标换成用它做原料的东西。</span></div>`:''}
-      ${/* ⭐⑥-1 v80 起网格替掉原生 select（博士：「像游戏里那样给我个传输物品的选择器」）；v81 收口到共享渲染
+      ${/* ⭐⑥-1 v80 起网格替掉原生 select（作者：「像游戏里那样给我个传输物品的选择器」）；v81 收口到共享渲染
              LpickGridHtml(false)——报告与产线面板的选货条长一个样，候选/需求数字也同源（L.shipCands/L.shipDmap）。 */
         LpickGridHtml(false)}
       <div class="c-sub" style="margin-top:2px"><span class="c-id">口径：超库存传输**不扣${esc(LshipFromName())}的库存**（那边只要有产能就永远给得出来），唯一的闸门是每批的<b>传输总值</b> —— 一批<b>只能传一种物品</b>，数量上限 = 传输总值 ÷ 单位物品价值（物品表 <code>value</code>）。每批要等一个传输间隔到货，到货后出发地会再取一次货。</span></div>
@@ -7592,7 +7592,7 @@ function Rreport(P, pw, bw, th, lim, st, rawNeed, sc){
       <div class="c-sub" style="margin-top:2px"><span>· <b>发电</b>：这条产线用电 <b>${pw.total}</b> 电；协议核心自带 <b>${th.base}</b> 基础发电${th.gap>0?(' → 缺口 <b>'+th.gap+'</b>，需要热能池：'+th.fuels.map(f=>esc(f.item)+' <b>'+f.count+'</b> 台（'+f.power+'/台）').join(' · ')):' → <b>不用额外发电</b>'}${th.fuels.length?` <span class="c-id">（按地区选燃料：${esc(Lregion()||'通用')}）</span>`:''}${stations?`　<span class="c-id">画布上已摆热能池 ${stations} 台</span>`:''}</span></div>
       <div class="c-sub" style="margin-top:2px"><span>· <b>存电</b> <span class="lo-tag">路线图 ②c · 已纳入</span>：上限 <b>${st.cap.toLocaleString?st.cap.toLocaleString('en-US'):st.cap}</b>（社区实测）${st.gap>0?('　当前缺口 <b>'+st.gap+'</b> 电 → 纯靠存电能撑 <b>'+st.minutes+'</b> 分钟（约 '+r1(st.minutes/60)+' 小时），撑完设备就停；这是缓冲不是电源，得补发电'):'　当前用电没超基础发电，存电不动 ✓'}</span></div>
       <div class="c-sub" style="margin-top:2px"><span>· <b>防御建筑上限</b> <span class="lo-tag">路线图 ②b</span>：${lim.defCap!=null?('<b>'+lim.def+'</b> / '+lim.defCap+'（'+esc(lim.zone||'')+'）'+(lim.defOver?' —— <b style="color:'+RW_COL.bad+'">超了 '+(lim.def-lim.defCap)+'</b>':' —— 在限内 ✓')):'（自由模式没指定基地，没有上限可对）'}<span class="c-id">　按分类「战斗辅助」计</span></span></div>
-      <div class="c-sub" style="margin-top:2px"><span>· <b>滑索上限</b> <span class="lo-tag">路线图 ②b</span>：<b>基地画布里不涉及</b> —— 滑索架只放野外，不摆进基地（博士 2026-09-21 定，所以左栏也不提供）。本建造区的上限是 <b>${lim.travCap!=null?lim.travCap:'—'}</b>（配置表 <code>travelPoleLimit</code>），那个数服务的是**野外滑索架**，不是基地内的产线。<span class="c-id">沙盘上滑索数恒为 0，所以这一项永远显示 0 / 上限 —— 不是没做校验，是本来就不该在基地里数。</span></span></div>
+      <div class="c-sub" style="margin-top:2px"><span>· <b>滑索上限</b> <span class="lo-tag">路线图 ②b</span>：<b>基地画布里不涉及</b> —— 滑索架只放野外，不摆进基地（作者 2026-09-21 定，所以左栏也不提供）。本建造区的上限是 <b>${lim.travCap!=null?lim.travCap:'—'}</b>（配置表 <code>travelPoleLimit</code>），那个数服务的是**野外滑索架**，不是基地内的产线。<span class="c-id">沙盘上滑索数恒为 0，所以这一项永远显示 0 / 上限 —— 不是没做校验，是本来就不该在基地里数。</span></span></div>
       <div class="c-sub" style="margin-top:2px"><span>· <b>等级上限（逐档）</b> <span class="lo-tag">配置表 LevelGradeTable</span>：${(()=>{
         const z=((DB.bases||{}).zoneGrades||{})[Linit().base||''];
         if(!z) return '<span class="c-id">本建造区不在 LevelGradeTable 里 —— 这张表只覆盖 8 个区（四号谷地 6 + 景玉谷 / 武陵城）；武陵其余 7 个区的上限要看据点发展等级表（DomainDataTable）</span>';
@@ -7616,7 +7616,7 @@ function Rreport(P, pw, bw, th, lim, st, rawNeed, sc){
       }).join('　·　'):'（无）'}</span></div>
       ${P.res.raw.map(x=>{ if((P.res.shipIn||[]).some(s=>s.itemId===x)) return ''; const c=RoreCapOf(x); return c?RoreZoneRows(c):''; }).join('')}
       ${RrawLoop(P, rawNeed)}
-      <div class="c-sub" style="margin-top:2px"><span class="c-id">⚠️ 发电量（源矿 50 / 谷地电池 220·420·1100 / 武陵电池 1600·3200）与矿点数量、存电上限（10 万）**都是社区实测，不是配置表**；纯度按<b>地区最大值</b>（高纯度 20/分）算。协议容量 / 防御建筑上限 / 滑索上限是<b>配置表</b>（bases.json 的 caps）。<br>矿石总量（博士武陵简报截图逐区计数 + 四号谷地 NGA / 游民星空 / sticweb / TapTap 多方实测）：<b>源矿 60 / 紫晶矿 12 / 蓝铁矿 60 / 赤铜矿 28 个矿点</b>（一个矿脉 = 1 台矿机，别乘每脉点数；高纯度 20/分、低纯度 10/分）。<br>按大地区：<b>四号谷地 源矿 560 · 紫晶 240 · 蓝铁 1080</b>（实测，多方一致）、<b>武陵 源矿 540 · 蓝铁 120 · 赤铜 510</b>（博士截图逐区计数，与游戏内 UI 全部一致 —— 闭环）。<br>「稀有矿物」（黯石 / 燎石 / 武陵石 / 协议纹石）是野外<b>手动拾取</b>的调谐石，不是矿脉，不在本表。</span></div>
+      <div class="c-sub" style="margin-top:2px"><span class="c-id">⚠️ 发电量（源矿 50 / 谷地电池 220·420·1100 / 武陵电池 1600·3200）与矿点数量、存电上限（10 万）**都是社区实测，不是配置表**；纯度按<b>地区最大值</b>（高纯度 20/分）算。协议容量 / 防御建筑上限 / 滑索上限是<b>配置表</b>（bases.json 的 caps）。<br>矿石总量（作者武陵简报截图逐区计数 + 四号谷地 NGA / 游民星空 / sticweb / TapTap 多方实测）：<b>源矿 60 / 紫晶矿 12 / 蓝铁矿 60 / 赤铜矿 28 个矿点</b>（一个矿脉 = 1 台矿机，别乘每脉点数；高纯度 20/分、低纯度 10/分）。<br>按大地区：<b>四号谷地 源矿 560 · 紫晶 240 · 蓝铁 1080</b>（实测，多方一致）、<b>武陵 源矿 540 · 蓝铁 120 · 赤铜 510</b>（作者截图逐区计数，与游戏内 UI 全部一致 —— 闭环）。<br>「稀有矿物」（黯石 / 燎石 / 武陵石 / 协议纹石）是野外<b>手动拾取</b>的调谐石，不是矿脉，不在本表。</span></div>
       ${planCompareHTML()}
     `;
 }
@@ -7625,10 +7625,10 @@ function Rreport(P, pw, bw, th, lim, st, rawNeed, sc){
      · 源桩 log_hongs_bus_source：「作为仓库存取线的起始点，可以在集成核心区域自由放置。」
      · 基段 log_hongs_bus：「需要和仓库存取线源桩或其他生效的仓库存取线基段相连。」
      · 存货口 loader_1 / 取货口 unloader_1：「只能贴靠仓库存取线放置。」
-   「相连」的口径由博士 2026-09-21 游戏内实拍确认：两条边**有接触**就算 —— 可横向并排、
+   「相连」的口径由作者 2026-09-21 游戏内实拍确认：两条边**有接触**就算 —— 可横向并排、
    可 L 形拐弯、错开一两格也行，不要求整边对齐。游戏里没连上的块会变红并提示
    「没有与仓库存取线源桩或其他运作中基段相连」。沙盘照做：允许摆，但标红 + 给提示。
-   ⚠️ 别改成「整边对齐」—— 我第一版就是那么理解的，被博士实拍纠正了。 */
+   ⚠️ 别改成「整边对齐」—— 我第一版就是那么理解的，被作者实拍纠正了。 */
 const HONGS_SRC='log_hongs_bus_source', HONGS_BUS='log_hongs_bus', HONGS_PORTS=['loader_1','unloader_1'];
 function LhongsRule(id){
   if(id===HONGS_SRC) return '起始点，可自由放置';
@@ -7680,8 +7680,8 @@ function renderLayout(){
   const L=Linit(), CELL=LOCELL;
   /* 默认只列产线相关的官方组（仓储/基础生产/合成制造/电力）+ 核心结构 + 物流件；上方分类下拉选了具体分类时，就只列那一类。
      拉黑名单（中继器等）两条路都不给。 */
-  /* 免电变体在这里先剔掉，下面的 arr 和分类计数都以它为准 —— 同一座设施只留正常版（博士 2026-09-21）。
-     选了谷地的基地时，再把源桩 / 基段剔掉：谷地这两样由基地自动铺，左栏不给（博士 2026-09-21）。 */
+  /* 免电变体在这里先剔掉，下面的 arr 和分类计数都以它为准 —— 同一座设施只留正常版（作者 2026-09-21）。
+     选了谷地的基地时，再把源桩 / 基段剔掉：谷地这两样由基地自动铺，左栏不给（作者 2026-09-21）。 */
   const presetBus=LisPresetBus();
   const all=DB.blueprint.buildings.concat(Llogi().map(LO_LG))
     .filter(b=>!(LO_HIDE_NOP&&LO_IS_NOP(b)))
@@ -7707,7 +7707,7 @@ function renderLayout(){
   const sizeBtns=[40,50,70,80].map(n=>`<button class="lo-size ${L.size===n&&!L.base?'on':''}" onclick="Lsize(${n})" title="自由模式：只设边长，不带地区规则（选过基地的话会退出基地选择）">${n}×${n}</button>`).join('');
   /* 「基地」下拉 = 两个地区的分界线：选一片基地就设画布边长 + 切该地区的存取线规则
      （武陵要自己摆、有上限、没接上标红；谷地由基地自动铺、左栏不给源桩/基段、不判贴靠）。
-     博士 2026-09-21：「把武陵和四号谷地分开讨论」。 */
+     作者 2026-09-21：「把武陵和四号谷地分开讨论」。 */
   const bases=Lbases();
   const baseSel=`<select class="lo-sel" onchange="LbaseSet(this.value)" title="选一片基地 = 设画布边长 + 切该地区的存取线规则">
       <option value=""${L.base?'':' selected'}>自由模式（不限地区）</option>
@@ -7719,7 +7719,7 @@ function renderLayout(){
   const baseTag=curRow
     ? `<span class="lo-tag">当前：${esc(curRow.domainName)}·${esc(curRow.zoneName)}${presetBus?' · 存取线由基地自动铺':' · 存取线自己摆'}</span>`
     : `<span class="lo-tag">当前：自由模式（不限地区）</span>`;
-  /* ⭐v145 多基地页签（博士 2026-09-24：一键最优排布要能看到这个地区的每张画布）
+  /* ⭐v145 多基地页签（作者 2026-09-24：一键最优排布要能看到这个地区的每张画布）
      只列**当前基地所在地区**的基地；摘要读各基地已存的那份内容（bases[levelId]），
      所以没被切过的基地也照样报得出「机器 0 · 占地 0/Y」。 */
   const baseTabs=(()=>{
@@ -7732,7 +7732,7 @@ function renderLayout(){
          正解：非物流件即建筑。 */
       const mach=bs.filter(o=>{ const bp=byBp(o.id); return bp&&!bp.isLogi; }).length;
       const used=bs.reduce((a,o)=>a+(o.w||0)*(o.d||0),0);
-      /* ⭐v145 曾在此显示协议容量占用，2026-09-24 博士游戏内确认「核心区无限制」后撤回：
+      /* ⭐v145 曾在此显示协议容量占用，2026-09-24 作者游戏内确认「核心区无限制」后撤回：
          协议容量只约束集成核心区域**外**的野外设备，基地内不受限，显示已用/上限会误导。 */
       const hasPlan=!!(st.plan&&st.plan.res);
       return `<button class="lo-tab ${b.levelId===L.base?'on':''}" onclick="LbaseSet('${b.levelId}')"
@@ -7745,14 +7745,14 @@ function renderLayout(){
   const cellBtns=[14,20,26,32].map(n=>`<button class="lo-size ${LOCELL===n?'on':''}" onclick="Lcell(${n})">${n}px</button>`).join('');
   /* 物流件占格索引：给接口做「外侧有没有接上」的判定 + 流向拓扑。
      ⭐v152：物流件按「格 × 介质」双索引 —— 3D 里管道在上层、传送带在下层，一格可同时有管+带
-     （管×带交叉不再放桥，博士 2026-09-24 游戏实锤）。索引键 'p:x,y' / 'b:x,y'；
+     （管×带交叉不再放桥，作者 2026-09-24 游戏实锤）。索引键 'p:x,y' / 'b:x,y'；
      flowNext 同样按介质分表 —— 叠加格里两层的流向互不干扰，各层各推各的进边。 */
   const lgi={};
   L.objs.forEach(o=>{ const b=byBp(o.id); if(b&&b.isLogi) lgi[(b.lgMedium==='管道'?'p':'b')+':'+o.x+','+o.y]=o; });
   /* ⭐ 流向表：每个带/管格的「下一格」—— 用来反推每格的进边（弯道渲染要用）。
      ⭐v142：**准入口（箱阀/管阀）也必须进表** —— 它是串接在线上的件，被它替换掉的那格原来是带子，
      下游的弯头格靠「邻居指向我」反推进边；只认带/管的话准入口就成了空气，
-     于是「放在转折格旁边」时转折格反推不到上游 → 被画成直线（博士 2026-09-24 实测三报之一）。 */
+     于是「放在转折格旁边」时转折格反推不到上游 → 被画成直线（作者 2026-09-24 实测三报之一）。 */
   const flowNext={};
   Object.values(lgi).forEach(o=>{
     const b=byBp(o.id);
@@ -7773,11 +7773,11 @@ function renderLayout(){
   });
   /* ⭐v107 出料口外格索引：机器某 output 口的外侧格 → {from:带子的进边方向, pipe:是否管道口}。
      孤格带/管夹在两台对角机器之间时没有带子邻居，flowIn 只查带子会推不出进边
-     （博士图1「还是不行」）—— 现在机器口也算拓扑。from = 口朝向的反侧（机器在那边）。 */
+     （作者图1「还是不行」）—— 现在机器口也算拓扑。from = 口朝向的反侧（机器在那边）。 */
   const portOut={};
   /* ⭐v151 续2：feed 起点格（外部暗管接入点）的进边 —— 料从画布外垂直插进这格，
      它压在哪条边、进边就是朝外那侧；角落取「≠ 第一段走向」的外侧（第一段朝内走时
-     外侧恰为反向，同式成立）。没有这条，feed 起点永远画直条（博士 2026-09-24
+     外侧恰为反向，同式成立）。没有这条，feed 起点永远画直条（作者 2026-09-24
      截图红框三连：「这些是不是要接外部暗管啊，也没有弯」—— 就是它们）。 */
   const feedStart={};
   if(L.plan&&L.plan.route) L.plan.route.links.forEach(l=>{
@@ -7822,7 +7822,7 @@ function renderLayout(){
     }
     /* ⭐v151 续：这格**自己**就是机器出料口 / 汇流器·分流器出格的外侧格 ——
        料从本体那侧流入本格（线起点格的进边）。没有这条，出口第一格永远画成直条
-       （博士 2026-09-24 截图「入口弯头好了，出口没有」）。 */
+       （作者 2026-09-24 截图「入口弯头好了，出口没有」）。 */
     const self=portOut[x+','+y];
     if(pm(self)) return self.from;
     /* ⭐v151 续2：feed 起点自查 —— 暗管从画布外这一侧插进来（见 feedStart 表注释） */
@@ -7845,7 +7845,7 @@ function renderLayout(){
   L.objs.forEach(o=>{
     const b=byBp(o.id);
     /* ⭐v151 续：汇流器/分流器（Router）的**出格**也进 portOut —— 干线起点格的进边靠它反推，
-       否则「出口没有弯头」（博士 2026-09-24 截图：汇流干线出来第一格画成直条）。
+       否则「出口没有弯头」（作者 2026-09-24 截图：汇流干线出来第一格画成直条）。
        from = 本体相对出格的方向；汇流器 1 出（上）、分流器 3 出（上/左/右）。
        ⚠️ 不填 pipe（通配）：objs 元素转存时 isPipe 字段丢了（keys=uid|id|x|y|rot|w|d|planRole），
        管道汇流器回落 lgMedium='传送带' 会匹配不上；而汇流器与所连线永远同介质（RwRoute 保证），
@@ -7864,7 +7864,7 @@ function renderLayout(){
     if(!b||b.isLogi) return;
     const fp=Lfp(b);
     (b.ports||[]).forEach(p=>{
-      /* ⭐v154：暗管入口的 input 口接的是**画布外暗管**（博士自己拉），画布内永远「没接」——
+      /* ⭐v154：暗管入口的 input 口接的是**画布外暗管**（作者自己拉），画布内永远「没接」——
          不计入接口统计，否则「接口已接 N/M」永远凭空少几个、看着像漏接。 */
       if(b.id.indexOf('udpipe_loader')===0 && p.kind==='input') return;
       const q=LportXY(p,o.rot,fp[0],fp[1]);
@@ -7916,7 +7916,7 @@ function renderLayout(){
     return `<div class="lo-pwr" style="left:${x1*CELL}px;top:${y1*CELL}px;width:${(x2-x1)*CELL}px;height:${(y2-y1)*CELL}px"></div>`;
   }).join(''):'';
   /* ---- [d] 浮层：就地选气条 + 核心出货清单 ---- */
-  /* ⭐v104 就地选气条（博士：「想要点机器就地选」）：选中散布机时浮在机器正上方 ——
+  /* ⭐v104 就地选气条（作者：「想要点机器就地选」）：选中散布机时浮在机器正上方 ——
      色块 = 四种气体（即四种环境，圈色同款），点一下 LgasSet 批量换气；当前气描高亮圈。
      与环境圈层开关解耦：圈藏了也能换气（换的是对象属性，不是图层）。 */
   const gasBar=(function(){
@@ -7939,7 +7939,7 @@ function renderLayout(){
   })();
   /* ⭐v109 协议核心出货清单浮层：点出料口的内部箭头弹出，浮在该口正上方。
      清单 = 该核心所属域的可出货物品（DB.hubItems 按 domains 过滤），按稀有度降序。
-     ⭐v126：加搜索框 + 稀有度 chip（博士「东西几百个太多了」）。服务端过滤只渲染
+     ⭐v126：加搜索框 + 稀有度 chip（作者「东西几百个太多了」）。服务端过滤只渲染
      匹配项（render 路径保持筛选），oninput/点 chip 走 LdlvRefilter 轻量 DOM 过滤
      （不 render，防输入框丢焦点）。条目带 data-nm/data-rr 供 DOM 过滤。 */
   /* ⭐v135 机器选择浮层（点机器弹出；定位与样式沿用协议核心出货浮层那套） */
@@ -8010,7 +8010,7 @@ function renderLayout(){
     if(b.isLogi){
       /* ⭐v106：弯头格 tooltip 的「进」也按真实拓扑（flowIn），与色条/弯道弧同一口径 */
       const _fin=(b.lgType==='Belt'||b.lgType==='Pipe')?flowIn(o.x,o.y,b.lgMedium==='管道'):null;
-      /* ⭐v139 准入口合规校验（博士：「不是说只能放在传送带上吗，怎么没标红」）：
+      /* ⭐v139 准入口合规校验（作者：「不是说只能放在传送带上吗，怎么没标红」）：
          准入口放好后是**替换**掉原来的带/管（那格只剩准入口），所以判据看**衔接**——
          四邻里有没有同类介质的带/管。孤立（一个都没有）= 没放在带/管上 → 标红警示。
          这样无论它是新放的、旧画布留下的、还是从方案/撤销栈恢复的，都会被标出来。 */
@@ -8053,7 +8053,7 @@ function renderLayout(){
       const pcx=dx?(dx>0?INW-E:E):(q.x*CELL+CELL/2-1.5);
       const pcy=dz?(dz>0?IND-E:E):(q.z*CELL+CELL/2-1.5);
       const col=p.kind==='input'?'#186C7D':'#C0561F';
-      /* ⭐v154：暗管入口的 input 口接画布外暗管（博士自己拉），恒视为已接（亮灯），不误导 */
+      /* ⭐v154：暗管入口的 input 口接画布外暗管（作者自己拉），恒视为已接（亮灯），不误导 */
       const lk=(!!dir&&LlogiAt(lgi,o.x+q.x+dx,o.y+q.z+dz,p.isPipe))
         ||(b.id.indexOf('udpipe_loader')===0&&p.kind==='input');
       /* 物料流向：进料口从该边的对侧进来，出料口朝该边出去 */
@@ -8072,7 +8072,7 @@ function renderLayout(){
         +(rp?(' · 本配方：'+(pu==='use'?('走这里（'+(p.isPipe?'流体料':'固态料')+'）'):'不走这个口')):'');
       ports+=`<div class="lo-port ${p.isPipe?'pipe':''} ${lk?'on':''} ${pu}" style="left:${pcx}px;top:${pcy}px;background:${col}" title="${ttl}"></div>`;
       /* ⭐v109 协议核心出货：可点的指向箭头 + 选货清单；选了货变绿、旁边标名字。
-         ⭐v124（博士截图红圈「把选择物品的模块移到里面，外侧像其他基建一样是货品进出口」）：
+         ⭐v124（作者截图红圈「把选择物品的模块移到里面，外侧像其他基建一样是货品进出口」）：
          箭头不再压在口格上 —— 口格留白给物流交互（手拿件点口=拉线、空手点口=选中/拖动，
          与其他基建同款）。选货入口挪到核心**内侧一格**、仍朝外指对应它的口；
          名字标签跟在箭头内侧。坐标教训（v109 两版踩坑：边缘列没有余量可推）在这里
@@ -8194,7 +8194,7 @@ function renderLayout(){
         <div class="c-sub" style="margin-top:4px"><span class="c-id">接口序号是<b>同类接口内的下标</b>，且只是「这几种料可以走哪几个口」的<b>集合</b>，不是一对一 —— 详见页面说明。</span></div>`:''}
       ${rInfo.chosen.length>1?`<div class="c-sub" style="margin-top:6px"><span class="c-id">选中的这几台配方不一致（共 ${rInfo.chosen.length} 种）；下拉里选一条会统一改。</span></div>`:''}
     </div>`):'';
-  /* ⭐v103 左栏气体选择块 → ⭐v104 改为**画布就地选**（博士：「想要点机器就地选」）：
+  /* ⭐v103 左栏气体选择块 → ⭐v104 改为**画布就地选**（作者：「想要点机器就地选」）：
      选中散布机时浮动条直接出现在机器正上方，左栏这份入口撤掉（双入口语义混乱）。
      范围/速率的完整说明挪进帮助手册💨区块。 */
   /* ---------- 产线闭环（排布器 v1）的输入块 + 报告 ---------- */
@@ -8244,14 +8244,14 @@ function renderLayout(){
         <button class="lo-size" onclick="LawClear()">清掉产线</button>
         <button class="lo-size" onclick="LsavePlan()" title="把这一版的分数存下来；改个参数再生成一条，两套会自动并排比">存方案比一比</button>
       </div>
-      ${/* ⭐v81（博士：「我要在布局试摆里选怎么还是看不到啊」）：选货条提到产线面板里 ——
+      ${/* ⭐v81（作者：「我要在布局试摆里选怎么还是看不到啊」）：选货条提到产线面板里 ——
              开关一开立刻能选（没生成产线也显示，用的是轻量展开的候选），不用先跑报告再往下翻。
              报告的「跨地区收货」段在展示时面板让位（同一份候选不该出现两个网格，报告那份还带 tv 输入框更全）。 */
         /* ⭐v82 简化：有产线（L.plan && L.plan.res）时选货网格一律归报告 —— v82 起报告收货段
            不再要求 P.res.shipIn 非空（链外选中也要给提示和网格），面板条件若只看 shipIn 行数
            会跟报告同时出网格 → 双份。 */
         ((L.shipIn && (L.shipCands||[]).length && !(L.plan && L.plan.res)) ? LpickGridHtml(true) : '')}
-        ${/* ⭐⑥-3：收货开着时，方向「从/到」下拉紧跟开关行（博士 2026-09-22：为未来新地区留口） */
+        ${/* ⭐⑥-3：收货开着时，方向「从/到」下拉紧跟开关行（作者 2026-09-22：为未来新地区留口） */
           (L.shipIn ? LshipDirHtml() : '')}
         ${(L.pickShow ? RxlHtml() : '')}
       ${(L.mt||[]).map((x,i)=>`
@@ -8324,11 +8324,11 @@ function renderLayout(){
       工具栏的「接口」按钮也能把它整块收起/放回。<br>
       <b>💨 气体散布机 · 环境圈</b> <span class="lo-tag">v104 · 2026-09-23</span><br>
       摆下气体散布机后，画布上它周围那块<b>半透明方形</b>就是环境范围 —— 占地 3×3 外扩 5 格 = <b>13×13</b>
-      （配置表 <code>FactoryVaporizerTable.rangeExtend</code>；形状与游戏一致是<b>方形</b>，博士 2026-09-23 实测）。
+      （配置表 <code>FactoryVaporizerTable.rangeExtend</code>；形状与游戏一致是<b>方形</b>，作者 2026-09-23 实测）。
       <b>点机器就地换气</b>：单击选中散布机 → 机器正上方浮出四个色块按钮，点一下即换通入的气体（圈色跟着变；
       框选多台一起换）—— v103 的左栏入口已并入这里。四种气体对应四种环境（游戏「本设备可生成的环境一览」实拍校准）：
       <b>惰气 → 稳定（青蓝）/ 水蒸气 → 湿润（白）/ 酸气 → 酸性（橙黄）/ 息壤气 → 息壤（翠绿）</b>
-      （GenEnv 来自 <code>FactoryEnvDisplayTable</code>；v103 曾按特效资源名猜色把稳定/湿润对反，v104 按博士截图纠正）。
+      （GenEnv 来自 <code>FactoryEnvDisplayTable</code>；v103 曾按特效资源名猜色把稳定/湿润对反，v104 按作者截图纠正）。
       多台的圈重叠会自然加深（湿润的白圈单独加了浓度，浅画布上也能看清）；色块<b>不挡点击 / 框选 / 摆放</b>；
       工具栏「环境圈」按钮可整层收起（收起不影响换气）。散布机持续吃气：最低 <b>6 单位/分</b>（官方面板「最低需求」口径）·
       储气上限 30。<br>
@@ -8378,7 +8378,7 @@ function renderLayout(){
       已记在 <code>recipe_groups.json</code> 的 <code>anomalies</code> 里，属配置表自身的不一致，<b>不是解析错误</b>。<br>
       <b>产能与配比</b>：选中共 1 条配方时给出单台产能（每分几轮、每种料每分钟多少）与<b>进料要几条带</b>
       （固态 ÷ 30 个/分、流体 ÷ 120 个/分）。这套换算做成了<b>不碰 DOM 的纯函数</b>
-      （<code>Rrate</code> / <code>Rcarriers</code> / <code>Rplan</code>）—— 博士要的「全基地产线最精简 + 产能最大化」
+      （<code>Rrate</code> / <code>Rcarriers</code> / <code>Rplan</code>）—— 作者要的「全基地产线最精简 + 产能最大化」
       排布器以后直接调它们，不用再重算一遍。<br>
       <b>产线闭环：选目标物品 + 速率 → 一键展开配方树 · 摆机器 · 连管线</b><br>
       <b>「闭环自持」开关</b>：有些料**只有回收路线**（惰气只能靠拆解罐子得到，而罐子又要用惰气灌）。
@@ -8441,10 +8441,10 @@ function renderLayout(){
       <b>⚠️ 我前面两次算错就栽在这一步</b>：最早按「脉数 × 每脉 2~6 点」算，把全图源矿算成 2320~6960/分，
       <b>虚高 2~6 倍</b>（那 2~6 是矿脉上<b>矿石簇的外观数量</b>，不是能放几台矿机）；后来又拿「清波寨一个区」当赤铜矿全图。
       现在构建期有自检：按区求和、按地图求和、点数×20 三处对不上就当场报错。<br>
-      <b>每个大地区的可采集最大理论值</b>（<span class="lo-tag">等博士核实</span>）：
+      <b>每个大地区的可采集最大理论值</b>（<span class="lo-tag">等作者核实</span>）：
       ${oreMapMaxTable()}
       <div class="c-sub" style="margin-top:4px"><span class="c-id">
-      两列都是<b>实测</b>：四号谷地是 NGA / 游民星空 / sticweb / TapTap 四方一致；武陵是博士 2026-09-21 武陵简报截图逐区计数 —— 赤铜矿 23 高 + 5 低 = <b>510/分</b>、源矿 22 高 + 10 低 = <b>540/分</b>、蓝铁 6 高 = <b>120/分</b>，全部与游戏内 UI「理论最大开采值」一致 —— <b>闭环，无待核项</b>。</span></div>
+      两列都是<b>实测</b>：四号谷地是 NGA / 游民星空 / sticweb / TapTap 四方一致；武陵是作者 2026-09-21 武陵简报截图逐区计数 —— 赤铜矿 23 高 + 5 低 = <b>510/分</b>、源矿 22 高 + 10 低 = <b>540/分</b>、蓝铁 6 高 = <b>120/分</b>，全部与游戏内 UI「理论最大开采值」一致 —— <b>闭环，无待核项</b>。</span></div>
       <b>按小地图看矿点（点数 / 满纯度产量）</b>：
       ${oreZoneTable()}
       <div class="c-sub" style="margin-top:6px"><span class="c-id">
@@ -8460,9 +8460,9 @@ function renderLayout(){
       出矿速率<b>只由矿点纯度决定，与矿机型号无关</b>（型号只影响耗电）。<br>
       ⚠️ <b>纯度是按「区」分级解锁的</b>，不是整张大地图一起提：四号谷地的「阿伯莉采石场 / 源石研究园」前面几级就满纯度，
       「<b>供能高地要到 11 级</b>」才满；武陵「<b>景玉谷 8 级</b>」满纯度。所以同一版本、不同玩家的矿点纯度可能不同 ——
-      本页按博士定的「当前版本地区最大值」口径，<b>一律按高纯度 20/分</b>算。
+      本页按作者定的「当前版本地区最大值」口径，<b>一律按高纯度 20/分</b>算。
       想知道自己那份是哪档，在游戏里点矿机看有没有「采集效率提升」提示。<br>
-      <b>滑索：只放野外，不摆进基地</b>（所以左栏试摆清单里没有滑索架 —— 博士 2026-09-21 定的）。
+      <b>滑索：只放野外，不摆进基地</b>（所以左栏试摆清单里没有滑索架 —— 作者 2026-09-21 定的）。
       滑索架射程 <b>80m</b>、长距滑索架 <b>110m</b>；建造区的 <code>travelPoleLimit</code>（枢纽区 20 / 谷地通道 10 …）约束的就是野外这一层。<br>
       ${(()=>{const m=RoreMeta(); return m.versionLog.length?('<b>版本记录</b>（版本接口 <code>dataVersion</code> = '+esc(m.dataVersion)
         +'，游戏 '+esc(m.gameVersion)+'）：'+m.versionLog.map(v=>'<br>　· <b>'+esc(v.version)+'</b>　'+esc(v.note)).join('')+'<br>'):'';})()}
@@ -8538,7 +8538,7 @@ function renderLayout(){
           ${Object.keys(pw.byCat).length?`<span class="c-id">${Object.keys(pw.byCat).map(k=>esc(k)+' '+pw.byCat[k]).join(' · ')}</span>`:''}
         </div>
         <div class="c-sub" style="margin-top:4px">
-          ${/* ⭐v145/⭐v156：口径改成说明 —— 协议容量只约束集成核心区域**外**的野外设备，基地内不受限（博士 2026-09-24 游戏内确认）。
+          ${/* ⭐v145/⭐v156：口径改成说明 —— 协议容量只约束集成核心区域**外**的野外设备，基地内不受限（作者 2026-09-24 游戏内确认）。
                 ⭐v156 措辞修正：原来标题写「协议容量上限 N」，容易被读成"基地的容量上限"（与正文自相矛盾）。
                   改为「（野外设备参考）」并把数值定位成"该区野外上限"——本画布排布不受它约束。 */''}
           <span class="c-id">📶 协议容量（野外设备参考）<b>${bw.cap!=null?bw.cap:'—'}</b>${bw.cap!=null?('（'+esc(bw.zone||'本区')+'上限）'):'（未指定基地）'} —— <b>只约束集成核心区域外的野外设备，基地内排布不受它限制</b></span>

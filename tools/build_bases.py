@@ -127,7 +127,7 @@ BUS_NOTE = (
 # levelId: (排满的边数, 有无源桩, 来源)
 # 主基地（枢纽区）有源桩：基段紧贴源桩、沿相连的两条边排满；
 # 副基地**没有源桩** —— 存取线自动铺好一条边，玩家只需要贴放存货口 / 取货口
-# （博士 2026-09-21 补充："副基地只用存取线就行"）。
+# （作者 2026-09-21 补充："副基地只用存取线就行"）。
 BUS_OBSERVATIONS = {
     "map01_lv001": (2, True, "C"),    # 枢纽区（主基地）：源桩在一角，相连的两条边排满，对称两边空
     "map01_lv002": (1, False, "D"),   # 谷地通道
@@ -155,7 +155,7 @@ BOUNDARY_NOTES = [
 ]
 
 # 哪几个建造区是主基地（放协议核心），其余同据点的是副基地（放次级核心）。
-# ⚠️ 这不是从配置表推出来的 —— 是博士 2026-09-20 在游戏里确认的。
+# ⚠️ 这不是从配置表推出来的 —— 是作者 2026-09-20 在游戏里确认的。
 #    每个据点：1 个主基地 + 3 个副基地。
 MAIN_BASE_ZONES = {
     "map01_lv001",   # 四号谷地·枢纽区
@@ -321,7 +321,7 @@ def build_bases(load, T):
         z["busCostTotal"] = sum(r["cost"] or 0 for r in z["bus"]) or None
         z["busCount"] = len(z["bus"])
         # 满级累计上限：把各档 grants 相加 → {"log_hongs_bus": 25, "log_hongs_bus_source": 2}
-        # 沙盘拿它显示「基段 11 / 25」（博士 2026-09-21 要求，对应游戏里的 11/25 计数）
+        # 沙盘拿它显示「基段 11 / 25」（作者 2026-09-21 要求，对应游戏里的 11/25 计数）
         _cap = {}
         for _row in z["bus"]:
             for _g in (_row.get("grants") or []):
@@ -486,7 +486,7 @@ def build_bases(load, T):
     # 只列有基地（建设区域）的建造区：即集成管家里有「区域扩大」条目的那 8 张图。
     # 其余 7 个区（阿伯莉采石场/矿脉源区/清波寨/试验园区/藏剑谷/北部禁区/雪松林）没有基地，
     # 配置表里仍给它们协议容量 —— 那是约束区内野外设备的，与基地无关。
-    # （来源：博士 2026-09-20 游戏内确认）
+    # （来源：作者 2026-09-20 游戏内确认）
     max_bases = []
     for z in zones:
         if not z["hasBuiltArea"]:
@@ -580,7 +580,7 @@ def build_bases(load, T):
         },
         "boundaries": BOUNDARY_NOTES,
         "slotRule": SLOT_RULE,
-        # C = 博士实拍（谷地存取线）、D = 毕业蓝图攻略（方位，仅采信"几条边"）—— 别写死成两条
+        # C = 作者实拍（谷地存取线）、D = 毕业蓝图攻略（方位，仅采信"几条边"）—— 别写死成两条
         "sources": [SOURCES[k] for k in ("A", "B", "C", "D") if k in SOURCES],
         "areas": areas,
         "areaComparisons": comparisons,
