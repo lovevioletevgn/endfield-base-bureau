@@ -3365,8 +3365,22 @@ const RW_STOP_AT_RECYCLE=true;
    不限深的话，10/分 赤铜耐压罐会展开成 90 台机器。限深后清水→提纯机只展开到 3 层，规模可控，
    而且报告里会明确写「按外部输入处理」，不会悄悄少算。 */
 const RW_MAX_DEPTH=3;
-/* 规模闸门：展开超过这么多台就不生成，改成报告里说明原因（免得画布上堆一坨垃圾） */
-const RW_MAX_MACHINES=60;
+/* 规模闸门：展开超过这么多台就不生成，改成报告里说明原因（免得画布上堆一坨垃圾）。
+   ⭐v159（2026-09-25）：60 → 180。博士实测「一堆产线自动生成不出来」，根因就是这个自设闸门
+     （**不是游戏限制**）。探针 probe_tier 用**修正口径**实测（201 个「目标×地区」组合）：
+       判据 = 「占地装得下（est ≤ 该地区最大基地可用格）的链，就不该被台数拦掉」。
+       实测「本该能生成」的 199 条里，**最大台数 = 174**（中容武陵电池@武陵，est 6151 ≤ 6319）。
+       → 上限 ≥ 174 即可零浪费；取 **180** 留余量，且远低于「一条链吃掉整片画布」的量级。
+     各档位（能生成 / 因台数白拦 / 占地真不够）：
+       60→176/23/2 · 100→187/12/2 · 120→195/4/2 · 150→198/1/2 · **180→199/0/2** · ∞→199/0/2
+       ★注意 v159 中途曾在 120 上停过一版（探针口径偏差导致误判「+19 条已够」）；
+         改到 180 后把高容谷地电池(150台)/低容武陵电池(140台)/重息壤(120台) 也一并救回。
+     ⚠️ 恒有 2 条占地真装不下，与上限无关：中容武陵电池@谷地 6151>4819；赫铜装备原件@武陵 6424>6319。
+     ⚠️ 两处判据必须同源：LawRun 的生成闸门与本常量、RbaseBest 的装箱判据**都读这里** ——
+        否则又会回到「分配说分好了、画布一件没有」的假成功（v158 缺陷，v159 修）。
+     ⚠️ 未来「多个成品一起摆」时不要靠继续抬高此值：它是「单条链的合理上限」，
+        多目标的总量控制应放在 RbaseBest（按基地累计 Σ占地/Σ台数）。 */
+const RW_MAX_MACHINES=180;
 /* ⭐⭐ ⑥-4 建筑专属限摆（2026-09-22 博士拍板 + 查证）：
    配置表 buildings.json 的 hasPlaceLimit 字段**不含「科技解锁型限摆」数据域** —— 天有洪炉在
    1.5.3 配置表里 hasPlaceLimit=false，但游戏里息壤工业科技满级也只许摆 **12 台**（武陵合计；
@@ -5574,6 +5588,46 @@ function RxlBest(targets){
    纯函数、无副作用、不碰 DOM —— 便于回归锁直接断言。 */
 /* 需要「销毁专区」的地区（博士 2026-09-25：谷地不做，武陵做；新地区开放后在此追加即可） */
 const RW_SINK_ZONE_REGIONS=['武陵'];
+/* ⭐v159（2026-09-25，方案 B）**真判据试摆**：目标能不能摆进 size×size 的画布。
+   ────────────────────────────────────────────────────────────────────────────
+   为什么需要它（v158 假成功的第二形态，博士实测「一堆产线生成不出来」）：
+     RbaseBest 原来用 `areaEst`（= 机器格数 × 2.2）判容量，实测**系统性低估 2~2.5 倍**
+     （探针 probe_minside2：赤铜块 est 占 9% 实际占 25%；高晶装备原件 est 43% 实际 100%；
+      赤铜装备原件 110 台**根本摆不进 80×80**）。
+     → 拿低估的 est 判「装得下」，到 LawRun 真实摆位才发现放不下 = 报告说分好了、画布空的。
+   做法（复用既有 LawPlan，不为它新写布局器）：
+     按 LawRun 的参数网格**取代表性子集**试摆（全网格 12 组太慢；这里 3~4 组）+ 覆盖候选，
+     `pl.over` 为空即视为**能摆下**（真判据，含走线通道与间距）。
+   ⚠️ 只判「有没有解」，不追求最优布局——最终落画布仍由 LawRun 走全网格择优，两者不冲突。
+   ⚠️ 成本：单次 LawPlan 约 10~300ms（随台数增长）；只在分配阶段跑，不进渲染热路径。
+   注意：失败路径要**回退到 est 粗判**（res 拿不到时不能崩）。 */
+function RfitSide(targetId, perMin, size, regionName){
+  let res=null;
+  try{ res=Rexplode(targetId, perMin, {region:regionName}); }catch(e){ return {ok:null, why:'展开失败'}; }
+  if(!res || !(res.machines||[]).length) return {ok:false, why:'没有机器配方'};
+  if((res.totalMachines||0)>RW_MAX_MACHINES)
+    return {ok:false, why:'超机器上限（'+res.totalMachines+' 台 > '+RW_MAX_MACHINES+'）'};
+  const depLines=res.machines.reduce((s,n)=>s+(n.children||[]).reduce((t,c)=>
+    t+(c.recipeId?Math.max(c.machines||1, n.machines||1, RwLines(c.demand, RwFluid(c.phase))):0),0),0);
+  const small=(res.totalMachines||0)<=8 || depLines<3;
+  /* 代表性子集：与 LawRun 同族的参数（gap×align×通道 + down 换行档），取够用的几组 */
+  const cands=[];
+  [false,true].forEach(al=>{
+    (small?[5,3]:[Math.min(5,depLines)]).forEach(cb=>{
+      cands.push({gapX:RW_GAP_X_T, align:al, corrBase:cb, mode:null});
+    });
+  });
+  [RW_GAP_X_T,2].forEach(gx=>{ cands.push({gapX:gx, align:false, corrBase:Math.min(5,depLines), mode:'down'}); });
+  for(let i=0;i<cands.length;i++){
+    const c=cands[i];
+    const corr=Math.max(c.corrBase, Math.min(14, Math.ceil(depLines/2)+2));
+    let pl=null;
+    try{ pl=LawPlan(res, size, corr, {gapX:c.gapX, align:c.align, mode:c.mode||undefined}); }catch(e){ continue; }
+    if(pl && !pl.over.length) return {ok:true, machines:res.totalMachines||0, tries:i+1};
+  }
+  return {ok:false, why:'画布 '+size+'×'+size+' 摆不下（试了 '+cands.length+' 组参数）',
+    machines:res.totalMachines||0};
+}
 function RbaseBest(targets, regionName){
   const list=(targets||[]).filter(t=>t&&t.id&&+t.rate>0);
   const outs={ ok:false, regionName:regionName||'', targets:[], bases:[], assign:[], unassigned:[],
@@ -5591,12 +5645,45 @@ function RbaseBest(targets, regionName){
   outs.sinkZone=sinkZone?regionName:'';
   const an=list.map(t=>{
     const a=RxlAnalyze(t.id, t.rate, regionName);
-    return {t:t, a:a, est:a.areaEst||0, sinks:0,
+    return {t:t, a:a, est:a.areaEst||0, sinks:0, machines:a.totalMachines||0,
       name:t.name||RwItemName(t.id)};
   });
   an.forEach(x=>{ if(!x.a.ok){ outs.unassigned.push({id:x.t.id, name:x.name,
     rate:x.t.rate, why:'地区不可行：'+((x.a.blocked||[])[0]||'无机器配方'), kind:'region'}); } });
-  const pool=an.filter(x=>x.a.ok);
+  /* ⭐v159（2026-09-25）判据同源修复：分配层必须**和生成层用同一个台数闸门**。
+     v158 缺陷：这里只看容量（B2），没查 RW_MAX_MACHINES → 超限目标照样被「分配成功」，
+     到 LawRun 才被拒 → 报告说分好了、画布一件没有 = 假成功（博士实测：「一堆产线自动生成不出来」）。
+     ⚠️ 未分配原因要**区分**「超机器上限」与「装不下」，且**容量优先**：
+        两者都不合格时（如中容武陵电池@谷地：174 台且 6151 格）报「装不下」——
+        因为它调速率也救不了（容量是物理上限）；只报台数会误导博士去降速白试一场。
+     ⚠️ 地区不可行（B1）优先级最高，已在上面单独挑出。
+     ⭐⭐ v159 方案 B（博士 2026-09-25 拍板）：**容量判据从 est 估算升级为真试摆**。
+        原来用 areaEst（机器格数×2.2）判，实测系统性低估 2~2.5 倍（probe_minside2）→
+        低估的 est 判「装得下」、LawRun 真实摆位放不下 = 假成功的第二形态（换了道墙）。
+        现在对每个目标**按各基地真实 side 跑 RfitSide 试摆**，得出「哪些基地真装得下」；
+        est 仅作为「没有任何基地装得下」时的报告文案参考。
+        优化顺序不变：主基地优先（能摆进主基地就放主基地），装不下才溢副基地。 */
+  an.forEach(x=>{
+    if(!x.a.ok) return;                                        /* B1 已报 */
+    if(x.machines>RW_MAX_MACHINES){ outs.unassigned.push({id:x.t.id, name:x.name, rate:x.t.rate,
+      why:'超机器上限：链条展开要 '+x.machines+' 台 > 上限 '+RW_MAX_MACHINES
+        +' 台（把速率调小到约 '+Math.max(1,Math.floor(x.t.rate*RW_MAX_MACHINES/x.machines))+'/分以下可生成）',
+      kind:'machines', machines:x.machines}); return; }
+    /* 真试摆：逐个基地按它的 side 试，记下哪些能摆下 */
+    x.fit={};
+    bases.forEach(b=>{
+      const r=RfitSide(x.t.id, x.t.rate, b.side, regionName);
+      x.fit[b.levelId]=!!r.ok;
+    });
+    x.fitAny=bases.some(b=>x.fit[b.levelId]);
+    if(!x.fitAny){
+      outs.unassigned.push({id:x.t.id, name:x.name, rate:x.t.rate,
+        why:'装不下：试摆了本地区 '+bases.length+' 个基地（'+bases.map(b=>b.zoneName+' '+b.side+'×'+b.side).join('、')
+          +'）都摆不下（约 '+x.machines+' 台 / 估算 '+x.est+' 格）—— 调小速率或换更小的目标',
+        kind:'capacity', est:x.est, machines:x.machines});
+    }
+  });
+  const pool=an.filter(x=>x.a.ok && x.machines<=RW_MAX_MACHINES && x.fitAny);
   /* 带 sink 判定（仅销毁专区地区才需要 —— 谷地不查，省掉 99 次 Rexplode） */
   if(sinkZone){
     pool.forEach(x=>{
@@ -5607,22 +5694,26 @@ function RbaseBest(targets, regionName){
     });
   }
   /* 装箱：大链优先（first-fit-decreasing）。挑基地的顺序 =
-     「主基地优先，装不下才溢到副基地」；销毁专区地区里，带 sink 且副基地装得下的**优先去副基地**。 */
+     「主基地优先，装不下才溢到副基地」；销毁专区地区里，带 sink 且副基地装得下的**优先去副基地**。
+     ⭐v159 方案 B：**挑基地的判据 = RfitSide 的真试摆结果**（x.fit[levelId]），
+        est 只用于「同基地多目标叠加」的容量账（真叠加试摆成本太高，且落画布时 LawRun 会重摆）。
+        单目标场景下 fit 已是权威判据 → 不会再出现「分配到放不下的基地」。 */
   pool.sort((x,y)=>y.est-x.est);
   const mainB=bases.filter(b=>b.role==='主基地')[0]||bases[0];
   const subB=bases.filter(b=>b.role!=='主基地');
   const zoneB=sinkZone?(subB[0]||null):null;   /* 销毁专区专用副基地（第一个副基地） */
-  /* 每个目标挑基地：返回能装下的基地里优先级最高的那个 */
+  /* 每个目标挑基地：在「真能摆下（fit）」的基地里按优先级挑第一个还有容量的 */
   const pickFor=x=>{
-    /* 销毁专区：带 sink 且装得进专用副基地 → 直接去那儿（让主基地干净） */
-    if(zoneB && x.sinks>0 && x.est<=zoneB.usable-zoneB.used) return {b:zoneB, sink:true};
-    /* 主基地优先：装得下就放主基地 */
-    if(x.est<=mainB.usable-mainB.used) return {b:mainB, sink:false};
-    /* 溢到副基地（按可用格降序，第一个装得下的；销毁专区副基地也是候选） */
+    const fits=b=>!!x.fit[b.levelId];
+    /* 销毁专区：带 sink 且真能摆进专用副基地 → 直接去那儿（让主基地干净） */
+    if(zoneB && x.sinks>0 && fits(zoneB) && x.est<=zoneB.usable-zoneB.used) return {b:zoneB, sink:true};
+    /* 主基地优先：真能摆下且有容量就放主基地 */
+    if(fits(mainB) && x.est<=mainB.usable-mainB.used) return {b:mainB, sink:false};
+    /* 溢到副基地（按可用格降序，第一个真能摆下且还有容量的；销毁专区副基地也是候选） */
     for(let i=0;i<subB.length;i++){ const b=subB[i];
-      if(x.est<=b.usable-b.used) return {b:b, sink:false}; }
+      if(fits(b) && x.est<=b.usable-b.used) return {b:b, sink:false}; }
     /* 销毁专区兜底：普通溢出都装不下，但专用副基地还有位置（对非 sink 目标也允许填） */
-    if(zoneB && x.est<=zoneB.usable-zoneB.used) return {b:zoneB, sink:false};
+    if(zoneB && fits(zoneB) && x.est<=zoneB.usable-zoneB.used) return {b:zoneB, sink:false};
     return null;
   };
   pool.forEach(x=>{
@@ -5632,10 +5723,15 @@ function RbaseBest(targets, regionName){
       pk.b.items.push({id:x.t.id, name:x.name, rate:x.t.rate, est:x.est, sinks:x.sinks});
       if(pk.sink) outs.sinkMoved.push({name:x.name, rate:x.t.rate, zone:pk.b.zoneName, sinks:x.sinks});
     }else{
-      const maxB=bases.slice().sort((a,b)=>b.usable-a.usable)[0];
+      /* 走到这里 = 单目标**真能摆下**（fitAny 已保证有基地 fit），但多目标叠加后容量账不够。
+         如实说明是「先分到的目标占满了」，而不是「摆不下」——两者解决方式不同。 */
+      const fitBases=bases.filter(b=>x.fit[b.levelId]).map(b=>b.zoneName+' '+b.side+'×'+b.side);
+      const full=bases.filter(b=>x.fit[b.levelId]).map(b=>
+        b.zoneName+'（已用 '+b.used+'/'+b.usable+'）').join('、');
       outs.unassigned.push({id:x.t.id, name:x.name, rate:x.t.rate,
-        why:'装不下：约 '+x.est+' 格 > 最大基地「'+maxB.zoneName+'」可用 '+maxB.usable+' 格',
-        kind:'capacity', est:x.est});
+        why:'排不下：真能摆下的基地是 '+fitBases.join('、')+'，但容量已被先分的目标占满（'
+          +full+'）—— 减少同时排的目标、或降低速率',
+        kind:'capacity', est:x.est, machines:x.machines});
     }
   });
   /* 账：溢出基地数 + 面积浪费（Σ used/usable） */
@@ -5689,8 +5785,10 @@ function RbaseBestHtml(rb){
   if(rb.unassigned.length)
     h+='<div class="c-sub" style="margin-top:2px"><span style="color:'+B+'">✗ 未分配（'+rb.unassigned.length+' 个）：'
       +esc(rb.unassigned.map(u=>u.name+'@'+u.rate+'（'+u.why+'）').join('；'))+'</span></div>';
-  h+='<div class="c-sub" style="margin-top:2px"><span class="c-id">判据：B1 地区可行 + B2 容量可行（Σ约格 ≤ 可用格）；'
-    +'优化逐层：溢出基地数最少 &gt; 面积浪费最少。面积是「机器格数×2.2」估算，落画布后以实际摆位为准。</span></div>';
+  h+='<div class="c-sub" style="margin-top:2px"><span class="c-id">判据：B1 地区可行 + B2 **按各基地真实尺寸试摆**（摆得下才算，v159 方案 B：'
+    +'旧版用「机器格数×2.2」估算，实测低估 2~2.5 倍，会误判「装得下」）；'
+    +'优化逐层：主基地优先 &gt; 溢出基地数最少 &gt; 面积浪费最少。'
+    +'报告里的「约 N 格」仍是估算值（仅供横向比较），权威判据是试摆结果。</span></div>';
   return h;
 }
 /* ⭐⭐ 第 2 期 Wave 2（2026-09-25）：把基地级分配结果**落到各基地画布**。
@@ -5721,14 +5819,38 @@ function LapplyAssign(rb){
     const items=a.items.slice();
     const main=items[0], rest=items.slice(1);
     const savedMt=L.mt;
-    L.mt=rest.map(x=>({id:x.id, rate:x.rate}));
+    /* ⭐v159 失败隔离：合图里只要有一个目标生成失败，**整包都不出**（博士实测「一堆产线出不来」）。
+       做法 = 失败时把目标逐个丢给 LawRun 试一遍，能出的留下（用 L.mt 重跑其余），
+       单独失败的记进 failed 并**带上完整原因**（含它自己的名字）。
+       ⚠️ 只在首轮失败时才走这条路（首轮成功就不多花时间）；多数情况首轮就成，开销为零。 */
+    const tryRun=(m, rs)=>{ L.mt=rs.map(x=>({id:x.id, rate:x.rate})); L.pick=null;
+      LawRun(m.id, m.rate);
+      return L.objs.filter(o=>o.planRole).length; };
+    let placed=0;
     try{
-      LawRun(main.id, main.rate);            /* 失败时 LawRun 自己写 L.msg 并 return（不抛） */
-      const placed=L.objs.filter(o=>o.planRole).length;
+      placed=tryRun(main, rest);
       if(placed>0) done.push({zone:a.zoneName, levelId:a.levelId, items:items.length, objs:placed});
-      else failed.push({zone:a.zoneName, why:L.msg||'没有生成任何机器'});
+      else{
+        /* 首轮失败 → 隔离：只留下真能生成的目标，其余逐个点名（附完整原因） */
+        const keep=[], bad=[];
+        for(let i=0;i<items.length;i++){
+          L.objs=L.objs.filter(o=>!o.planRole);   /* 清干净再试下一个 */
+          const n=tryRun(items[i], []);
+          if(n>0){ keep.push(items[i]); }
+          else{ bad.push({zone:a.zoneName, name:items[i].name||RwItemName(items[i].id),
+            rate:items[i].rate, why:L.msg||'没有生成任何机器'}); }
+        }
+        if(keep.length){
+          L.objs=L.objs.filter(o=>!o.planRole);
+          placed=tryRun(keep[0], keep.slice(1));
+          if(placed>0) done.push({zone:a.zoneName, levelId:a.levelId, items:keep.length, objs:placed});
+        }
+        bad.forEach(b=>failed.push(b));
+        if(!keep.length) failed.push({zone:a.zoneName, name:'（整个基地）',
+          why:(items.length>1?'这 '+items.length+' 个目标都没生成出来':'')||L.msg||'没有生成任何机器'});
+      }
     }catch(e){
-      failed.push({zone:a.zoneName, why:(e&&e.message)||'异常'});
+      failed.push({zone:a.zoneName, name:'（整个基地）', why:(e&&e.message)||'异常'});
     }
     L.mt=savedMt;
     L.pick=keepPick;
@@ -5737,12 +5859,36 @@ function LapplyAssign(rb){
        这样一次 Ctrl+Z 就能整体回到落画布前（与「整批是一次操作」的语义一致）。 */
   if(L.undo.length>undoMark) L.undo.length=undoMark;
   L.redo.length=0;
-  /* ④ 切回博士原来的基地（视线落点不变）；若原来没选基地则切回空 */
-  L.base=origBase;
+  /* ④ 视线落点：**有落点就切到第一个落点基地**（v159.1，博士 2026-09-25 选①）。
+     原来固定切回 origBase → 若落点不在原基地，博士点完「一键分配」看到的是**空画布**（件落到别的基地去了），
+     容易以为没生效。现在改成落点优先：done[0].levelId 就是「最该看的这片」。
+     全失败（done 为空）则切回原基地 —— 没什么可看的，别乱跳。
+     ⚠️ 这里直接写 L.base，**不能调 LbaseSet**（它会 Lpush() 多出一个撤销点，破坏「整批一次撤销」的语义）；
+        但收货方向的对齐逻辑要照抄一份（切基地后货要进这片基地所在地区的仓库才有用）。 */
+  L.base = done.length ? done[0].levelId : origBase;
+  if(done.length){
+    const r=Lbases().filter(x=>x.levelId===L.base)[0];
+    const toDom=Ldomains().filter(d=>d.name===(r&&r.domainName))[0];
+    if(toDom && L.shipTo!==toDom.id){
+      L.shipTo=toDom.id; L.shipPick='';
+      if(L.shipFrom===L.shipTo){
+        const other=Ldomains().filter(d=>d.id!==L.shipTo)[0];
+        if(other) L.shipFrom=other.id;
+      }
+    }
+  }
+  const viewZone = done.length
+    ? (Lbases().filter(x=>x.levelId===L.base)[0]||{}).zoneName||done[0].zone
+    : '';
   L.msg='基地级落画布：'+done.length+' 片基地完成'
     +(done.length?('（'+done.map(d=>d.zone+' '+d.items+' 目标 / '+d.objs+' 件').join('；')+'）'):'')
-    +(failed.length?('；⚠ '+failed.length+' 片失败：'+failed.map(f=>f.zone+'（'+f.why.slice(0,40)+'）').join('；')):'')
-    +' —— 用上方页签逐基地查看，画布只渲染当前这片；一次撤销可整批退回';
+    /* ⭐v159：失败原因**不截断**（v158 写 slice(0,40) → 博士只看到「失败」看不出为什么）；
+       每条都带目标名 + 完整原因，多个用「；」分隔。 */
+    +(failed.length?('；⚠ '+failed.length+' 个目标没生成出来：'
+      +failed.map(f=>f.zone+'·'+(f.name||'?')+'（'+f.why+'）').join('；')):'')
+    +(done.length
+      ?(' —— 已切到「'+viewZone+'」画布（首个落点）；其余基地用上方页签切换；一次撤销可整批退回')
+      :' —— 一次撤销可整批退回');
   render();
 }
 /* 「一键分配并落画布」入口：分配 + 立即落盘（博士 2026-09-25 选的完整版） */

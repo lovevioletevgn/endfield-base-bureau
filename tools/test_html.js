@@ -929,7 +929,7 @@ A.LapplyAssign(rbG);
 const gvMain = A.LO.bases['map01_lv001'] ? A.LO.bases['map01_lv001'].objs.filter(o => o.planRole).length : 0;
 chk('第2期 LapplyAssign：分配的目标落到主基地画布上（有排布器生成的件）',
     gvMain > 0, '谷地主 planRole 件数=' + gvMain);
-chk('第2期 LapplyAssign：落画布后 base 回到博士原落点（视线不变）',
+chk('第2期 LapplyAssign：落画布后视线落在**首个落点基地**（v159.1 起：原基地=落点则不变）',
     A.LO.base === 'map01_lv001', A.LO.base);
 chk('第2期 LapplyAssign：只动本地区，武陵基地一字不改', (() => {
   const wl = A.LO.bases['map02_lv002'];
@@ -940,6 +940,91 @@ A.Lundo();
 const gvAfterUndo = A.LO.bases['map01_lv001'] ? A.LO.bases['map01_lv001'].objs.filter(o => o.planRole).length : 0;
 chk('第2期 一次撤销可整批退回（落画布只占一个撤销点）',
     undoLenAfter >= 1 && gvAfterUndo === 0, '撤销后 planRole 件数=' + gvAfterUndo);
+
+/* ═══ v159（2026-09-25）判据同源 + 失败隔离 ═══
+   背景：博士实测「一堆产线自动生成不出来」。根因 = RbaseBest 只看容量不查台数上限，
+   到 LawRun 才被 RW_MAX_MACHINES 拒 → 报告说分好了、画布一件没有（假成功）。 */
+chk('v159 方案B 真试摆：大链试遍全地区基地都摆不下 → 如实报「装不下」并列出试过哪些基地', (() => {
+  /* 高容谷地电池 = 150 台，est 4290（旧判据会误判「装得进谷地主 4819」= 假成功），
+     真试摆后 4 个谷地基地全摆不下 → 必须 unassigned、kind=capacity、why 含「试摆了」 */
+  const all = A.RwTargets();
+  const big = all.filter(x => x.name.indexOf('高容谷地电池') >= 0)[0];
+  if (!big) return false;
+  const rb = A.RbaseBest([{ id: big.id, name: big.name, rate: 10 }], '四号谷地');
+  const assigned = rb.assign.some(a => a.items.some(it => it.id === big.id));
+  const u = rb.unassigned[0];
+  return !assigned && !!u && u.kind === 'capacity' && u.why.indexOf('试摆了') >= 0;
+})());
+chk('v159 方案B 真试摆：中小链（真能摆下）照常分配成功', (() => {
+  /* 柑实罐头 45 台 = 真能摆进谷地主 → 必须分配成功（证明真判据没有过度拦截） */
+  const all = A.RwTargets();
+  const ok = all.filter(x => x.name === '柑实罐头')[0];
+  if (!ok) return false;
+  const rb = A.RbaseBest([{ id: ok.id, name: ok.name, rate: 10 }], '四号谷地');
+  return rb.assign.some(a => a.items.some(it => it.id === ok.id));
+})());
+chk('v159 方案B：RfitSide 存在且被 RbaseBest 调用（源码级）',
+    /function RfitSide\(/.test(rawCode) && /RfitSide\(x\.t\.id/.test(rawCode));
+chk('v159 机器上限已提到 180（原 60；实测 174 台为「本该能生成」的理论天花板）',
+    A.RW_MAX_MACHINES === 180, String(A.RW_MAX_MACHINES));
+chk('v159 判据同源：RbaseBest 与 LawRun 读同一个 RW_MAX_MACHINES 常量', (() => {
+  /* 源码级锁：常量定义存在，且被多处引用（LawRun 生成闸 + RbaseBest 装箱判 + RfitSide） */
+  return /const RW_MAX_MACHINES=180;/.test(rawCode)
+    && (rawCode.match(/RW_MAX_MACHINES/g) || []).length >= 4;
+})());
+chk('v159 台数闸门：超 180 台的目标进 unassigned（kind=machines）且报可降到的速率', (() => {
+  /* 用 174 台验证「不超限」这条路已通（真试摆决定成败）；
+     超 180 的构造用例不存在于数据里，故改为**源码级**验证 machines 分支存在 + 文案含降速建议 */
+  return /kind:'machines'/.test(rawCode) && /把速率调小到约/.test(rawCode);
+})());
+chk('v159 真试摆优先于台数：大链符合「试摆不过 → capacity」而不是被台数误拦', (() => {
+  /* 中容武陵电池@谷地：174 台（≤180 不超台数）但 4 个谷地基地都摆不下 → 必须报 capacity */
+  const all = A.RwTargets();
+  const big = all.filter(x => x.name.indexOf('中容武陵电池') >= 0)[0];
+  if (!big) return false;
+  const rb = A.RbaseBest([{ id: big.id, name: big.name, rate: 10 }], '四号谷地');
+  const u = rb.unassigned[0];
+  return !!u && u.kind === 'capacity' && u.why.indexOf('装不下') >= 0;
+})());
+chk('v159 失败信息不截断（源码级：不得再出现 why.slice(0,40)）',
+    rawCode.indexOf('f.why.slice(0,40)') < 0);
+chk('v159 LapplyAssign 失败隔离：含「逐个试、能出的先出」的错误回收段（源码级）', (() => {
+  const i = rawCode.indexOf('function LapplyAssign');
+  if (i < 0) return false;
+  const seg = rawCode.slice(i, i + 4200);
+  return seg.indexOf('失败隔离') >= 0 && seg.indexOf('bad.push') >= 0
+    && seg.indexOf('keep.length') >= 0;
+})());
+chk('v159 RbaseBestHtml 报告含「超机器上限」文案（未分配原因可读）',
+    /超机器上限/.test(rawCode));
+
+/* v159.1（2026-09-25 博士选①）：落画布后视线**切到首个落点基地**。
+   原行为是固定切回博士原来的基地 → 落点不在原基地时看到空画布（以为没生效）。 */
+chk('v159.1 落点≠原基地：落画布后自动切到首个落点基地（不再停在原基地）', (() => {
+  /* 原基地设成武陵城（武陵），但目标只在谷地产 → 落点必在谷地 → 分配后 base 应变成谷地主 */
+  A.LbaseSet('map02_lv002'); A.LO.objs = [];
+  A.LO.tgt = 'item_filter_core'; A.LO.rate = 10; A.LO.mt = [];
+  A.render();
+  const rb = A.RbaseBest(A.RxlTargets(), '四号谷地');
+  if (!rb.assign.some(a => a.items.length)) return false;   /* 前置：谷地确实分得下 */
+  const first = rb.assign.filter(a => a.items.length)[0].levelId;
+  A.LapplyAssign(rb);
+  return A.LO.base === first && A.LO.base !== 'map02_lv002';
+})());
+chk('v159.1 全失败时切回原基地（done 为空不乱跳）', (() => {
+  /* 大链谷地摆不下 → assign 无 items → LapplyAssign 直接 return（不改 base） */
+  A.LbaseSet('map02_lv002');
+  const all = A.RwTargets();
+  const big = all.filter(x => x.name.indexOf('中容武陵电池') >= 0)[0];
+  if (!big) return false;
+  const rb = A.RbaseBest([{ id: big.id, name: big.name, rate: 10 }], '四号谷地');
+  if (rb.assign.some(a => a.items.length)) return false;    /* 前置：确实没落点 */
+  A.LapplyAssign(rb);
+  return A.LO.base === 'map02_lv002';
+})());
+chk('v159.1 源码级：落点优先（done.length ? done[0].levelId : origBase）',
+    /L\.base\s*=\s*done\.length\s*\?\s*done\[0\]\.levelId\s*:\s*origBase/.test(rawCode));
+
 // 反向锁：不得把 sinkPlan 相关的重活塞进 RbaseBest（谷地不查 sink → 不该调 Rexplode）
 chk('第2期 反向：谷地分配不查 sink（RW_SINK_ZONE_REGIONS 不含四号谷地）',
     html.indexOf("RW_SINK_ZONE_REGIONS=['武陵']") >= 0);
