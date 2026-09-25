@@ -48,6 +48,84 @@ def strip_injections(s):
     return s
 
 
+# ⭐2026-09-25（v162 克隆旁路补强）：按元素顺序把 donor 的平台注入贴回 content。
+#   为什么需要：merge 原策略是「base 出骨架、new 出内容」，前提是 body 骨架两边一样。
+#   但线上那份可能是**克隆出来的旧快照**（页面名/标题停在旧版本），骨架文字与 new 不同 →
+#   原策略会把旧文字保留下来（本次实测：线上 title/h1 还是「知识库」，而 new 已是「规划局」）。
+#   正解 = **内容全用 new，只从 base 借注入**：注入是按元素分配的稳定 ID（评论定位用），
+#   元素结构两边一致时可按下标一一贴回。
+def reattach_injections(content, donor):
+    """把 donor 的注入（data-page-node-id / data-pnid-children / <!--pnid--> / inject.js）贴到 content。
+
+    · 标签属性注入：按「带注入标签的出现顺序」与 content 中「标签出现顺序」一一对应贴上。
+      两边标签数必须相等，否则 raise（宁可炸，不静默贴错）。
+    · inject.js：content 的 <head> 里补一行（donor 有才补）。
+    · <!--pnid:xxx--> 注释：贴在 donor 中对应元素内容的开头。
+    """
+    TAG_RE = re.compile(r"<([a-zA-Z][a-zA-Z0-9]*)\b([^>]*)>")
+
+    def attrs_of(attr_str):
+        out = {}
+        for key in ("data-page-node-id", "data-pnid-children"):
+            m = re.search(r'\s%s="([^"]*)"' % key, attr_str)
+            if m:
+                out[key] = m.group(1)
+        return out
+
+    # inject.js 的 <script> 单独处理（末尾补回）→ 比对前先从 donor 里剔除，避免标签数不等
+    donor_cmp = re.sub(r'<script[^>]*src="/page/page_comm/inject\.js"[^>]*>\s*</script>\s*', "", donor)
+    donor_all = list(TAG_RE.finditer(donor_cmp))
+    content_all = list(TAG_RE.finditer(content))
+
+    # 按「标签名序列」对齐：donor 里第 k 个 <div> 对应 content 里第 k 个 <div>。
+    # 这样两边共有的元素按下标配对；donor 里带注入的标签必然是 content 里也有的同名元素。
+    def name_seq(ms):
+        return [m.group(1).lower() for m in ms]
+    dn, cn = name_seq(donor_all), name_seq(content_all)
+    if dn != cn:
+        # 名字序列必须完全一致 —— 这是「结构相同」的强判据
+        import difflib
+        d = list(difflib.unified_diff(dn, cn, "donor_tags", "content_tags", n=0, lineterm=""))[:30]
+        raise AssertionError(
+            "注入贴回失败：标签名序列不一致（donor %d 个 / content %d 个）—— 元素结构变了，别硬贴\n  %s"
+            % (len(dn), len(cn), "\n  ".join(d)))
+
+    # 从后往前替换，避免下标位移
+    out = content
+    pairs = [(content_all[i], attrs_of(donor_all[i].group(2)))
+             for i in range(len(donor_all))]
+    pairs = [(m, a) for m, a in pairs if a]
+    for m, a in reversed(pairs):
+        add = "".join(' %s="%s"' % (k, v) for k, v in a.items())
+        i = m.end() - 1                       # '>' 的位置
+        out = out[:i] + add + out[i:]
+
+    # <!--pnid:xxx--> 注释：donor 里它贴在某个标签的**内容开头**，
+    # 这里按「该标签在标签序列里的下标」映射到 content 同下标标签的内容开头。
+    note_at = {}                       # 标签下标 -> pnid 值
+    for i, m in enumerate(donor_all):
+        tail = donor_cmp[m.end(): m.end() + 80]
+        nm = re.match(r"<!--pnid:([^>]*)-->", tail)
+        if nm:
+            note_at[i] = nm.group(1)
+    if note_at:
+        out_tags = list(TAG_RE.finditer(out))
+        # 从后往前插，避免位移
+        for i in sorted(note_at, reverse=True):
+            if i < len(out_tags):
+                j = out_tags[i].end()
+                out = out[:j] + "<!--pnid:%s-->" % note_at[i] + out[j:]
+
+    # inject.js：content 的 <head> 后补（连它自己的平台注入一起搬，否则会少 1 个锚点）
+    if 'page_comm/inject.js' in donor and 'page_comm/inject.js' not in out:
+        dm = re.search(r'<script([^>]*src="/page/page_comm/inject\.js"[^>]*)>\s*</script>', donor)
+        m = re.search(r"<head\b[^>]*>", out)
+        if dm and m:
+            i = m.end()
+            out = out[:i] + "\n<script%s></script>" % dm.group(1) + out[i:]
+    return out
+
+
 def split_parts(s, label):
     """按 5 段切开。分段的锚点必须整份文件唯一，这里都做了断言。"""
     m = re.search(r"<style[^>]*>", s)
@@ -79,6 +157,10 @@ def main():
     ap.add_argument("--out", default="merged.html")
     ap.add_argument("--mid-from", choices=["base", "new"], default="base",
                     help="③ 段用哪边（默认 base；数据包有变动时用 new）")
+    ap.add_argument("--allow-skeleton-diff", action="store_true",
+                    help="线上快照与本地新产物的**文字**不同（如页面改名）时启用："
+                         "改为「内容全用 new（含新标题/新数据包），平台注入从 base 按元素下标贴回」。"
+                         "默认关闭 —— 关闭时骨架不一致会直接拒绝（防结构漂移）。")
     args = ap.parse_args()
 
     base = open(args.base, encoding="utf-8").read()
@@ -106,8 +188,16 @@ def main():
         mid = B["mid"]
         if not mid_same:
             print("  ⚠️ 你选了 --mid-from base，但中段不一致 —— 线上仍会用旧数据包。")
+    elif args.allow_skeleton_diff:
+        # ⭐2026-09-25（v162 克隆旁路）：**内容全用 new，只从 base 借注入**。
+        #   适用场景：线上那份是**克隆出的旧快照**，页面标题/名称停在旧版本，
+        #   骨架文字与 new 不同（实测：线上 title/h1 还是「知识库」，new 已是「规划局」）。
+        #   老策略「base 出骨架」会把旧文字带回线上 → 等于改名白做。
+        #   做法：把 N["mid"] 原样拿来，把 base 的元素级注入按下标贴回。
+        mid = reattach_injections(N["mid"], B["mid"])
+        print("  ③ 段：内容用 new（含新数据包），base 的平台注入按元素下标贴回")
     else:
-        # ⚠️ 细粒度合并：③ 段里「body 骨架 + 平台注入」沿用 base，**只把内联数据包换成 new 的**。
+        # 细粒度合并：③ 段里「body 骨架 + 平台注入」沿用 base，**只把内联数据包换成 new 的**。
         # 整段用 N["mid"] 会把 body 上那批 data-page-node-id 和 pnid 注释一起抹掉 ——
         # 平台锚点没了，页面评论的定位就废了（2026-09-21 踩过一次：注入从 24 掉到 7）。
         def _split_db(m):
@@ -119,11 +209,19 @@ def main():
         hn, db_n, tn = _split_db(N["mid"])
         assert tb == tn, "mid 段的 DB 之后结构不一致，细粒度合并要重看"
         assert strip_injections(hb) == hn, \
-            "mid 段的 body 骨架除注入外也有差异 —— 说明页面结构变了，需要人工合并"
+            "mid 段的 body 骨架除注入外也有差异 —— 说明页面结构变了，需要人工合并" \
+            "（若是线上快照文字过旧，加 --allow-skeleton-diff 走「new 出内容 + 注入贴回」）"
         mid = hb + db_n + tb
         print("  ③ 段细粒度合并：body 骨架 / 平台注入用 base，内联数据包用 new")
 
-    merged = B["styleOpen"] + N["css"] + mid + N["js"] + B["tail"]
+    # 前缀段同理：--allow-skeleton-diff 时用 new 的前缀（新标题），注入贴回
+    if args.allow_skeleton_diff:
+        styleOpen = reattach_injections(N["styleOpen"], B["styleOpen"])
+        print("  ① 段：前缀用 new（含新 <title>），base 注入贴回")
+    else:
+        styleOpen = B["styleOpen"]
+
+    merged = styleOpen + N["css"] + mid + N["js"] + B["tail"]
 
     # ---- 硬校验：剥注入后必须与新产物逐字节相等 ----
     got = strip_injections(merged)
