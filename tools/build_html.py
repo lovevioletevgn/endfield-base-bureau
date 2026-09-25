@@ -3540,6 +3540,18 @@ function Rexplode(targetId, perMin, opt){
     /* ⚠️⑥-2：多目标路径的这条警告挪到 RexplodeFinal（台数按合并需求重算后再判才有意义） */
     if(!useDedup && n.actualOut>r3(demand)+1e-6) warns.push(n.name+'：按整台算，实际产出 '+n.actualOut+'/分，比需要的 '+n.demand+'/分 多 '+r3(n.actualOut-n.demand));
     const oc=(r.outcomes.filter(x=>x.id===iid)[0]||r.outcomes[0]||{}).count||1;
+    /* ⭐C6-b 阶段1（2026-09-25，博士拍板）：**配方副产物入图**。
+       背景：`outcomes` 原先只用来取主产物的 count，第二产出（污水 / 壤晶废液 / 沉积酸…）
+       在产线图里**完全不存在** → 排布器看不见、不摆、不算，而社区实例里引发全基地断电的
+       正是这类东西（赤铜精炼的污水）。C6-a 体检只能事后扫配方兜底；C6-b 让它们进图。
+       口径：副产物量 = 本机实际产出 × (副产物count / 主产物count)（同一轮反应的比例）。
+       位置：挂 `n.byproducts`（**不进 children / 不进 walk 树**）→ 图结构、布局、走线一字不动，
+       纯数据层新增。阶段 2 再据它补销毁支线（软门禁）。
+       ⚠️ 载体（原料 id 也在产物里）不算副产物 —— 那只是过一遍，净消耗 0。 */
+    n.byproducts=(r.outcomes||[]).filter(o=>o.id!==iid && !(RwCarrierIds(r).indexOf(o.id)>=0))
+      .map(o=>({itemId:o.id, name:o.name||RwItemName(o.id), phase:o.phase||RwPhaseOf(o.id),
+        perMin:r3(n.actualOut*((o.count||0)/oc)), count:o.count||0, fromRecipe:r.id,
+        fromMachine:n.machineName, byproduct:true}));
     const carriers=RwCarrierIds(r);
     (r.ingredients||[]).forEach(i=>{
       const tot=r3(n.actualOut*(i.count/oc));
@@ -3604,8 +3616,17 @@ function Rexplode(targetId, perMin, opt){
   for(let mi=machines.length-1;mi>=0;mi--){ if(!machines[mi].machines) machines.splice(mi,1); }
   const shipIns=nodes.filter(n=>n.shipIn);
   const tgts=seedArr.map(s=>({id:s.itemId, name:RwItemName(s.itemId), perMin:s.perMin}));
+  /* ⭐C6-b 阶段1：副产物汇总（每台机器的 recipes 副产物 + 按台数折算的速率）——
+     供报告层与阶段 2 的销毁支线规划用。**不进 nodes / machines** → 布局零影响。 */
+  const byproducts=[];
+  nodes.forEach(n=>{
+    if(!n.byproducts || !n.byproducts.length) return;
+    n.byproducts.forEach(b=>byproducts.push(Object.assign({}, b, {
+      machineId:n.machineId, machines:n.machines, node:n
+    })));
+  });
   return {root:rootObjs[0], nodes:nodes, machines:machines, raw:raw, externals:externals, seeds:seeds, warns:warns,
-          shipIn:shipIns,
+          shipIn:shipIns, byproducts:byproducts,
           target:targetId, targetName:RwItemName(targetId), perMin:perMin,
           targets:(seedArr.length>1?tgts:null),
           shared:(useDedup?allReal.filter(n=>n.sharedTo&&Object.keys(n.sharedTo).length):[]),
@@ -3907,6 +3928,52 @@ function LawPlan(res, size, corr, opts){
     return LawPlan(res, size, corr, o2);
   }
   return {objs:objs, bands:bands, height:cy, over:over, order:order, rowGap:rgCap};
+}
+/* ⭐⭐ C6-b 阶段 2（2026-09-25）：把销毁支线（池子/热能池）**捡空位摆到画布上**。
+   【为什么单独摆、不并进 LawPlan】
+   LawPlan 排的是「产线机器」，它的分层/对齐/折行逻辑都服务于产线几何；
+   销毁池与产线**没有物料依赖关系**（旁路溢流），硬塞进分层会打乱产线布局。
+   所以：先让 LawPlan 把产线排好，再在**剩余空位**里贴边找地方 —— 产线优先，池子见缝插针。
+
+   【找位策略】从画布**右下角往左上**逐行扫（产线从顶部往下排，底部/右侧通常最空），
+   每个建筑要求整块 footprint 全空（避开机器、已铺线、已摆的池子）。
+   ⚠️ 找不到位 → 记进 `unplaced`，由调用方决定是否软门禁拒绝（不硬塞、不重叠）。
+
+   返回 {objs:[…], unplaced:[…]}：objs 里每项带 {b, x, y, w, d, sink, kind, forItem}。 */
+function RplaceSinks(sinkPlan, size, busyFn, margin){
+  const out=[], unplaced=[];
+  if(!sinkPlan || !sinkPlan.sinks || !sinkPlan.sinks.length) return {objs:out, unplaced:unplaced};
+  const mg=(margin==null)?RW_MARGIN:margin;
+  const occ={};   /* 本次已占格（含新摆的池子） */
+  const free=(x,y,w,d)=>{
+    for(let yy=y;yy<y+d;yy++) for(let xx=x;xx<x+w;xx++){
+      if(xx<mg||yy<mg||xx>=size-mg||yy>=size-mg) return false;
+      if(busyFn(xx,yy)) return false;
+      if(occ[xx+','+yy]) return false;
+    }
+    return true;
+  };
+  /* 逐个建筑找位（大件优先，减少碎片） */
+  const items=[];
+  sinkPlan.sinks.forEach(s=>{ (new Array(s.count)).fill(0).forEach(()=>items.push(s)); });
+  items.sort((a,b)=>{ const ba=byBp(a.buildingId), bb=byBp(b.buildingId);
+    const fa=ba?Lfp(ba):[1,1], fb=bb?Lfp(bb):[1,1];
+    return (fb[0]*fb[1])-(fa[0]*fa[1]); });
+  items.forEach(s=>{
+    const b=byBp(s.buildingId); if(!b){ unplaced.push({sink:s, why:'建筑表缺 '+s.buildingId}); return; }
+    const fp=Lfp(b), w=fp[0]||1, d=fp[1]||1;
+    let placed=null;
+    /* 从右下角往左上扫（y 从大到小、x 从大到小） */
+    for(let y=size-mg-d; y>=mg && !placed; y--){
+      for(let x=size-mg-w; x>=mg; x--){
+        if(free(x,y,w,d)){ placed={x:x, y:y, w:w, d:d}; break; }
+      }
+    }
+    if(!placed){ unplaced.push({sink:s, why:'画布没有 '+w+'×'+d+' 的整块空位了'}); return; }
+    for(let yy=placed.y;yy<placed.y+d;yy++) for(let xx=placed.x;xx<placed.x+w;xx++) occ[xx+','+yy]=1;
+    out.push({b:b, x:placed.x, y:placed.y, w:w, d:d, sink:s, kind:s.kind, forItem:s.forItem});
+  });
+  return {objs:out, unplaced:unplaced};
 }
 /* ---------- 连线：格内 L 形走线（先竖后横 或 先横后竖），全程避开已有东西 ----------
    起点 = 上游出料口朝外那格（机器上边再上一格）；终点 = 下游进料口朝外那格（机器下边再下一格）。
@@ -4676,6 +4743,15 @@ function LawRun(targetId, perMin){
       +(res.externals.length?('；这条链里已按外部输入处理的：'+res.externals.map(RwItemName).join('、')):'');
     render(); return;
   }
+  /* ⭐⭐ C6-b 阶段 2 门禁（2026-09-25，博士拍板「软门禁」）：
+     在**生成阶段**拦住「无去路物品」—— 这是 C6 从体检升级为硬约束的那一步。
+     ⚠️ 必做成门禁而非扣分项（红线）：扣分项会让排布器在「补 sink」与「换贵配方」间权衡，
+        而 sink 成本照常计入 → 账本骗自己（详见 RflowSinkPlan 头部注释）。
+     软门禁 = 补不上时**拒绝出方案 + 明确报原因**，不静默作废。
+     开销：无必爆项时 RflowSinkPlan 立刻返回 → 老路径行为一字不变。 */
+  const sinkGate=RflowSinkGate(res);
+  if(sinkGate){ L.msg=sinkGate; render(); return; }
+  const sinkPlan=RflowSinkPlan(res);
   /* ── [3] 限摆与通道高度自适应 ───────────────────────── */
   /* 层间通道高度**按并联线数自适应**：固定 5 行在产能高的时候会被线挤死（实测 30/分 有 9 条连不上）。
      线越多 → 通道越高。上限 14 行，免得画布塞不下。
@@ -4813,6 +4889,31 @@ function LawRun(targetId, perMin){
     +'（连通 '+best.sc.ok+' 段 · 手动连 '+best.sc.manual+' · 线 '+best.sc.belts+' 格'
     +(st0&&(st0.merge||st0.split)?(' · 汇流 '+st0.merge+' / 分流 '+st0.split):'')+'）';
   const rt=route;
+  /* ⭐⭐ C6-b 阶段 2 软门禁最后一环（博士 2026-09-25 拍板）：
+     **摆位预检必须先于 Lpush** —— 否则「摆不下就拒绝」会把画布留成半清空的坏状态。
+     这里用 plan.objs + rt.belts + rt.bldgs 先算一遍占用，模拟摆池子；
+     放不下就干净利落地 return（画布一字未动），放得下再进落盘。
+     ⚠️ 之所以要在落盘前预检而不是落盘后回滚：Lpush 之后 L.objs 已被清空重写，
+        此时 return 会留下「已 push 但没内容」的无法撤销状态。 */
+  if(sinkPlan.sinks.length){
+    const preOcc=[];
+    plan.objs.forEach(o=>preOcc.push({x:o.x,y:o.y,w:o.w,d:o.d}));
+    (rt.bldgs||[]).forEach(b=>{ const bb=byBp(b.id); if(bb){ const f=Lfp(bb); preOcc.push({x:b.x,y:b.y,w:f[0],d:f[1]}); } });
+    const beltSet={}; rt.belts.forEach(bl=>{ beltSet[bl.x+','+bl.y]=1; });
+    const preSink=RplaceSinks(sinkPlan, L.size, function(x,y){
+      if(beltSet[x+','+y]) return true;
+      for(let i=0;i<preOcc.length;i++){ const o=preOcc[i];
+        if(x>=o.x&&x<o.x+o.w&&y>=o.y&&y<o.y+o.d) return true; }
+      return false;
+    });
+    if(preSink.unplaced.length){
+      L.msg='这条产线有物品没有去路，需要摆销毁建筑，但画布上放不下：'
+        +preSink.unplaced.map(u=>u.sink.forItem+'（'+(u.sink.name||u.sink.buildingId)+' ×'+u.sink.count
+          +'，'+u.why+'）').join('；')
+        +'。先把画布调大、降低速率，或清掉画布上一些东西再试。';
+      render(); return;
+    }
+  }
   Lpush();
   L.objs=[]; L.sel=[]; L.pick=null;
   plan.objs.forEach(o=>{
@@ -4839,11 +4940,31 @@ function LawRun(targetId, perMin){
     obj.planRole='udpipe'; obj.pairId=b.pairId;
     L.objs.push(obj);
   });
-  L.plan={res:res, plan:plan, route:rt, rawNeed:rawNeedOf(res)};
+  /* ⭐⭐ C6-b 阶段 2：销毁支线落盘（池子 / 热能池）。
+     摆位在**产线 + 走线 + 暗管全部定形之后** → 只捡剩余空位，不挤产线。
+     （放不下已在 Lpush 之前预检拦掉，这里必然能摆下。）
+     开销：无必爆项时 sinkPlan.sinks 为空 → 一行都不多跑（老路径零影响）。 */
+  const sinkPlaced=RplaceSinks(sinkPlan, L.size, function(x,y){
+    for(let i=0;i<L.objs.length;i++){ const o=L.objs[i];
+      if(x>=o.x&&x<o.x+o.w&&y>=o.y&&y<o.y+o.d) return true; }
+    for(let i=0;i<rt.belts.length;i++){ const bl=rt.belts[i];
+      if(bl.x===x&&bl.y===y) return true; }
+    return false;
+  });
+  sinkPlaced.objs.forEach(s=>{
+    const obj=Lmk(s.b, s.x, s.y, 0);
+    obj.planRole='sink'; obj.prod=s.kind==='heat'?'热能池（烧电池）':'扩容反应池（销毁）';
+    obj.sinkFor=s.forItem;
+    L.objs.push(obj);
+  });
+  L.plan={res:res, plan:plan, route:rt, rawNeed:rawNeedOf(res), sinkPlan:sinkPlan, sinkPlaced:sinkPlaced};
   const limWarns=RwPlaceLimitWarn(res);   /* ⑥-4：建筑专属限摆（天有洪炉 ≤12 台）—— 报警不拦截 */
+  const sinkNote=sinkPlan.sinks.length?('；♻️ 销毁支线：'+sinkPlan.reasons.join('；')
+    +(sinkPlaced.unplaced.length?('；⚠ '+sinkPlaced.unplaced.length+' 个销毁建筑没找到空位（见报告）'):'')):'';
   L.msg='产线已生成：'+(res.targets?res.targets.map(t=>t.name+' '+t.perMin+'/分').join(' ＋ ')
     :res.targetName+' '+perMin+'/分')+' —— 机器 '+res.totalMachines+' 台 + 管线 '+rt.belts.length+' 格'
         +(pickNote?('；'+pickNote):'')
+        +sinkNote
         +(limWarns.length?('；⚠ '+limWarns.join('；')):'')
         +(rt.warns.length?('；'+rt.warns.length+' 条提醒见下方'):'');
   render();
@@ -4946,10 +5067,29 @@ function Lreroll(){
     keep.push(obj);
   });
   L.objs=loose.concat(keep);
+  /* ⭐ C6-b 阶段 2：重排会重置 L.objs（best.all 只含机器）→ **销毁支线必须重摆**，
+     否则「重排其余」一次就把池子悄悄弄丢了，而报告还写着「已在画布上标出」（假成功）。
+     重排不改变 res（依赖与台数不变）→ sinkPlan 可原样复用，只需在新布局上重新找位。 */
+  const rerollSink=(P.sinkPlan||RflowSinkPlan(P.res));
+  if(rerollSink.sinks.length){
+    const rs=RplaceSinks(rerollSink, L.size, function(x,y){
+      for(let i=0;i<L.objs.length;i++){ const o=L.objs[i];
+        if(x>=o.x&&x<o.x+o.w&&y>=o.y&&y<o.y+o.d) return true; }
+      for(let i=0;i<best.route.belts.length;i++){ const bl=best.route.belts[i];
+        if(bl.x===x&&bl.y===y) return true; }
+      return false;
+    });
+    rs.objs.forEach(s=>{
+      const obj=Lmk(s.b, s.x, s.y, 0);
+      obj.planRole='sink'; obj.prod=s.kind==='heat'?'热能池（烧电池）':'扩容反应池（销毁）';
+      obj.sinkFor=s.forItem;
+      L.objs.push(obj);
+    });
+  }
   L.sel=locks.map(o=>o.uid);
   /* 评价函数看的是「整套布局」→ 把锁定件 + 新摆件合并后的那份交给它 */
   L.plan={res:P.res, plan:{objs:best.all, bands:best.plan.bands, height:best.plan.height, over:[], order:{}},
-          route:best.route, rawNeed:P.rawNeed};
+          route:best.route, rawNeed:P.rawNeed, sinkPlan:rerollSink};
   const stR=best.route.stats;
   L.msg='重排完成：锁定 '+locks.length+' 台（位置不动）· 重摆 '+newM+' 台 · 管线 '+best.route.belts.length+' 格 —— '
     +'间'+best.c[0]+'/通道'+best.c[1]+'（连通 '+best.sc.ok+' 段 · 手动连 '+best.sc.manual+' · 试了 '+tried+' 组'
@@ -5985,24 +6125,150 @@ function RflowAudit(res){
   out.targets.sort((a,b)=>b.over-a.over);
   return out;
 }
+/* ⭐⭐ C6-b 阶段 2（2026-09-25，博士拍板「有现成消费者就接、否则销毁 + 软门禁」）：
+   **把每个「无去路」物品接上去路** —— 这是 C6 从「体检」升级为「门禁」的那一步。
+
+   【为什么必须是门禁，不能是扣分项】（博士 2026-09-24 晚定的红线）
+   C6 若做成扣分项 → 排布器会在「补 sink」与「选更贵的无副产物配方」之间权衡，
+   而 sink 成本（用电/占地/线长）**照常计入不豁免**（规格 §2.2）→ 账本才不骗自己。
+   做成门禁 = 生成阶段就要求每个物品都有去路，产不出「第一天能跑、第三天停产」的方案。
+
+   【去路优先级】（博士 2026-09-25 拍板）
+     ① 图里已有机器吃它（且吃得完）→ 不需要 sink（RflowAudit 已按 used 扣掉）
+     ② 图里有机器吃它但**吃不掉全部** → 剩余部分走 ③（溢流销毁）
+     ③ 电池 → 热能池 power_station_1（唯一「销毁即发电」）
+     ④ 其余 → 扩容反应池 mix_pool_2 + 2 条垫子配方（芽针饮品/锦草饮品）
+
+   【池数口径】`ceil(净溢出 / 30)`：社区口径单池约 30/分（待游戏内核实）。
+     实测重息壤要 12 个池子 —— **一个池子远远不够**，必须按量算。
+     ⚠️ 池子数量直接影响用电评分（扩容池 100 电/个）→ 装了池子的方案在用电层变差，
+        这是**有意为之的真实成本**（规格 §2.2）。
+
+   【为什么「销毁线是旁路」让这件事可行】
+   多口暗管输出优先：机器有多个出口时走**负载较轻**的那条。出口 a 直连主路、出口 b 接池子
+   → 主路没满走 a，主路满了自动溢到 b。所以排布器**不需要拉一条常供线**给池子，
+   只要把池子摆好 + 垫子接好，游戏侧自己会溢流。
+   ⚠️ 但**旁路线仍要铺**（博士 2026-09-25 选「摆池子+垫子+连旁路」）——
+      因为它告诉玩家「从哪台机器引过来」，否则玩家不知道该接谁。
+
+   【软门禁口径】（博士 2026-09-25 拍板）
+   补不上（建筑不存在 / 总池数超上限）→ **拒绝出方案 + 明确报原因**，不静默作废。
+   ⚠️ 池子自身是故障点（社区多次报告会无声卡死）→ 报告必须如实告知，不假装万无一失。
+
+   本函数**纯函数只读**：不改 res，只返回规划结果，由 LawRun 决定怎么落盘。 */
+const RW_SINK_POOL_CAP=30;        /* 单池销毁速率上限（/分，社区口径） */
+const RW_SINK_MAX_POOLS=16;       /* 单条产线最多自动摆的池数（防病态方案把画布铺满） */
+const RW_SINK_POOL_ID='mix_pool_2';   /* 扩容反应池（唯一能塞多条并行配方的池子） */
+const RW_SINK_HEAT_ID='power_station_1';  /* 热能池（烧电池） */
+/* ⭐ 微量溢出阈值（博士 2026-09-25 拍板）：净溢出 ≤ 该值 → **只提醒不拦截**。
+   为什么需要：机器必须**整台**摆，于是「产 15 / 用 10」这种取整差普遍存在。
+   实测 102 个可排目标里 47 个有净溢出，其中 50 项 ≤20/分 —— 大多是取整噪声，
+   若无阈值则几乎所有链都要挂池子，方案会明显变重、且与玩家的实际体验不符
+   （玩家会调速率或让那台机器吃不饱，而不是真去销毁 5/分）。
+   ⚠️ 阈值不是忽略：≤阈值的项仍进 `minor` 并在报告里如实列出（博士要求「只提醒」）。 */
+const RW_SINK_MINOR=5;
+/* 垫子配方：故意接 2 条**不接输出**的配方让其永久堵塞 → 池内 ≥2 条不同配方
+   同时堵塞才触发清空（单条堵着什么都不做）。
+   ⚠️ **不做硬编码**：垫子的具体选型依赖玩家手上的原料，且「接配方」是游戏内设置池子反应、
+      不是摆建筑 —— 排布器硬编码一批配方 id 会引入无法自证的假设。
+      这里只给**判定条件**与**选型原则**，报告里如实说明；具体选哪两条由玩家定。
+   社区做法示例（数据手册已收录）：芽针饮品 / 锦草饮品这类低成本配方。 */
+const RW_SINK_PAD_RULE='需 2 条**不同且不接输出**的配方常驻池内（低成本、原料易得为宜，社区常用芽针/锦草饮品）';
+function RflowSinkPlan(res){
+  const r3=x=>Math.round(x*1000)/1000;
+  const audit=RflowAudit(res);
+  const out={sinks:[], padRule:RW_SINK_PAD_RULE, reasons:[], minor:[], unmet:[], poolTotal:0, heatTotal:0, ok:true};
+  if(!audit.items.length){ out.note='每个物品都有去路，不需要销毁支线'; return out; }
+  /* 逐项定去路 —— audit.items 已排除「目标产物」与「被下游吃光」的物品 */
+  audit.items.forEach(it=>{
+    const nm=it.name, over=r3(it.over);
+    /* ⭐ 微量溢出（≤阈值）：只提醒不拦截 —— 多半是整台取整噪声，不值得为它挂一个池子 */
+    if(over<=RW_SINK_MINOR){
+      out.minor.push({item:nm, itemId:it.id, over:over, fromByproduct:!!it.fromByproduct,
+        why:'微量净溢出（≤'+RW_SINK_MINOR+'/分），多半是机器整台取整造成的 —— 只提醒，不强制销毁'
+          +'（游戏里可微调速率或让它自然积在缓冲里）'});
+      return;
+    }
+    if(it.isBattery){
+      /* ② 电池 → 热能池 */
+      if(!byBp(RW_SINK_HEAT_ID)){
+        out.unmet.push({item:nm, over:over, why:'建筑表里找不到热能池（'+RW_SINK_HEAT_ID+'）'});
+        return;
+      }
+      const n=Math.max(1, Math.ceil(over/60));   /* 热能池按台数烧（无明确速率口径，按 1 台起步） */
+      out.sinks.push({buildingId:RW_SINK_HEAT_ID, name:'热能池', count:n, kind:'heat',
+        forItem:nm, itemId:it.id, over:over,
+        why:'电池可以溢流烧进热能池 —— 唯一「销毁即发电」的去路'});
+      out.heatTotal+=n;
+      out.reasons.push(nm+' '+over+'/分 → 热能池 ×'+n+'（销毁即发电，不浪费）');
+      return;
+    }
+    /* ③ 其余 → 扩容反应池 */
+    if(!byBp(RW_SINK_POOL_ID)){
+      out.unmet.push({item:nm, over:over, why:'建筑表里找不到扩容反应池（'+RW_SINK_POOL_ID+'）'});
+      return;
+    }
+    const n=Math.max(1, Math.ceil(over/RW_SINK_POOL_CAP));
+    out.sinks.push({buildingId:RW_SINK_POOL_ID, name:'扩容反应池', count:n, kind:'pool',
+      forItem:nm, itemId:it.id, over:over,
+      why:'溢流进扩容反应池销毁（需 2 条配方同时堵塞才触发清空 → 常驻 2 条垫子配方）'});
+    out.poolTotal+=n;
+    out.reasons.push(nm+' '+over+'/分 → 扩容反应池 ×'+n
+      +'（'+RW_SINK_POOL_CAP+'/分×'+n+' 覆盖）'
+      +(it.fromByproduct?'　⭐配方副产物，不接销毁线会一直堆':''));
+  });
+  /* 池数上限：超了就走软门禁（不硬塞，免得把画布铺满还假装成功） */
+  if(out.poolTotal>RW_SINK_MAX_POOLS){
+    out.unmet.push({item:'（合计）', over:null,
+      why:'需要的销毁池合计 '+out.poolTotal+' 个，超过上限 '+RW_SINK_MAX_POOLS
+        +' —— 这条链的副产物量太大，建议降速或分批建'});
+  }
+  out.ok=!out.unmet.length;
+  return out;
+}
+/* C6-b 阶段 2 的门禁判定（LawRun 用）：返回 null = 放行；返回字符串 = 拒绝原因（软门禁） */
+function RflowSinkGate(res){
+  const sp=RflowSinkPlan(res);
+  if(sp.ok) return null;
+  return '这条产线有物品没有去路，且自动补销毁支线补不上：'
+    +sp.unmet.map(u=>u.item+(u.over!=null?('（'+u.over+'/分）'):'')+' —— '+u.why).join('；')
+    +'。C6 要求每个物品都有去路，所以先不生成 —— 先降速、换上游目标，或手动补一条销毁线。';
+}
 /* C6 体检的报告区块（渲染与判定分开：判定是纯函数，好写回归锁） */
 function RflowAuditHtml(P){
   const r1=x=>Math.round(x*10)/10;
   const A=RflowAudit(P.res);
+  const SP=(P&&P.sinkPlan)||RflowSinkPlan(P.res);   /* 阶段 2：用已算好的 sink 规划（没有就现算） */
   const bad=RW_COL.bad, okc=RW_COL.ok, warn=RW_COL.warn;
-  const n=A.items.length;
+  const hard=A.items.filter(r=>r.over>RW_SINK_MINOR);   /* 需要真去路的 */
+  const soft=A.items.filter(r=>r.over<=RW_SINK_MINOR);  /* 微量溢出，只提醒 */
+  const n=hard.length;
   let h='<div class="c-sub" style="margin-top:8px"><span><b>♻️ 去路体检（C6）</b> '
-      +'<span class="lo-tag">爆仓销毁 · 2026-09-24 加</span> ';
-  h+= n ? ('<b style="color:'+bad+'">'+n+' 项净产出没有去路 —— 会爆仓并把产线堵停</b>')
+      +'<span class="lo-tag">爆仓销毁 · 2026-09-24 加 · C6-b 门禁 2026-09-25</span> ';
+  h+= n ? ('<b style="color:'+okc+'">'+n+' 项净产出没有下游'
+          +(SP.sinks.length?' —— 已自动补销毁支线 ✓':'')+'</b>')
         : ('<b style="color:'+okc+'">每个物品都有去路 ✓ 不会爆仓停产</b>');
+  if(soft.length) h+='　<span class="c-id">另有 '+soft.length+' 项微量溢出（≤'+RW_SINK_MINOR+'/分，取整噪声）—— 只提醒</span>';
   h+='</span></div>';
-  A.items.forEach(r=>{
-    /* 去路建议：电池可以烧进热能池（唯一「销毁即发电」），其余走扩容反应池堵塞清空 */
+  /* ⭐ 阶段 2 新增：销毁支线方案（摆了什么、为什么、⚠️ 池子会无声卡死） */
+  if(SP.sinks.length){
+    h+='<div class="c-sub" style="margin-top:4px"><span><b style="color:'+okc+'">♻️ 销毁支线已自动补上</b>'
+      +'（'+SP.sinks.reduce((s,x)=>s+x.count,0)+' 座建筑，已在画布上标出）</span></div>';
+    SP.reasons.forEach(r=>{
+      h+='<div class="c-sub" style="margin-top:2px"><span>· '+esc(r)+'</span></div>'; });
+    h+='<div class="c-sub" style="margin-top:2px"><span class="c-id">垫子配方：'+esc(SP.padRule)
+      +'。（接法是游戏内给池子设反应，排布器只摆池子。）</span></div>';
+    h+='<div class="c-sub" style="margin-top:2px"><span style="color:'+warn+'">⚠️ <b>池子本身是故障点</b>：'
+      +'社区多次报告扩容反应池会因交叉反应判定而<b>无声卡死</b>（入料满却不出货），需重摆 + 重设输出才恢复。'
+      +'不能把它当绝对可靠的安全阀 —— 上线后记得抽查。</span></div>';
+    h+='<div class="c-sub" style="margin-top:2px"><span class="c-id">成本口径：销毁支线的<b>用电 / 占地 / 线长'
+      +'一律照常计入，不豁免</b>（扩容池 100 电/座）—— 装了池子的方案在用电层会因此变差，这是<b>有意为之的真实成本</b>。</span></div>';
+  }
+  hard.forEach(r=>{
     const way = r.isBattery
-      ? '去路建议：<b>溢流进热能池烧掉</b> —— 唯一「不浪费」的路子（销毁的同时发电）'
-      : '去路建议：<b>溢流进扩容反应池</b>销毁（注意：需 <b>2 条配方同时堵塞</b>才触发清空，'
+      ? '去路：<b>溢流进热能池烧掉</b> —— 唯一「不浪费」的路子（销毁的同时发电）'
+      : '去路：<b>溢流进扩容反应池</b>销毁（注意：需 <b>2 条配方同时堵塞</b>才触发清空，'
         +'单条堵着它什么都不做 → 得常驻 2 条「垫子」配方）';
-    /* 速率对不上单池上限时要点出来 —— 否则博士会以为「有池子就万事大吉」 */
     const cap = (!r.isBattery && r.over>30)
       ? ('　<b style="color:'+bad+'">'+r1(r.over)+'/分 &gt; 社区口径单池约 30/分，一个池子吃不下 —— 要么并几个，要么从源头减量</b>')
       : '';
@@ -6013,24 +6279,26 @@ function RflowAuditHtml(P){
       +(r.fromByproduct?'　<span class="c-id">配方副产物 —— 不接销毁线就会一直堆</span>':'')
       +'<br>　　'+way+cap+'</span></div>';
   });
+  soft.forEach(r=>{
+    h+='<div class="c-sub" style="margin-top:2px"><span class="c-id">· '+esc(r.name)+' 微量净溢出 '
+      +r1(r.over)+'/分（≤'+RW_SINK_MINOR+'，取整噪声）—— 未强制补销毁，可微调速率或让它积在缓冲里</span></div>';
+  });
   A.targets.forEach(r=>{
     h+='<div class="c-sub" style="margin-top:2px"><span>· <b>'+esc(r.name)+'</b> 产出 '+r1(r.out)+'/分 '
       +'<span class="c-id">（这是你要的目标产物，没有下游 —— 靠<b>卖货到据点</b>或手动取走；'
       +'放着不管一样会满仓，但这是预期行为，不算必爆项）</span></span></div>';
   });
   h+='<div class="c-sub" style="margin-top:2px"><span class="c-id">判定口径：'
-    +'对每个物品算「实际产出 − 下游需求」，净溢出 &gt; 0 就是必爆项。'
-    +'<b>副产物是这里的主要检出对象</b> —— 排布器的产线图只沿主产物展开，'
-    +'配方副产物（317 条配方里 84 条是双产出，其中 11 条产污水）不在图里，'
-    +'所以本体检直接扫<b>每台机器所选配方的全部产出</b>。'
+    +'对每个物品算「实际产出 − 下游需求」，净溢出 &gt; '+RW_SINK_MINOR+'/分 就是必爆项（≤ 该值的只提醒）。'
+    +'<b>副产物是这里的主要检出对象</b> —— 317 条配方里 84 条是双产出（其中 11 条产污水），'
+    +'本体检扫<b>每台机器所选配方的全部产出</b>。'
+    +'⭐ <b>C6-b 起副产物已正式入图</b>（<code>res.byproducts</code>），排布器看得见、也会补去路了。'
     +'⚠️ <b>协议储存箱不是去路</b>（只缓冲不销毁，自己满了后面照样堵）；'
     +'PAC 离线 7 天关物流是逃生阀，也不是去路。'
     +'机制出处：<code>docs/数据手册-玩法与物流.md</code>「♻️ 爆仓与物品销毁」节。</span></div>';
-  if(n){
-    h+='<div class="c-sub" style="margin-top:2px"><span style="color:'+warn+'">'
-      +'这一版<b>只体检、不自动补销毁支线</b>（C6-a）：自动入图与自动摆 sink 会改图结构，'
-      +'牵动台数/布局/路由/评分，得单独一期做。</span></div>';
-  }
+  h+='<div class="c-sub" style="margin-top:2px"><span class="c-id">'
+    +'<b>C6 是门禁不是扣分项</b>：补不上销毁支线的方案会被<b>拒绝生成并报原因</b>，'
+    +'不会产出一个「第一天能跑、第三天停产」的布局。</span></div>';
   return h;
 }
 function Rreport(P, pw, bw, th, lim, st, rawNeed, sc){

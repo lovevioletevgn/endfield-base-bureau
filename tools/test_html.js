@@ -4132,8 +4132,9 @@ loReset(50); A.render();
 // 在制格卡死 → 该机停机 → 沿产线**反向逐级堵死** → 整条支线停产，并会跨线连锁
 //（社区实例：赤铜块爆仓 → 污水断供 → 电池线停转 → 断电 → 全基地停摆）。
 // 判据：对每个物品算「实际产出 − 下游需求」，净溢出 > 0 = 必爆项；目标产物归 targets（靠卖货，不算必爆）。
-// ⚠️ 为什么必须独立扫配方：`Rexplode.build()` 只递归 ingredients，**配方副产物不进产线图**
+// ⚠️ 为什么必须独立扫配方：`Rexplode.build()` 只递归 ingredients，**配方副产物原先不进产线图**
 //（317 条配方里 84 条双产出，其中 11 条产污水）—— 漏掉的恰好是最致命的那些。
+// ⭐C6-b 阶段 1（2026-09-25）起，副产物已正式入图（`res.byproducts`）—— 见本文件末尾的 C6-b 锁。
 chk('C6 体检：函数已在页面作用域导出（RflowAudit 判定 / RflowAuditHtml 渲染）',
     typeof A.RflowAudit === 'function' && typeof A.RflowAuditHtml === 'function',
     typeof A.RflowAudit + ' / ' + typeof A.RflowAuditHtml);
@@ -4174,5 +4175,152 @@ chk('C6 报告区块：渲染出体检标题 + 必爆项名 + 去路建议 + 「
              h.indexOf('协议储存箱不是去路') >= 0;
     })(),
     (function () { const h = A.RflowAuditHtml({ res: A.Rexplode('item_copper_nugget', 10, {}) }); return 'len=' + h.length + ' has=' + ['去路体检（C6）', '壤晶废液', '扩容反应池', '30/分', '协议储存箱不是去路'].filter(k => h.indexOf(k) < 0).join(','); })());
+
+// ---- C6-b 阶段 1：副产物入图（2026-09-25 博士拍板，方案见 docs/C6-b实施方案-草案.md）----
+// 主张：`Rexplode` 的 `res.byproducts` 列出每台机器所选配方的**非主产物**（按台数与比例折算速率）。
+// 关键约束：**纯数据层** —— 不进 nodes / machines，所以布局 / 走线 / 评分一字不动（835 项回归零红）。
+chk('C6-b 副产物入图：赤铜瓶@10 的 res.byproducts 有 2 条（污水 20/分 + 壤晶废液 20/分），来源机器点名',
+    (() => {
+      const r = A.Rexplode('item_copper_jar', 10, {});
+      const bp = r.byproducts || [];
+      const sw = bp.filter(x => x.itemId === 'item_liquid_sewage')[0];
+      const xp = bp.filter(x => x.itemId === 'item_liquid_xiranite_poly')[0];
+      return bp.length === 2 && !!sw && sw.perMin === 20 && !!sw.fromMachine &&
+             !!xp && xp.perMin === 20;
+    })(),
+    JSON.stringify((A.Rexplode('item_copper_jar', 10, {}).byproducts || []).map(x => x.name + ' ' + x.perMin + '/分 ←' + x.fromMachine)));
+
+chk('C6-b 副产物入图反向锁：铁制成品@10 配方无副产物 → res.byproducts 必须为空（不得凭空造节点）',
+    (() => {
+      const r = A.Rexplode('item_iron_cmpt', 10, {});
+      return (r.byproducts || []).length === 0;
+    })(),
+    JSON.stringify((A.Rexplode('item_iron_cmpt', 10, {}).byproducts || []).map(x => x.name)));
+
+chk('C6-b 副产物入图：载体（原料 id 也在产物里）**不算**副产物（拆解机罐子那种，净消耗 0）',
+    (() => {
+      /* 载体判定交给 RwCarrierIds：这里直接验「byproducts 里没有出现在 ingredients 里的 id」 */
+      const r = A.Rexplode('item_copper_jar', 10, {});
+      const bp = r.byproducts || [];
+      /* 污水 / 壤晶废液都不是灌装/精炼的原料 → 应全数保留；若载体误入，条数会异常 */
+      return bp.every(x => x.itemId !== 'item_copper_jar' && x.itemId !== 'item_gasjar_copper_gas_water');
+    })(),
+    JSON.stringify((A.Rexplode('item_copper_jar', 10, {}).byproducts || []).map(x => x.itemId)));
+
+chk('C6-b 副产物入图：改图结构后 nodes / machines 不带副产物（布局零影响 = 835 项回归依赖的前提）',
+    (() => {
+      const r = A.Rexplode('item_copper_jar', 10, {});
+      return r.nodes.every(n => !n.byproduct) &&
+             r.machines.every(n => !n.byproduct);
+    })(),
+    'nodes=' + A.Rexplode('item_copper_jar', 10, {}).nodes.length + ' machines=' + A.Rexplode('item_copper_jar', 10, {}).machines.length);
+
+chk('C6-b 与 C6-a 口径交叉验证：入图的副产物速率 == 体检报的净溢出速率（同一批数据两种口径必须对上）',
+    (() => {
+      const r = A.Rexplode('item_copper_nugget', 10, {});
+      const au = A.RflowAudit(r);
+      const bp = (r.byproducts || []).filter(x => x.itemId === 'item_liquid_xiranite_poly');
+      const bpSum = bp.reduce((s, x) => s + x.perMin, 0);
+      /* 体检报的「实际产出」= 所有产该物品的机器合计 —— 与入图 side 求和口径一致 */
+      const auditOut = (au.items.filter(x => x.id === 'item_liquid_xiranite_poly')[0] || {}).out;
+      return Math.abs(bpSum - (auditOut || 0)) < 1e-6 && bpSum === 50;
+    })(),
+    (() => {
+      const r = A.Rexplode('item_copper_nugget', 10, {});
+      const bp = (r.byproducts || []).filter(x => x.itemId === 'item_liquid_xiranite_poly');
+      const au = A.RflowAudit(r);
+      return '入图合=' + bp.reduce((s, x) => s + x.perMin, 0) + ' 体检产出=' + (au.items.filter(x => x.id === 'item_liquid_xiranite_poly')[0] || {}).out;
+    })());
+
+// ---- C6-b 阶段 2：门禁 + 自动补销毁支线（2026-09-25 博士拍板「有现成消费者就接、否则销毁 + 软门禁」）----
+// 主张：`RflowSinkPlan` 把每个「无下游」物品接到去路（电池→热能池；其余→扩容反应池，池数 = ceil(over/30)）；
+//       `RflowSinkGate` 返回 null = 放行、返回字符串 = 软门禁拒绝；`RplaceSinks` 把建筑捡空位摆下（不重叠）。
+// ⭐ 阶段 2 的关键设计（博士拍板）：
+//   ① 微量溢出阈值 RW_SINK_MINOR=5/分 —— ≤5 只提醒不拦截（整台取整噪声，47/102 个目标有，多数是这种）
+//   ② 池子按物品各摆（不合并）—— 壤晶@10 = 壤晶废液 ×4 + 清水 ×1
+//   ③ 摆不下必须软门禁拒绝，不得静默假装成功
+chk('C6-b2 门禁：壤晶@10 有 2 项必爆 → sink 规划给出 壤晶废液 ×4 + 清水 ×1（池数=ceil(over/30)）',
+    (() => {
+      const r = A.Rexplode('item_xiranite_poly', 10, {});
+      const sp = A.RflowSinkPlan(r);
+      const xp = sp.sinks.filter(s => s.forItem === '壤晶废液')[0];
+      const sw = sp.sinks.filter(s => s.forItem === '清水')[0];
+      return !!xp && xp.count === 4 && xp.kind === 'pool' && !!sw && sw.count === 1 &&
+             sp.poolTotal === 5 && sp.heatTotal === 0;
+    })(),
+    JSON.stringify((A.RflowSinkPlan(A.Rexplode('item_xiranite_poly', 10, {})).sinks || [])
+      .map(s => s.forItem + ' ×' + s.count)));
+
+chk('C6-b2 门禁反向锁：铁制成品@10 无副产物 → sink 规划必须为空（不得凭空摆池子）',
+    (() => {
+      const r = A.Rexplode('item_iron_cmpt', 10, {});
+      const sp = A.RflowSinkPlan(r);
+      return sp.sinks.length === 0 && sp.poolTotal === 0 && !!sp.note;
+    })(),
+    JSON.stringify((A.RflowSinkPlan(A.Rexplode('item_iron_cmpt', 10, {})).sinks || []).map(s => s.forItem)));
+
+chk('C6-b2 微量溢出阈值（博士拍板 5/分）：钢块@10 砂叶粉末 5/分 → 进 minor 只提醒，不摆池子、不放行门禁拦',
+    (() => {
+      const r = A.Rexplode('item_iron_enr', 10, {});
+      const sp = A.RflowSinkPlan(r);
+      const m = sp.minor.filter(x => x.item === '砂叶粉末')[0];
+      return sp.sinks.length === 0 && !!m && m.over === 5 && A.RflowSinkGate(r) === null;
+    })(),
+    (() => { const sp = A.RflowSinkPlan(A.Rexplode('item_iron_enr', 10, {}));
+      return 'sinks=' + sp.sinks.length + ' minor=' + JSON.stringify(sp.minor.map(x => x.item + ' ' + x.over)); })());
+
+chk('C6-b2 门禁放行/拦截判据：RflowSinkGate 只对 unmet 非空时返回字符串（正常链必须放行 = null）',
+    (() => {
+      /* 正向：壤晶@10 有必爆项但能补上 → 放行 */
+      const g1 = A.RflowSinkGate(A.Rexplode('item_xiranite_poly', 10, {}));
+      /* 反向：铁制成品@10 无必爆项 → 放行 */
+      const g2 = A.RflowSinkGate(A.Rexplode('item_iron_cmpt', 10, {}));
+      return g1 === null && g2 === null;
+    })(),
+    'gate(壤晶)=' + A.RflowSinkGate(A.Rexplode('item_xiranite_poly', 10, {}))
+      + ' gate(铁制成品)=' + A.RflowSinkGate(A.Rexplode('item_iron_cmpt', 10, {})));
+
+chk('C6-b2 摆位：壤晶@10 的 5 个池子摆进空画布后**互不重叠、不越界**（软门禁依赖它）',
+    (() => {
+      const sp = A.RflowSinkPlan(A.Rexplode('item_xiranite_poly', 10, {}));
+      const pl = A.RplaceSinks(sp, 70, () => false);
+      if (pl.objs.length !== sp.poolTotal) return false;
+      if (pl.objs.some(o => o.x < 0 || o.y < 0 || o.x + o.w > 70 || o.y + o.d > 70)) return false;
+      for (let i = 0; i < pl.objs.length; i++) for (let j = i + 1; j < pl.objs.length; j++) {
+        const a = pl.objs[i], b = pl.objs[j];
+        if (!(a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.d <= b.y || b.y + b.d <= a.y)) return false;
+      }
+      return true;
+    })(),
+    (() => { const sp = A.RflowSinkPlan(A.Rexplode('item_xiranite_poly', 10, {}));
+      const pl = A.RplaceSinks(sp, 70, () => false);
+      return '实摆 ' + pl.objs.length + '/' + sp.poolTotal + ' 未摆 ' + pl.unplaced.length; })());
+
+chk('C6-b2 软门禁可触发：画布被占满时 RplaceSinks 必须报 unplaced（不硬塞、不静默成功）',
+    (() => {
+      const sp = A.RflowSinkPlan(A.Rexplode('item_xiranite_poly', 10, {}));
+      const pl = A.RplaceSinks(sp, 70, () => true);   /* 处处被占 */
+      return pl.objs.length === 0 && pl.unplaced.length === sp.poolTotal;
+    })(),
+    (() => { const sp = A.RflowSinkPlan(A.Rexplode('item_xiranite_poly', 10, {}));
+      const pl = A.RplaceSinks(sp, 70, () => true);
+      return '实摆 ' + pl.objs.length + ' 未摆 ' + pl.unplaced.length + '/' + sp.poolTotal; })());
+
+// ---- C6-b2 源码门禁：Lreroll（重排其余）必须重摆销毁支线 ----
+// 实测踩中（2026-09-25）：Lreroll 重建 L.objs 时只放 machines + loose，
+//   **池子会被悄悄弄丢**，而报告仍写「已在画布上标出」= 假成功。
+//   Lreroll 依赖 Linit() 状态与 DOM，测试里无法直接调用 → 用源码级门禁守住
+//   （项目已有先例：⑤-1 的 flex 定宽反向锁也是源码级）。
+chk('C6-b2 源码门禁：Lreroll（重排其余）落盘段必须重摆 sink（否则重排一次池子就消失）',
+    (() => {
+      const i = rawCode.indexOf('function Lreroll');
+      if (i < 0) return false;
+      const seg = rawCode.slice(i, i + 9000);
+      /* 重排段里必须同时出现「复用/重算 sinkPlan」与「planRole='sink' 落盘」 */
+      return /rerollSink/.test(seg) && /planRole\s*=\s*'sink'/.test(seg)
+        && /sinkPlan\s*:\s*rerollSink/.test(seg);
+    })(),
+    'Lreroll 段含 sink 重摆=' + /planRole\s*=\s*'sink'/.test(
+      rawCode.slice(Math.max(0, rawCode.indexOf('function Lreroll')), rawCode.indexOf('function Lreroll') + 9000)));
 
 report();
