@@ -2191,6 +2191,8 @@ function Linit(){
     hubPicks:{}, dlvPop:null,
     /* ⭐第 2 期：基地级分配结果缓存（RbaseBest 的返回；报告区显示用） */
     rbase:null,
+    /* ⭐第 3 期：跨地区分配缓存（RxlAll 输出）+ 各地区基地级分配（RbaseBest 数组）+ 微调建议 + 收货记录 */
+    rgen:null, rgenRbs:null, rgenAdv:[], rgenShip:[],
     /* ⭐v145 多基地：基地级字段（LO_BASE_KEYS）按基地各存一份 —— 上面那几个同名字段
        会被 LbaseHook() 用访问器接管，读写都落到 bases[当前基地] 上。 */
     bases:{}};
@@ -5651,6 +5653,128 @@ function RxlBest(targets){
   combos.sort((a,b)=>a.cost-b.cost);
   return {regions:regions, combos:combos, best:combos[0]};
 }
+/* ⭐⭐ 第 3 期（2026-09-25，博士选「跨地区全自动一键」）：目标 → **地区**的分配（一键生成第一层）。
+   ────────────────────────────────────────────────────────────────────────────
+   与 RxlBest 的关系：RxlBest 分的是「收货方向下拉那两个端点」，服务「选点建议」报告，**不改**；
+   RxlAll 是它的泛化 —— 地区来源换成「有可用基地的地区」（RbRegions），供「一键生成」用。
+   成本公式**逐项复用** RxlBest 那套（同方向收货冲突 > 喂不饱 > 分两地重复建共享料 > 矿缺口量），
+   保证两个入口对「哪片地区更省」的判断同源 —— 不会出现「选点建议说放武陵、一键生成放谷地」
+   这种自相矛盾（博士 2026-09-25 明确要的一致性口径）。
+   硬约束 D1：目标至少在一个地区 RxlAnalyze.ok，否则进 unassigned（kind='region'）并点名。
+   ⚠️ 组合数 = Π(每目标可行地区数)；现状 2 地区 × ≤4 目标 → 最多 16 组，够小。
+      若未来地区/目标变多导致 >4096 组，走下面的贪心兜底（并已在注释里标出该改剪枝）。
+   纯函数、无副作用、不碰 DOM、**不读 L.base** —— 便于回归锁直接断言。 */
+function RbRegions(){
+  /* 「有可用基地的地区」：Lbases() 里 usableCells>0 的基地，按地区名去重（保持 Lbases 顺序：主基地在前） */
+  const out=[];
+  Lbases().forEach(b=>{ if(b.usableCells>0 && out.indexOf(b.domainName)<0) out.push(b.domainName); });
+  return out;
+}
+function RxlAll(targets){
+  const ts=(targets||[]).filter(t=>t&&t.id&&+t.rate>0);
+  const regions=RbRegions();
+  const outs={ ok:false, regions:regions, assign:[], unassigned:[], byRegion:{}, cost:0,
+    costParts:null, comboCount:0, note:'' };
+  if(!regions.length){ outs.note='没有可用基地的地区 —— 先在布局试摆里选个基地，才知道有哪些地区能排'; return outs; }
+  if(!ts.length){ outs.note='先选目标物品（或用「＋ 目标」加几个），才做得了跨地区分配'; return outs; }
+  const an={};
+  const A=(t,r)=>{ const k=t.id+'@'+t.rate+'@'+r; if(!an[k]) an[k]=RxlAnalyze(t.id, t.rate, r); return an[k]; };
+  /* D1：逐目标挑可行地区；一个都不行 → 点名（带每个地区被卡的理由） */
+  const opts=[], pool=[];
+  ts.forEach(t=>{
+    const fs=regions.filter(r=>A(t,r).ok);
+    if(!fs.length){
+      outs.unassigned.push({id:t.id, name:t.name||RwItemName(t.id), rate:t.rate, kind:'region',
+        why:'哪个地区都建不了 —— '+regions.map(r=>r+'（'+((A(t,r).blocked||[])[0]||'无机器配方')+'）').join('；')});
+      return;
+    }
+    pool.push(t); opts.push(fs);
+  });
+  if(!pool.length) return outs;
+  const M=pool.length;
+  /* 容量粗判（第 3 期补充，探针 _probe_v166 实测出的真缺陷）：
+     RxlAll 原本的成本只看「收货冲突 / 喂不饱 / 重复建共享料 / 矿缺口」，**不含容量** →
+     两地都能产的目标成本并列时取第一个地区，于是全堆到谷地，谷地满了武陵却空着，
+     要等各地区 RbaseBest 试摆才暴露（= v159「假成功」的跨地区翻版）。
+     这里用 areaEst 之和 vs 该地区「可用格总和」粗判，并让「不溢出」**优先于**「成本低」（见下面排序）。
+     ⚠️ areaEst 系统性低估（v159 实测 2~2.5 倍）→ 粗判只拦「明显塞不下」；
+        精细判定交给各地区 RbaseBest 的真试摆 + RgenAdvice 的换地区建议兜底。 */
+  const capTotal={};
+  regions.forEach(r=>{ capTotal[r]=Lbases().filter(b=>b.domainName===r&&b.usableCells>0)
+    .reduce((s,b)=>s+b.usableCells,0); });
+  /* 成本函数：与 RxlBest 同源（逐项算，报告里逐行可解释）+ capOver 容量溢出量 */
+  const costOf=assign=>{
+    let conflicts=0, starved=0, gap=0, dup=0;
+    regions.forEach(r=>{
+      const s=RxlRegionShip(pool, assign, r);
+      conflicts+=s.conflict;
+      Object.keys(s.items).forEach(k=>{ gap+=s.items[k]; });
+      (s.rows||[]).forEach(x=>{ if(x.starved) starved++; });
+    });
+    for(let a=0;a<M;a++) for(let b=a+1;b<M;b++){
+      if(assign[a]===assign[b]) continue;
+      const sa=A(pool[a],assign[a]).nodeSet||{}, sb=A(pool[b],assign[b]).nodeSet||{};
+      dup+=Object.keys(sa).filter(k=>sb[k]).length;
+    }
+    const load={};
+    assign.forEach((r,i)=>{ load[r]=(load[r]||0)+(((A(pool[i],r)||{}).areaEst)||0); });
+    let capOver=0;
+    regions.forEach(r=>{ if(load[r]>capTotal[r]) capOver+=(load[r]-capTotal[r]); });
+    return {conflicts:conflicts, starved:starved, dup:dup, gap:Math.round(gap*10)/10,
+      capOver:capOver, load:load,
+      cost:conflicts*1000 + starved*300 + dup*10 + Math.round(gap)};
+  };
+  let total=1; opts.forEach(o=>{ total*=o.length; });
+  let combos=[];
+  if(total<=4096){
+    (function rec(i, cur){
+      if(i===M){ combos.push(Object.assign({assign:cur.slice()}, costOf(cur))); return; }
+      opts[i].forEach(r=>rec(i+1, cur.concat([r])));
+    })(0, []);
+    /* 分层排序：① 尽量没有容量溢出 ② 溢出量最小 ③ 才比 RxlBest 那套成本 */
+    combos.sort((a,b)=>{
+      const ao=(a.capOver>0?1:0), bo=(b.capOver>0?1:0);
+      return (ao-bo) || (a.capOver-b.capOver) || (a.cost-b.cost);
+    });
+  }
+  if(!combos.length){
+    /* 组合太大 → 贪心兜底（先挑可行地区里的第一个）。⚠️ 真要处理超大规模时这里改剪枝：
+       先把「只有一处能产」的目标定死，再对「多处可选」的按边际成本逐个贪心。 */
+    const assign=opts.map(o=>o[0]);
+    combos=[Object.assign({assign:assign}, costOf(assign))];
+  }
+  const best=combos[0];
+  /* 每个目标给出「为什么去这个地区」（R3）：
+     · 只有一处能产 → 直说；
+     · 多处可选 → 列出**另一处要付的代价**（需跨地区收哪些料 / 矿缺口），
+       让「机器两地都能建、但原料卡死」这种情况自己现形。实测例：分离芯的封装机两地区都能建
+       （placeDomains 为空），但赤铜矿的满采上限是「谷地 0 / 武陵 510」→ 谷地要同时收
+       赤铜矿与息壤粉两种料，而一条传输路线一次只能传一种（同方向冲突）→ 代价远高于武陵。 */
+  outs.assign=pool.map((t,i)=>{
+    const region=best.assign[i];
+    let why='';
+    if(opts[i].length===1) why='只有这个地区能产';
+    else{
+      const alts=opts[i].filter(r=>r!==region).map(r=>{
+        const a=A(t,r)||{};
+        const parts=[];
+        const recv=Object.keys(a.recvNeed||{});
+        if(recv.length) parts.push('需跨地区收 '+recv.map(RwItemName).join('、'));
+        const oreGap=Object.keys(a.ores||{}).filter(k=>a.ores[k].need>a.ores[k].cap)
+          .map(k=>a.ores[k].name+'矿缺口 '+Math.round((a.ores[k].need-a.ores[k].cap)*10)/10+'/分');
+        if(oreGap.length) parts.push(oreGap.join('、'));
+        return r+(parts.length?('：'+parts.join('；')):'：无原料缺口');
+      });
+      why='此处代价最低（'+alts.join(' / ')+'）';
+    }
+    return {id:t.id, name:t.name||RwItemName(t.id), rate:t.rate,
+      region:region, only:(opts[i].length===1), why:why};
+  });
+  outs.assign.forEach(a=>{ (outs.byRegion[a.region]=outs.byRegion[a.region]||[]).push(a); });
+  outs.cost=best.cost; outs.costParts=best; outs.comboCount=combos.length;
+  outs.ok=(outs.unassigned.length===0);
+  return outs;
+}
 /* ⭐⭐ 第 2 期（2026-09-25）：基地级分配 —— 把「哪个成品放哪片基地」下沉到同一地区内 4 个基地。
    ────────────────────────────────────────────────────────────────────────────
    与 RxlBest 的区别：RxlBest 分的是**地区**（谷地 vs 武陵，差异在「能不能产 + 收货压力」）；
@@ -5765,7 +5889,10 @@ function RbaseBest(targets, regionName){
       outs.unassigned.push({id:x.t.id, name:x.name, rate:x.t.rate,
         why:'装不下：试摆了本地区 '+bases.length+' 个基地（'+bases.map(b=>b.zoneName+' '+b.side+'×'+b.side).join('、')
           +'）都摆不下（约 '+x.machines+' 台 / 估算 '+x.est+' 格）—— 调小速率或换更小的目标',
-        kind:'capacity', est:x.est, machines:x.machines});
+        kind:'capacity', est:x.est, machines:x.machines,
+        /* ⭐第 3 期：把「哪些基地试摆通过」带上 —— 微调建议层据此判「挪基地 / 换地区」，
+           不必重跑昂贵的 RfitSide（本项此时必全 false，带上是为格式统一 + 未来复用）。 */
+        fit:x.fit});
     }
   });
   const pool=an.filter(x=>x.a.ok && x.machines<=RW_MAX_MACHINES && x.fitAny);
@@ -5816,7 +5943,10 @@ function RbaseBest(targets, regionName){
       outs.unassigned.push({id:x.t.id, name:x.name, rate:x.t.rate,
         why:'排不下：真能摆下的基地是 '+fitBases.join('、')+'，但容量已被先分的目标占满（'
           +full+'）—— 减少同时排的目标、或降低速率',
-        kind:'capacity', est:x.est, machines:x.machines});
+        kind:'capacity', est:x.est, machines:x.machines,
+        /* ⭐第 3 期：这一项有 fit=true 的基地（本地区别处真装得下，只是容量账被占满）→
+           微调建议层用它给「先排这个 / 少排几个」的具体指向。 */
+        fit:x.fit});
     }
   });
   /* 账：溢出基地数 + 面积浪费（Σ used/usable） */
@@ -5841,12 +5971,15 @@ function RbaseBest(targets, regionName){
   return outs;
 }
 /* 基地级分配的报告文案（纯字符串；供面板与报告共用） */
-function RbaseBestHtml(rb){
+function RbaseBestHtml(rb, inGen){
   if(!rb) return '';
   const W=RW_COL.warn, B=RW_COL.bad, G='#185FA5';
+  /* ⭐第 3 期：同一段渲染既服务第 2 期的单地区入口，也服务第 3 期的跨地区报告 ——
+     inGen=true 时标题不写「（第 2 期）」（在跨地区报告里会串味）。默认行为一字不变。 */
+  const TT=inGen?'基地级分配':'基地级分配（第 2 期）';
   if(!rb.targets.length&&!rb.unassigned.length)
-    return '<div class="c-sub" style="margin-top:4px"><span class="c-id">基地级分配（第 2 期）：先选目标物品，这里给出「哪个成品放哪片基地」并可直接落到各画布。</span></div>';
-  let h='<div class="c-sub" style="margin-top:6px"><span><b style="color:'+G+'">基地级分配（第 2 期）—— '+esc(rb.regionName||'该地区')+' 内 4 个基地怎么分</b>'
+    return '<div class="c-sub" style="margin-top:4px"><span class="c-id">'+TT+'：先选目标物品，这里给出「哪个成品放哪片基地」并可直接落到各画布。</span></div>';
+  let h='<div class="c-sub" style="margin-top:6px"><span><b style="color:'+G+'">'+TT+' —— '+esc(rb.regionName||'该地区')+' 内 4 个基地怎么分</b>'
     +'<span class="lo-tag">主基地优先，装不下才溢到副基地</span></span></div>';
   if(rb.note) h+='<div class="c-sub" style="margin-top:2px"><span class="c-id">'+esc(rb.note)+'</span></div>';
   rb.bases.forEach(b=>{
@@ -5874,6 +6007,111 @@ function RbaseBestHtml(rb){
     +'旧版用「机器格数×2.2」估算，实测低估 2~2.5 倍，会误判「装得下」）；'
     +'优化逐层：主基地优先 &gt; 溢出基地数最少 &gt; 面积浪费最少。'
     +'报告里的「约 N 格」仍是估算值（仅供横向比较），权威判据是试摆结果。</span></div>';
+  return h;
+}
+/* ⭐⭐ 第 3 期（Wave 3，规格 8.3 R6）：把「未分配 / 摆不下」翻成**可操作的建议**（三类全覆盖）。
+   ────────────────────────────────────────────────────────────────────────────
+   输入：rbs = 各地区的 RbaseBest 输出数组（按地区顺序）；alloc = RxlAll 输出（可选，暂未直接用到）。
+   输出：建议行数组 [{item, text}]，供报告渲染。纯函数（只读 Lbases()/RfitSide，不碰 DOM）。
+   三类：
+     ① 降速率 —— 台数超上限 / 容量不符 → 给出「降到多少/分以下」；
+     ② 挪基地 —— 本地区别处真装得下（unassigned.fit 里有 true）→ 指明是哪片；
+     ③ 换地区 —— 本地区所有基地都装不下 → **真试摆**对面地区的基地，能装就指明去哪个地区。
+   ⚠️ 只在有失败项时跑（换地区建议要真试摆，单次 10~300ms × 基地数）—— 成功路径零开销。 */
+function RgenAdvice(rbs){
+  const out=[];
+  const seen={};
+  const push=(name,text)=>{ const k=name+'|'+text; if(seen[k]) return; seen[k]=1; out.push({item:name, text:text}); };
+  const regions=RbRegions();
+  const zoneOf=lid=>{ const b=Lbases().filter(x=>x.levelId===lid)[0]; return b?b.zoneName:lid; };
+  (rbs||[]).forEach(rb=>{
+    const cur=rb.regionName||'';
+    (rb.unassigned||[]).forEach(u=>{
+      const nm=u.name||RwItemName(u.id);
+      if(u.kind==='region'){
+        push(nm,'「'+cur+'」建不了它（'+u.why+'）—— 若确实要产，换到能产它的地区再排');
+        return;
+      }
+      if(u.kind==='machines'){
+        const m=String(u.why||'').match(/约 (\d+)\/分/);
+        push(nm, m?('把速率降到 '+m[1]+'/分以下就能生成（链条台数超上限）'):'把速率调小，链条台数就能落进上限');
+        return;
+      }
+      /* kind==='capacity'：先看本地区内「别处真装得下吗」（fit 由 RbaseBest 试摆时带出） */
+      const fitLids=u.fit?Object.keys(u.fit).filter(k=>u.fit[k]):[];
+      if(fitLids.length){
+        push(nm,'本地区的「'+fitLids.map(zoneOf).join('、')+'」真装得下它，只是容量账被先排的目标占满 —— 把它排在前面、或少排一个别的目标');
+      }else{
+        /* 本地区全装不下 → 试摆别的地区（真试摆，只在失败时跑） */
+        const found=[];
+        regions.filter(r=>r!==cur).forEach(r=>{
+          const bs=Lbases().filter(b=>b.domainName===r&&b.usableCells>0)
+            .sort((x,y)=>{ const xm=x.role==='主基地'?0:1, ym=y.role==='主基地'?0:1; return xm-ym || y.usableCells-x.usableCells; });
+          for(let i=0;i<bs.length;i++){
+            let f=null;
+            try{ f=RfitSide(u.id, u.rate, bs[i].side, r); }catch(e){ f=null; }
+            if(f&&f.ok){ found.push(r+'·'+bs[i].zoneName+'（'+bs[i].side+'×'+bs[i].side+'）'); break; }
+          }
+        });
+        if(found.length)
+          push(nm,'本地区（'+cur+'）摆不下，但 '+found.join('、')+' 装得下 —— 可以换到那边排（基地间转运另算，见第 4 期）');
+        else
+          push(nm,'本地区和对面地区都摆不下 —— 只能把速率调小（这条链约 '+(u.machines||'?')+' 台）或换成更靠上游的目标');
+      }
+    });
+  });
+  return out;
+}
+/* ⭐⭐ 第 3 期报告：跨地区一键生成的分配总表（地区层）+ 各地区的基地级分配（复用第 2 期渲染）
+   + 跨地区收货记录 + 微调建议。ships = LapplyAssignAll 记下的收货清单（可为空）。 */
+function RgenHtml(alloc, rbs, advice, ships){
+  if(!alloc) return '';
+  const G='#185FA5', W=RW_COL.warn, B=RW_COL.bad;
+  let h='<div class="c-sub" style="margin-top:6px"><span><b style="color:'+G+'">跨地区一键生成（第 3 期）—— 目标先分地区、再分基地</b>'
+    +'<span class="lo-tag">一次点击自动决定去谷地还是武陵</span></span></div>';
+  if(alloc.note) h+='<div class="c-sub" style="margin-top:2px"><span class="c-id">'+esc(alloc.note)+'</span></div>';
+  if((alloc.assign||[]).length){
+    h+='<div class="c-sub" style="margin-top:4px"><span><b>地区分配</b> —— 按「收货冲突 &gt; 喂不饱 &gt; 重复建共享料 &gt; 矿缺口」择优（与「选点建议」同源口径）</span></div>';
+    const byR={};
+    alloc.assign.forEach(a=>{ (byR[a.region]=byR[a.region]||[]).push(a); });
+    Object.keys(byR).forEach(r=>{
+      h+='<div class="c-sub" style="margin-top:2px"><span>· <b>'+esc(r)+'</b>：'
+        +byR[r].map(a=>esc(a.name)+'@'+a.rate).join('、')+'</span></div>';
+      /* ⭐逐目标给「为什么去这里」（R3）—— 尤其是「机器两地都能建、但原料卡死」这种情况 */
+      byR[r].forEach(a=>{
+        if(a.why) h+='<div class="c-sub" style="margin-top:2px"><span class="c-id">　　'
+          +esc(a.name)+'：'+esc(a.why)+'</span></div>';
+      });
+    });
+  }
+  const cp=alloc.costParts||{};
+  if(cp.load){
+    const lines=RbRegions().filter(r=>cp.load[r]).map(r=>
+      r+' '+cp.load[r]+' 格 / 可用 '+((Lbases().filter(b=>b.domainName===r&&b.usableCells>0)
+        .reduce((s,b)=>s+b.usableCells,0))||0)+' 格');
+    h+='<div class="c-sub" style="margin-top:2px"><span class="c-id">分到各地区的估算占地：'+esc(lines.join('　·　'))
+      +'　（机器格数估算，最终以各基地真试摆为准）</span></div>';
+    if(cp.capOver>0)
+      h+='<div class="c-sub" style="margin-top:2px"><span style="color:'+W+'">⚠ 容量偏紧：按估算共超出 '+cp.capOver
+        +' 格 —— 已优先选「塞得下」的分法；真装不下时见下方微调建议</span></div>';
+  }
+  if((alloc.unassigned||[]).length){
+    h+='<div class="c-sub" style="margin-top:2px"><span style="color:'+B+'">✗ 哪个地区都放不了（'+alloc.unassigned.length+' 个）：'
+      +esc(alloc.unassigned.map(u=>u.name+'@'+u.rate+'（'+u.why+'）').join('；'))+'</span></div>';
+  }
+  if((ships||[]).length){
+    h+='<div class="c-sub" style="margin-top:4px"><span><b>跨地区收货</b> —— 按基地所在地区自动对齐方向；一条路线一次只能传一种</span></div>';
+    ships.forEach(s=>{
+      h+='<div class="c-sub" style="margin-top:2px"><span>· <b>'+esc(s.zone)+'</b>（'+esc(s.region)+'）：本地建不了 <b>'+esc(s.pickName)+'</b> → 从对面地区收货'
+        +(s.extra&&s.extra.length?('　<span style="color:'+W+'">另有 '+esc(s.extra.join('、'))+' 本地也建不了，但一条路线一次只能传一种、本次没收</span>'):'')
+        +'</span></div>';
+    });
+  }
+  (rbs||[]).forEach(rb=>{ h+=RbaseBestHtml(rb, true); });
+  if((advice||[]).length){
+    h+='<div class="c-sub" style="margin-top:6px"><span><b style="color:'+W+'">微调建议（'+advice.length+' 条）</b> —— 摆不下时照这个改，别硬试</span></div>';
+    advice.forEach(a=>{ h+='<div class="c-sub" style="margin-top:2px"><span>· <b>'+esc(a.item)+'</b>：'+esc(a.text)+'</span></div>'; });
+  }
   return h;
 }
 /* ⭐⭐ v160（2026-09-25，博士拍板方案 B「换目标自动重排」）：切换目标物品 → 该地区所有基地的产线**自动跟着换**。
@@ -6052,9 +6290,149 @@ function LapplyAssign(rb){
       :' —— 一次撤销可整批退回');
   render();
 }
+/* ⭐⭐ 第 3 期 Wave 2（2026-09-25）：跨地区批量落画布 —— 第 2 期 LapplyAssign 的外扩版。
+   ────────────────────────────────────────────────────────────────────────────
+   与 LapplyAssign 只有三点差异，其余（失败隔离 / 裁快照 / 落点口径）**逐字照抄**第 2 期已验证的实现：
+     ① 输入是**多个地区**的分配结果（rbs），不是一片；
+     ② 逐基地生成前按该基地**所在地区**自动对齐收货（规格 D3）——
+        第 2 期只在收尾对首个落点对齐一次；跨地区必须逐基地对齐，因为方向可能相反
+        （谷地要收武陵的息壤、武陵可能要收谷地的料）；
+     ③ 整批（跨地区全部基地）仍然**只占一个撤销点**。
+   ⚠️ LawRun 零改动：它不读 region，收货走全局 L.shipIn/L.shipFrom/L.shipPick。 */
+function LapplyAssignAll(rbs){
+  const L=Linit();
+  const list=(rbs||[]).filter(rb=>rb && rb.assign && rb.bases && rb.bases.length
+    && rb.assign.some(a=>a.items.length));
+  if(!list.length){ L.msg='没有可落画布的分配结果 —— 见上方报告'; render(); return; }
+  const origBase=L.base;
+  Lpush();                              /* ① 整批一次撤销点（快照含 basesAll） */
+  const undoMark=L.undo.length;
+  const done=[], failed=[], shipUsed=[];
+  list.forEach(rb=>{
+    const region=rb.regionName||'';
+    const doms=Ldomains();
+    /* ②-前置：收货「到」对齐本地区（货要进**这片产线所在地区**的仓库才有用） */
+    const toDom=doms.filter(d=>d.name===region)[0];
+    if(toDom && L.shipTo!==toDom.id){
+      L.shipTo=toDom.id;
+      if(L.shipFrom===L.shipTo){ const other=doms.filter(d=>d.id!==L.shipTo)[0]; if(other) L.shipFrom=other.id; }
+    }
+    const fromDom=doms.filter(d=>d.name!==region)[0];   /* 对面地区 = 出发地 */
+    rb.assign.filter(a=>a.items.length).forEach(a=>{
+      const keepPick=L.pick;
+      L.base=a.levelId;                 /* 先切基地后写字段（访问器语义，踩过三次的坑） */
+      L.pick=null;
+      L.objs=L.objs.filter(o=>!o.planRole); L.sel=[]; L.plan=null;
+      const items=a.items.slice();
+      /* ②-D3：按本基地目标链的收货需求设收货。一次只能传一种（游戏口径）——
+         需求最大的那种走传输，其余如实点名（不静默按本地自产处理）。 */
+      const ship=RgenShipOf(items, region);
+      L.shipIn=(ship.keys.length>0);
+      if(L.shipIn){
+        if(fromDom) L.shipFrom=fromDom.id;
+        L.shipPick=ship.pick;
+        shipUsed.push({zone:a.zoneName, region:region, pick:ship.pick,
+          pickName:RwItemName(ship.pick), extra:ship.keys.filter(k=>k!==ship.pick).map(RwItemName)});
+      }else L.shipPick='';
+      const main=items[0], rest=items.slice(1);
+      const savedMt=L.mt;
+      const tryRun=(m, rs)=>{ L.mt=rs.map(x=>({id:x.id, rate:x.rate})); L.pick=null;
+        LawRun(m.id, m.rate);
+        return L.objs.filter(o=>o.planRole).length; };
+      let placed=0;
+      try{
+        placed=tryRun(main, rest);
+        if(placed>0) done.push({zone:a.zoneName, region:region, levelId:a.levelId, items:items.length, objs:placed});
+        else{
+          /* 首轮失败 → 失败隔离：能出的先出，失败者逐个点名带完整原因（v159 口径） */
+          const keep=[], bad=[];
+          for(let i=0;i<items.length;i++){
+            L.objs=L.objs.filter(o=>!o.planRole);
+            const n=tryRun(items[i], []);
+            if(n>0){ keep.push(items[i]); }
+            else{ bad.push({zone:a.zoneName, name:items[i].name||RwItemName(items[i].id),
+              rate:items[i].rate, why:L.msg||'没有生成任何机器'}); }
+          }
+          if(keep.length){
+            L.objs=L.objs.filter(o=>!o.planRole);
+            placed=tryRun(keep[0], keep.slice(1));
+            if(placed>0) done.push({zone:a.zoneName, region:region, levelId:a.levelId, items:keep.length, objs:placed});
+          }
+          bad.forEach(b=>failed.push(b));
+          if(!keep.length) failed.push({zone:a.zoneName, name:'（整个基地）',
+            why:(items.length>1?'这 '+items.length+' 个目标都没生成出来':'')||L.msg||'没有生成任何机器'});
+        }
+      }catch(e){
+        failed.push({zone:a.zoneName, name:'（整个基地）', why:(e&&e.message)||'异常'});
+      }
+      L.mt=savedMt;
+      L.pick=keepPick;
+    });
+  });
+  /* ③ 裁掉循环里 LawRun 自 push 的快照 —— 整批只留一个撤销点 */
+  if(L.undo.length>undoMark) L.undo.length=undoMark;
+  L.redo.length=0;
+  /* ④ 视线落到首个落点基地（v159.1 口径）；全失败 → 切回原基地 */
+  L.base = done.length ? done[0].levelId : origBase;
+  const viewZone = done.length
+    ? ((Lbases().filter(x=>x.levelId===L.base)[0]||{}).zoneName||done[0].zone)
+    : '';
+  L.rgenShip=shipUsed;
+  const byRegion={};
+  done.forEach(d=>{ (byRegion[d.region||'']=byRegion[d.region||'']||[]).push(d); });
+  L.msg='跨地区一键生成：'+done.length+' 片基地完成'
+    +(done.length?('（'+Object.keys(byRegion).map(r=>r+' '+byRegion[r].length+' 片').join('、')+'）'):'')
+    +(failed.length?('；⚠ '+failed.length+' 个目标没生成出来：'
+      +failed.map(f=>f.zone+'·'+(f.name||'?')+'（'+f.why+'）').join('；')):'')
+    +(done.length
+      ?(' —— 已切到「'+viewZone+'」画布（首个落点）；其余基地用页签切换；一次撤销可整批退回')
+      :' —— 一次撤销可整批退回');
+  render();
+}
+/* 某基地（所在地区 region）的一组目标需要的跨地区收货物 —— 合并各目标的 recvNeed。
+   ⚠️ 复用 RxlAnalyze（带缓存），不额外跑 Rexplode。返回 {keys, need, pick}。 */
+function RgenShipOf(items, region){
+  const need={};
+  (items||[]).forEach(it=>{
+    let a=null;
+    try{ a=RxlAnalyze(it.id, it.rate, region); }catch(e){ a=null; }
+    if(!a) return;
+    Object.keys(a.recvNeed||{}).forEach(k=>{ need[k]=(need[k]||0)+a.recvNeed[k]; });
+  });
+  const keys=Object.keys(need);
+  let pick='', mx=-1;
+  keys.forEach(k=>{ if(need[k]>mx){ mx=need[k]; pick=k; } });
+  return {keys:keys, need:need, pick:pick};
+}
+/* ⭐⭐ 第 3 期（2026-09-25，博士选「跨地区全自动一键」）：「一键生成（全地区）」入口。
+   R1：**不要求先选基地** —— 地区与基地都由系统决定。这是与第 2 期「一键分配落画布」的核心差异：
+       那个用 Lregion()＝当前基地所在地区，必须先选基地、且只在一个地区内工作。 */
+function LgenAll(){
+  const L=Linit();
+  L.rbase=null;                 /* 与第 2 期的单地区报告互斥：报告区只显示一份 */
+  const ts=RxlTargets();
+  if(!ts.length){ L.msg='先选目标物品（或用「＋ 目标」加几个）—— 一键生成得先有目标'; render(); return; }
+  const alloc=RxlAll(ts);
+  L.rgen=alloc;
+  if(!alloc.assign.length){
+    L.rgenRbs=null; L.rgenAdv=[]; L.rgenShip=[];
+    L.msg='跨地区分配没有可行落点：'+(alloc.note||alloc.unassigned.map(u=>u.name+'（'+u.why+'）').join('；')||'见报告');
+    render(); return;
+  }
+  const rbs=[];
+  (alloc.regions||[]).forEach(r=>{ if(alloc.byRegion[r]&&alloc.byRegion[r].length) rbs.push(RbaseBest(alloc.byRegion[r], r)); });
+  L.rgenRbs=rbs;
+  L.rgenAdv=RgenAdvice(rbs);
+  if(!rbs.some(rb=>rb.assign.some(a=>a.items.length))){
+    L.rgenShip=[];
+    L.msg='跨地区分配完成，但没有目标真能落到基地上（见报告）'; render(); return;
+  }
+  LapplyAssignAll(rbs);   /* 内部自带 render */
+}
 /* 「一键分配并落画布」入口：分配 + 立即落盘（博士 2026-09-25 选的完整版） */
 function LassignRun(){
   const L=Linit();
+  L.rgen=null; L.rgenRbs=null; L.rgenAdv=[]; L.rgenShip=[];   /* 与第 3 期的跨地区报告互斥 */
   const region=Lregion();
   if(!region){ L.msg='先选一个基地（或选一个地区）—— 基地级分配要在具体地区里做'; render(); return; }
   const ts=RxlTargets();
@@ -7025,8 +7403,11 @@ function Rreport(P, pw, bw, th, lim, st, rawNeed, sc){
       ${P.res.externals.length?`<div class="c-sub" style="margin-top:4px"><span><b>按「外部输入」处理</b>（${P.res.externals.map(x=>esc(RwItemName(x))).join('、')}）—— 这些自己做的代价太深或只有回收路线，<b>建议外部供应 / 野外采集</b>；要展开就调大上限或换个目标物品</span></div>`:''}
       ${/* ⭐⑥-3 跨基地选点（2026-09-22）：多个目标放哪片地区更省 —— 报告里常驻一段（不依赖收货开关） */
         RxlHtml()}
-      ${/* ⭐第 2 期：基地级分配（同一地区内 4 基地）—— 仅当已算过（点过「一键分配落画布」）才显示缓存结果 */
-        (Linit().rbase && Linit().rbase.regionName===Lregion()) ? RbaseBestHtml(Linit().rbase) : ''}
+      ${/* ⭐第 3 期：跨地区一键生成报告 —— 点过「一键生成（全地区）」后显示
+             （含地区分配 / 各地区基地分配 / 跨地区收货 / 微调建议）。与第 2 期报告互斥（见 LgenAll/LassignRun） */
+        Linit().rgen ? RgenHtml(Linit().rgen, Linit().rgenRbs, Linit().rgenAdv, Linit().rgenShip) : ''}
+      ${/* ⭐第 2 期：基地级分配（同一地区内 4 基地）—— 仅当已算过（点过「一键分配落画布」）且无跨地区结果时显示 */
+        (Linit().rbase && !Linit().rgen && Linit().rbase.regionName===Lregion()) ? RbaseBestHtml(Linit().rbase) : ''}
       ${P.res.seeds.length?`
       <div class="c-sub" style="margin-top:6px"><span><b style="color:#8A5A2B">启动料 —— 链上有环，先把这些塞进去才转得起来</b></span></div>
       ${P.res.seeds.map(s=>`<div class="c-sub" style="margin-top:2px"><span>· 在「<b>${esc(s.machineName)}</b>」里先塞 <b>${s.count}</b> 个「<b>${esc(s.name)}</b>」（${esc(s.reason)}）</span></div>`).join('')}`:''}
@@ -7701,6 +8082,7 @@ function renderLayout(){
         <button class="lo-size ${L.selfLoop?'on':''}" onclick="LselfLoop()" title="开：环里的料（惰气那种）自己循环，报告给出「在哪台机器塞什么启动料」；关：那种料按外部输入处理">闭环自持：${L.selfLoop?'开':'关'}</button>
         <button class="lo-size ${L.shipIn?'on':''}" onclick="LshipIn()" title="开：出发地（方向见下方从/到下拉，默认四号谷地）集成工业能产的全部物品都能传（游戏口径：解锁过产能就行、仓库有没有无所谓）；这条链缺的原料/半成品排在最前，全量可传清单在折叠区里可搜索；选中谁，本地就不建谁和它的上游；关：原料一律按野外采集 / 本地自产">跨地区收货：${L.shipIn?'开':'关'}</button>
         <button class="lo-size ${L.pickShow?'on':''}" onclick="LpickToggle()" title="⑥-3 跨基地选点：多个目标放哪个地区更省 —— 按矿脉分布/机器限定/收货压力穷举分配，含口径①地区合计收货反推与口径②取货口建模；只出建议不摆画布">选点建议</button>
+        <button class="lo-size on" onclick="LgenAll()" title="第 3 期：不用先选基地 —— 自动判断每个目标该去四号谷地还是武陵，各地区内再自动分基地，逐基地摆位+连线并落到各自画布（收货按基地所在地区自动对齐）。⚠ 会覆盖各基地上一次排布器生成的产线（手摆的散件保留），可一次撤销">一键生成（全地区）</button>
         <button class="lo-size" onclick="LassignRun()" title="第 2 期：把当前目标分配到本地区 4 个基地（主基地优先，装不下才溢到副基地；武陵另有销毁专区），并逐基地落到各自画布。⚠ 会覆盖各基地上一次排布器生成的产线（手摆的散件保留），可一次撤销">一键分配落画布</button>
         <button class="lo-size ${lockMach?'on':'off'}" onclick="Lreroll()" title="锁定件原地不动，其余机器重新分层摆位并绕开它们（管线会整条重铺）。锁定用工具栏的「锁定选中」">重排其余${lockMach?('（锁 '+lockMach+' 台）'):''}</button>
         <button class="lo-size" onclick="LawClear()">清掉产线</button>

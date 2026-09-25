@@ -1098,6 +1098,107 @@ chk('v160 源码级：重排失败时恢复该基地原内容（绝不留空画�
       return /JSON\.parse\(before\)/.test(seg) && /JSON\.stringify/.test(seg);
     })());
 
+/* ═══ 第 3 期（v166，博士选「跨地区全自动一键」）：目标先分地区、再分基地 ═══
+   判据见 docs/最优排布-设计规格.md 第八节：D1 地区可行 / D2 沿用第 2 期真试摆 / D3 收货一致。
+   与第 2 期的关系：RxlAll 是 RxlBest 的泛化（地区来源换成「有可用基地的地区」，成本公式同源）；
+   LapplyAssignAll 是 LapplyAssign 的外扩（跨地区 + 逐基地对齐收货，整批仍只占一个撤销点）。 */
+chk('第3期 RbRegions：返回有可用基地的地区（含谷地与武陵、去重）', (() => {
+  const rs = A.RbRegions();
+  return rs.indexOf('四号谷地') >= 0 && rs.indexOf('武陵') >= 0
+    && rs.filter(r => r === '四号谷地').length === 1;
+})());
+chk('第3期 RxlAll：空目标给提示、不崩', (() => {
+  const al = A.RxlAll([]);
+  return al && al.note && al.assign.length === 0 && !al.ok;
+})());
+chk('第3期 RxlAll：每个目标只分一次、不重复（R2）', (() => {
+  const al = A.RxlAll([{ id: 'item_filter_core', rate: 10 }, { id: 'item_iron_cmpt', rate: 10 }]);
+  const ids = al.assign.map(a => a.id);
+  return al.assign.length === 2 && new Set(ids).size === 2;
+})());
+chk('第3期 RxlAll：只有一处能产的目标标 only 并落到那一处（D1/R3）', (() => {
+  /* 膨地啪 = 武陵独有（探针实测：谷地没有它的机器配方） */
+  const al = A.RxlAll([{ id: 'item_muck_xiranite_1', name: '膨地啪', rate: 10 }]);
+  const a = al.assign.filter(x => x.id === 'item_muck_xiranite_1')[0];
+  return !!a && a.only === true && a.region === '武陵';
+})());
+chk('第3期 RxlAll：多地可选的目标给出「为什么去这里」（点出另一处的收货/矿缺口，R3）', (() => {
+  /* 分离芯：两地的封装机都能建（不该标 only），但谷地缺赤铜矿（满采上限 0）
+     且要收息壤粉 → 理由里必须点出这个代价（博士 2026-09-25 追问核实的事实）。 */
+  const al = A.RxlAll([{ id: 'item_filter_core', name: '分离芯', rate: 10 }]);
+  const a = al.assign[0];
+  return !!a && a.only === false && !!a.why
+    && (a.why.indexOf('赤铜矿') >= 0 || a.why.indexOf('跨地区收') >= 0);
+})());
+chk('第3期 RxlAll：哪个地区都建不了的目标点名（D1，kind=region）', (() => {
+  const al = A.RxlAll([{ id: 'item_filter_core', rate: 10 }, { id: '__nope__', rate: 1 }]);
+  return al.unassigned.length === 1 && al.unassigned[0].kind === 'region'
+    && al.unassigned[0].why.indexOf('哪个地区都建不了') >= 0 && al.ok === false;
+})());
+chk('第3期 RxlAll：成本含容量项（capOver/load 覆盖全部被分配到的地区 —— 防「全堆一个地区」）', (() => {
+  const al = A.RxlAll([{ id: 'item_filter_core', rate: 10 }]);
+  const cp = al.costParts || {};
+  if (typeof cp.capOver !== 'number' || !cp.load) return false;
+  /* load 的键必须覆盖 assign 里出现过的每个地区（数量级判据，不硬编码地区名） */
+  const assigned = {}; al.assign.forEach(a => { assigned[a.region] = 1; });
+  return Object.keys(assigned).every(r => typeof cp.load[r] === 'number');
+})());
+chk('第3期 RxlAll：byRegion 与 assign 一致（每地区一桶、不丢目标）', (() => {
+  const al = A.RxlAll([{ id: 'item_filter_core', rate: 10 }, { id: 'item_iron_cmpt', rate: 10 }]);
+  let n = 0; Object.keys(al.byRegion).forEach(r => { n += al.byRegion[r].length; });
+  return n === al.assign.length;
+})());
+chk('第3期 RgenAdvice：超台数 → 给出「降到多少/分」的可操作建议（R6①）', (() => {
+  const rb = A.RbaseBest([{ id: 'item_iron_cmpt', rate: 600 }], '四号谷地');
+  if (rb.unassigned.length !== 1) return false;
+  const adv = A.RgenAdvice([rb]);
+  return adv.length >= 1 && adv[0].text.indexOf('降到') >= 0;
+})());
+chk('第3期 RgenAdvice：装不下时至少给一条建议（不静默失败，R6）', (() => {
+  const all = A.RwTargets();
+  const big = all.filter(x => x.name.indexOf('中容武陵电池') >= 0)[0];
+  if (!big) return false;
+  const rb = A.RbaseBest([{ id: big.id, name: big.name, rate: 10 }], '四号谷地');
+  if (!rb.unassigned.length) return false;
+  return A.RgenAdvice([rb]).length >= 1;
+})());
+chk('第3期 RgenHtml：渲染含「跨地区一键生成」与地区分配段，且不串「（第 2 期）」（inGen）',
+    (() => {
+      const al = A.RxlAll([{ id: 'item_filter_core', rate: 10 }]);
+      const rbs = [A.RbaseBest(al.byRegion['四号谷地'], '四号谷地')];
+      const h = A.RgenHtml(al, rbs, A.RgenAdvice(rbs), []);
+      return h.indexOf('跨地区一键生成') >= 0 && h.indexOf('地区分配') >= 0
+        && h.indexOf('基地级分配（第 2 期）') < 0;
+    })());
+chk('第3期 反向：RbaseBestHtml 默认仍带「（第 2 期）」（默认参数不破第 2 期入口）',
+    (() => {
+      const rb = A.RbaseBest([{ id: 'item_filter_core', name: '分离芯', rate: 10 }], '四号谷地');
+      return A.RbaseBestHtml(rb).indexOf('基地级分配（第 2 期）') >= 0;
+    })());
+
+/* LgenAll / LapplyAssignAll：跨地区落画布（自由模式起手 → 落盘 → 一次撤销）
+   ⚠️ 目标用「铁制零件」——探针实测它跨地区择优落到**四号谷地**（枢纽区）。
+      别用「分离芯」：谷地缺赤铜矿（满采上限 0）且要收息壤粉 → 两种料同方向收货**冲突**
+      → 代价 1015 vs 武陵 0 → 会被择优到武陵，落点跟着变（测试期望会写错）。
+      ⚠️ 但「机器层面」分离芯两地区都能产（封装机 placeDomains 为空）——
+      卡住谷地的是**原料**（赤铜矿），不是机器（博士 2026-09-25 追问后实测核实）。 */
+A.LbaseSet('');
+A.LO.tgt = 'item_iron_cmpt'; A.LO.rate = 10; A.LO.mt = [];
+A.LO.undo.length = 0; A.LO.redo.length = 0;
+A.LO.rgen = null; A.LO.rbase = null;
+A.render();
+A.LgenAll();
+const gvMain3 = A.LO.bases['map01_lv001'] ? A.LO.bases['map01_lv001'].objs.filter(o => o.planRole).length : 0;
+chk('第3期 LgenAll：**自由模式**（不选基地）也能跑完并落画布（R1）',
+    gvMain3 > 0, '谷地主 planRole 件数=' + gvMain3);
+chk('第3期 LgenAll：落点切到首个落点基地（v159.1 口径延续）',
+    A.LO.base === 'map01_lv001', A.LO.base);
+chk('第3期 LgenAll：整批只占一个撤销点',
+    A.LO.undo.length === 1, 'undo=' + A.LO.undo.length);
+chk('第3期 LgenAll：分配结果缓存在 L.rgen（报告区据此渲染）',
+    !!(A.LO.rgen && A.LO.rgen.assign && A.LO.rgen.assign.length));
+A.Lundo();
+
 // 反向锁：不得把 sinkPlan 相关的重活塞进 RbaseBest（谷地不查 sink → 不该调 Rexplode）
 chk('第2期 反向：谷地分配不查 sink（RW_SINK_ZONE_REGIONS 不含四号谷地）',
     html.indexOf("RW_SINK_ZONE_REGIONS=['武陵']") >= 0);
