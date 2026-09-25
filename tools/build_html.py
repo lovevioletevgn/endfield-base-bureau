@@ -4274,7 +4274,56 @@ function RwRoute(placed, res, size, corr, extraBusy){
     es.sort((a1,b1)=>(Math.abs(a1.x-cx)+Math.abs(a1.y-cy))-(Math.abs(b1.x-cx)+Math.abs(b1.y-cy)));
     return es;
   };
+  const feedTs={};         /* ⭐v157 预扫的「进料口外侧格」（feed 终点 t）—— 见下方 externals 块内填充注释 */
   if((res.externals||[]).length){
+    /* ⭐v157 预扫「进料口外侧格」（feed 终点 t）—— 让**接入点挑选避开它们**。
+       背景（2026-09-25 实测）：`feedUsed` 只标记接入点 `s`、不标记 `t` →
+         另一根 feed 挑接入点时会挑到「已是某根 feed 的 t」的格子上 → 埋雷。
+         赤铜块@30 的 5 条失败里 2 条正是此因（t(0,40)/t(0,55) 撞了别的 feed 的接入点）。
+       ⭐为什么要在生成前预扫：`t` = 进料口的第一个可用口 `cands[0]`，
+         而影响挑选的只有 `used[端口key]` —— 它只被 feed 自己写 → **可提前确定性复现**。
+       ⚠️ 只喂给「接入点挑选」，**不进 `reserved`/`busy`** → 不挤压内部走线（与 4342 的教训不同）。 */
+    {
+      const usedT={};                                     /* 预扫用的临时端口占用（不污染真 used） */
+      res.externals.forEach(iid=>{
+        if((byNode[iid]||[]).length) return;
+        if(!RwFluid(RwPhaseOf(iid))) return;
+        const users=[]; const us2=[];
+        res.machines.forEach(m=>{
+          (m.children||[]).forEach(c=>{ if(!c.recipeId && c.itemId===iid) us2.push({m:m, d:c.demand}); });
+        });
+        if(!us2.length) return;
+        us2.forEach(u=>{ users.push(u); });
+        const edgeDistOf=e=>{
+          const os=placed.filter(o=>o.node===e.m);
+          return os.length ? Math.min.apply(null, os.map(o=>
+            Math.min(o.x, o.y, size-1-(o.x+o.w-1), size-1-(o.y+o.d-1)))) : 1e9;
+        };
+        users.sort((a1,b1)=>edgeDistOf(a1)-edgeDistOf(b1));
+        users.forEach(u=>{
+          placed.filter(o=>o.node===u.m).forEach(o=>{
+            const b=o.b, fp=Lfp(b);
+            const cs=[];
+            const cands=[];
+            (b.ports||[]).filter(p=>p.kind==='input' && p.isPipe).forEach(p=>{
+              const q=LportXY(p,o.rot,fp[0],fp[1]);
+              if(q.x<0||q.x>=o.w||q.z<0||q.z>=o.d) return;
+              const key=uidOf(o)+'input'+p.index+'P';
+              if(usedT[key]) return;
+              const cc={key:key, gx:o.x+q.x, gy:o.y+q.z, dir:LportDirRot(p,o.rot,fp[0],fp[1])};
+              const tpp=outOf(cc);
+              if(tpp.x<0||tpp.y<0||tpp.x>=size||tpp.y>=size) return;
+              if(busy[K(tpp.x,tpp.y)]||reserved[K(tpp.x,tpp.y)]) return;
+              cands.push(cc);
+            });
+            const pk=cands[0]; if(!pk) return;
+            usedT[pk.key]=1;
+            const tt=outOf(pk);
+            if(tt.x>=0&&tt.y>=0&&tt.x<size&&tt.y<size) feedTs[K(tt.x,tt.y)]=1;
+          });
+        });
+      });
+    }
     res.externals.forEach(iid=>{
       if((byNode[iid]||[]).length) return;                 /* 画布上有人自己产它 → 不需要外部接入 */
       if(!RwFluid(RwPhaseOf(iid))) return;                 /* 只处理流体：固体走无线，不需要管子 */
@@ -4332,7 +4381,10 @@ function RwRoute(placed, res, size, corr, extraBusy){
                 （那时内部线路已铺完，哪个格子真空闲才见分晓）。 */
           const cx=Math.max(0,Math.min(size-1,Math.round(o.x+o.w/2)));
           const cy=Math.max(0,Math.min(size-1,Math.round(o.y+o.d/2)));
-          const freeE=edgePick(cx,cy).filter(e=>!busy[K(e.x,e.y)]&&!feedUsed[K(e.x,e.y)]&&!reserved[K(e.x,e.y)]);
+          const t0=outOf(pick);   /* 本条的 t —— 挑接入点时不能把「自己这条要用的口」也排除掉 */
+          const t0k=K(t0.x,t0.y);
+          const freeE=edgePick(cx,cy).filter(e=>!busy[K(e.x,e.y)]&&!feedUsed[K(e.x,e.y)]&&!reserved[K(e.x,e.y)]
+            && !(feedTs[K(e.x,e.y)] && K(e.x,e.y)!==t0k));   /* ⭐v157 避开别的 feed 要用的进料口外侧格 */
           if(!freeE.length){
             feedFail.push({item:RwItemName(iid), to:m.machineName, why:'edge'});
             warns.push('外部接入：'+m.machineName+' 找不到空闲的画布边缘格，'+RwItemName(iid)+' 画布内这一段请自己补管'); return;
@@ -4458,13 +4510,26 @@ function RwRoute(placed, res, size, corr, extraBusy){
     let s=j.s; let t=j.t;
     const mine=k=>k===K(s.x,s.y)||k===K(t.x,t.y);
     const block=(x,y)=>!!reserved[K(x,y)]&&!mine(K(x,y));
-    let path=RwPath(s, t, busy, size, block, axis);
+    /* ⭐v157 feed 线**自己的路径**也要避开「别的 feed 要用的进料口外侧格」。
+       背景：`feedTs` 只保护了「接入点挑选」，但 feed 线铺出来的**路径**仍会顺路踩别人的 t
+         （实测 @30 剩 9 条失败，占格者全是别的 feed 线，`links[]` 里查不到 = 它们只在 `feeds` 里）。
+       为什么这次用软代价有效（与内部线那版不同）：feed 的 t 表**小而稀疏**（每台机器 1~2 格），
+         且 feed 线之间是「同类后来者」—— 绕一格即可，不像内部线要绕 16 格且通道仅 1 格宽。
+       ⚠️ 只对 feed 线生效；排除「本条的 s/t」防止自避让。表空时不传 → 老行为不变。 */
+    const softT={};
+    if(j.feed){
+      const mk1=K(s.x,s.y), mk2=K(t.x,t.y);
+      Object.keys(feedTs).forEach(k=>{ if(k!==mk1 && k!==mk2) softT[k]=6; });
+    }
+    const softF=(Object.keys(softT).length && j.feed) ? softT : undefined;
+    let path=RwPath(s, t, busy, size, block, axis, softF);
     if(!path && j.feed && j.edgeAlts && j.edgeAlts.length){
       /* ⭐v151 外部接入的换格重试：feed 线排到最后铺，此时内部线已定形 —— 首选接入点走不通
          就挨个试备选格（挑格时已按距离排好序），全部失败才往下走。 */
       for(let ai=0; ai<j.edgeAlts.length && !path; ai++){
         const a2=j.edgeAlts[ai], ak=K(a2.x,a2.y);
         if(busy[ak]||reserved[ak]||(feedUsed[ak]&&ak!==K(s.x,s.y))) continue;
+        if(feedTs[ak] && ak!==K(t.x,t.y) && ak!==K(j.s.x,j.s.y)) continue;   /* ⭐v157 备选接入点也避开 feed 的 t */
         const p2=RwPath(a2, t, busy, size, block, axis);
         if(p2){ path=p2; s=a2; if(j.feedRef) j.feedRef.edge={x:a2.x, y:a2.y}; }
       }
@@ -4477,7 +4542,8 @@ function RwRoute(placed, res, size, corr, extraBusy){
         const tk=outOf(pa);
         if(tk.x<0||tk.y<0||tk.x>=size||tk.y>=size) continue;
         if(busy[K(tk.x,tk.y)]||reserved[K(tk.x,tk.y)]) continue;
-        const es=edgePick(j.mc.x, j.mc.y).filter(e=>!busy[K(e.x,e.y)]&&!feedUsed[K(e.x,e.y)]&&!reserved[K(e.x,e.y)]);
+        const es=edgePick(j.mc.x, j.mc.y).filter(e=>!busy[K(e.x,e.y)]&&!feedUsed[K(e.x,e.y)]&&!reserved[K(e.x,e.y)]
+          && !(feedTs[K(e.x,e.y)] && K(e.x,e.y)!==K(tk.x,tk.y)));   /* ⭐v157 重挑接入点也避开 feed 的 t */
         for(const ss of es.slice(0,8)){
           const mine3=k=>k===K(ss.x,ss.y)||k===K(tk.x,tk.y);
           const block3=(x,y)=>!!reserved[K(x,y)]&&!mine3(K(x,y));
@@ -4631,11 +4697,13 @@ function RwProbe(s, t, busy, size, reserved){
      已铺线格不再一律是墙 —— 允许「正交直穿」：我方走向与被穿线的轴向正交、且穿过时不转弯，
      该格铺**物流桥 / 管道桥**（cost +4，比绕远路便宜时自动启用）。同向重叠依然禁止（会互相顶）。
      状态含 onBridge：桥上只能直行、且下一格必须落回空地 —— 一格桥只跨一条线。 */
-function RwPath(s, t, busy, size, block, axis){
+function RwPath(s, t, busy, size, block, axis, soft){
   const K=(x,y)=>x+','+y;
   const axOf=(x,y)=>(axis&&axis[K(x,y)])||null;
   const blocked=(x,y)=>!!busy[K(x,y)]||(block?!!block(x,y):false);
   const ok=(x,y)=>x>=0&&y>=0&&x<size&&y<size&&!blocked(x,y);
+  /* ⭐v157 软代价：走这一格要额外付多少（0 = 无偏好；不传 soft 时恒 0 → 老行为不变） */
+  const softCost=(x,y)=>(soft&&soft[K(x,y)])||0;
   if(s.x===t.x&&s.y===t.y) return [s];
   if(!ok(t.x,t.y)) return null;
   const dirs=[[0,-1],[0,1],[-1,0],[1,0]];
@@ -4665,7 +4733,7 @@ function RwPath(s, t, busy, size, block, axis){
       if(nx<0||ny<0||nx>=size||ny>=size) continue;
       let nb=0, step;
       if(ok(nx,ny)){
-        step=1+((cur.d>=0&&i!==cur.d)?TURN:0);
+        step=1+((cur.d>=0&&i!==cur.d)?TURN:0)+softCost(nx,ny);   /* ⭐v157 软避让：feed 线顺路踩别人的进料口外侧格要加代价 */
       }else if(axis && !block(nx,ny) && !cur.b){
         const a=axOf(nx,ny);
         const cross=(a==='h'&&i<=1)||(a==='v'&&i>=2);
