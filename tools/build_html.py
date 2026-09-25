@@ -2193,6 +2193,8 @@ function Linit(){
     rbase:null,
     /* ⭐第 3 期：跨地区分配缓存（RxlAll 输出）+ 各地区基地级分配（RbaseBest 数组）+ 微调建议 + 收货记录 */
     rgen:null, rgenRbs:null, rgenAdv:[], rgenShip:[],
+    /* ⭐第 4 期：跨基地转运清单（RtransPlan 输出，报告区显示；只在一键生成时算一次） */
+    rtrans:null,
     /* ⭐v145 多基地：基地级字段（LO_BASE_KEYS）按基地各存一份 —— 上面那几个同名字段
        会被 LbaseHook() 用访问器接管，读写都落到 bases[当前基地] 上。 */
     bases:{}};
@@ -6064,7 +6066,7 @@ function RgenAdvice(rbs){
 }
 /* ⭐⭐ 第 3 期报告：跨地区一键生成的分配总表（地区层）+ 各地区的基地级分配（复用第 2 期渲染）
    + 跨地区收货记录 + 微调建议。ships = LapplyAssignAll 记下的收货清单（可为空）。 */
-function RgenHtml(alloc, rbs, advice, ships){
+function RgenHtml(alloc, rbs, advice, ships, trans){
   if(!alloc) return '';
   const G='#185FA5', W=RW_COL.warn, B=RW_COL.bad;
   let h='<div class="c-sub" style="margin-top:6px"><span><b style="color:'+G+'">跨地区一键生成（第 3 期）—— 目标先分地区、再分基地</b>'
@@ -6112,6 +6114,158 @@ function RgenHtml(alloc, rbs, advice, ships){
     h+='<div class="c-sub" style="margin-top:6px"><span><b style="color:'+W+'">微调建议（'+advice.length+' 条）</b> —— 摆不下时照这个改，别硬试</span></div>';
     advice.forEach(a=>{ h+='<div class="c-sub" style="margin-top:2px"><span>· <b>'+esc(a.item)+'</b>：'+esc(a.text)+'</span></div>'; });
   }
+  h+=RtransHtml(trans);
+  return h;
+}
+/* ⭐⭐ 第 4 期（2026-09-25，博士选「同地区基地间 + 跨地区都做」）：跨基地转运清单 + 带宽校验。
+   ────────────────────────────────────────────────────────────────────────────
+   两段转运统一成一份清单：
+     ① 跨地区：谷地 ↔ 武陵（走传输协议，一条路线一次只能传一种）—— 取第 3 期 RgenShipOf 的 recvNeed
+     ② 同地区基地间：A 基地 →（地区仓库）→ B 基地（走存货口 / 取货口，同一条存取线）
+        —— 即第 2 期 dupShared 的同一批「共享中间料」，按「改一套 + 转运」口径补上流量与线数代价
+   ⚠️ 数据边界（硬，见规格 9.2）：**单口/整线吞吐配置表里没有** → 只校验「路数」（能接几条带/管），
+      绝不编吞吐数字。路数 = bases.json 的 slotsPerSide（谷地主 23 / 副 13 实测；武陵 26 / 16 推算）。
+      ⚠️ 路数是**单边**口径：一片基地铺几条存取线就有几条边可用（谷地主 2 条边、副基地 1 条边，武陵要自己摆）。
+   ⚠️ 不改分配：本期只出「清单 + 校验 + 建议」，不回头动 RbaseBest / RxlAll 的结果。
+   计算量：只有「该地区 ≥2 片基地有目标」时才多跑 ≤4 次 Rexplode（10~300ms/次），且只在一键生成时算一次。 */
+function RtransPlan(rbs){
+  const outs={ ok:true, belt:RW_BELT, pipe:RW_PIPE, cross:[], share:[], byBase:{}, notes:[] };
+  const list=(rbs||[]).filter(rb=>rb&&rb.assign&&rb.bases&&rb.bases.length);
+  if(!list.length){
+    outs.ok=false;
+    outs.notes.push('先做一次跨地区分配（点「一键生成（全地区）」），才谈得上转运清单');
+    return outs;
+  }
+  const slotOf={}, zoneOf={};
+  Lbases().forEach(b=>{ slotOf[b.levelId]=RxlSlots(b.side); zoneOf[b.levelId]=b.zoneName; });
+  const addLine=(bag,itemId,perMin,from,to,lid)=>{
+    const per=+perMin||0;
+    if(!(per>0)) return null;
+    const isPipe=RwFluid(RwPhaseOf(itemId));
+    const it={itemId:itemId, name:RwItemName(itemId), perMin:Math.round(per*10)/10,
+      from:from, to:to, isPipe:isPipe, lines:RwLines(per,isPipe), cap:isPipe?RW_PIPE:RW_BELT};
+    const b=outs.byBase[lid]||(outs.byBase[lid]={zone:zoneOf[lid]||to, slot:slotOf[lid]||0, lines:0, items:[]});
+    b.lines+=it.lines; b.items.push(it);
+    bag.push(it);
+    return it;
+  };
+  /* ① 跨地区收货 */
+  list.forEach(rb=>{
+    const region=rb.regionName||'';
+    (rb.assign||[]).filter(a=>a.items&&a.items.length).forEach(a=>{
+      let sp={keys:[],need:{}};
+      try{ sp=RgenShipOf(a.items, region)||sp; }catch(e){}
+      const keys=sp.keys||[];
+      keys.forEach((k,ix)=>{
+        const it=addLine(outs.cross, k, sp.need[k], '对面地区', a.zoneName, a.levelId);
+        if(!it) return;
+        it.scope='跨地区';
+        if(keys.length>1 && ix>0){
+          it.blocked='一条传输路线一次只能传一种 —— 本次没收它（需求最大的那种优先）';
+          outs.ok=false;
+        }
+      });
+      if(keys.length>1)
+        outs.notes.push(a.zoneName+'：本地建不了 '+keys.length+' 种料（'
+          +keys.map(k=>RwItemName(k)).join('、')+'），但一条传输路线一次只能传一种 → 只有需求最大的那种能收');
+    });
+  });
+  /* ② 同地区基地间：共享中间料（≥2 片基地都要它） */
+  list.forEach(rb=>{
+    const region=rb.regionName||'';
+    const w=(rb.assign||[]).filter(a=>a.items&&a.items.length);
+    if(w.length<2) return;                     /* 只有一片基地有目标 → 自给自足，没有基地间转运 */
+    const per=w.map(a=>{
+      const items=a.items.slice();
+      let res=null;
+      try{ res=Rexplode(items[0].id, +items[0].rate||0,
+        {seeds:items.map(x=>({itemId:x.id, perMin:+x.rate||0})), region:region}); }catch(e){}
+      const dm={}, mm={};
+      ((res&&res.nodes)||[]).forEach(n=>{
+        if(!n||!n.itemId||n.raw||!(n.machines>0)) return;   /* 原料叶 / 没机器要建的不算中间料 */
+        dm[n.itemId]=(dm[n.itemId]||0)+(n.demand||0);
+        mm[n.itemId]=(mm[n.itemId]||0)+(n.machines||0);
+      });
+      return {zone:a.zoneName, levelId:a.levelId, dm:dm, mm:mm};
+    });
+    const where={};
+    per.forEach(p=>Object.keys(p.dm).forEach(k=>{ (where[k]=where[k]||[]).push(p); }));
+    Object.keys(where).forEach(k=>{
+      const ps=where[k];
+      if(ps.length<2) return;
+      const src=ps[0];
+      ps.slice(1).forEach(p=>{
+        const it=addLine(outs.share, k, p.dm[k], src.zone+'（建一套）', p.zone, p.levelId);
+        if(!it) return;
+        it.scope='同地区基地间';
+        /* ⚠️ 台数账必须**真算**，不能只写「省掉转运侧那几台」——
+           改成一套后，建的那边要按**两边合计需求**扩产，净省 = 合计台数 − 合并后台数。
+           （第一版本这里写「可省 X 台」是**高估**，探针当场看出来的。） */
+        const needTot=(src.dm[k]||0)+(p.dm[k]||0);
+        let mOne=0;
+        try{
+          const r2=Rexplode(k, needTot, {region:region});
+          const nd=((r2&&r2.nodes)||[]).filter(n=>n.itemId===k)[0];
+          mOne=nd?(nd.machines||0):0;
+        }catch(e){ mOne=0; }
+        const mSum=Math.round((src.mm[k]||0)+(p.mm[k]||0));
+        it.machines={now:mSum, merged:Math.round(mOne)};
+        it.note='现在两边**各建一套**（'+src.zone+' '+Math.round(src.mm[k])+' 台 ＋ '+p.zone+' '
+          +Math.round(p.mm[k])+' 台 = 共 '+mSum+' 台）—— 改成「'+src.zone+' 建一套 + 转运」后，'
+          +'建的那边要按两边合计需求扩产到约 '+Math.round(mOne)+' 台 → 合计省约 '
+          +Math.max(0, mSum-Math.round(mOne))+' 台，代价是这条线（'+it.lines+' 条'+(it.isPipe?'管':'带')+'）';
+      });
+    });
+  });
+  /* ③ 逐基地路数校验（单边口径） */
+  Object.keys(outs.byBase).forEach(lid=>{
+    const b=outs.byBase[lid];
+    b.over=(b.lines>b.slot);
+    if(b.over) outs.ok=false;
+  });
+  if(!outs.cross.length&&!outs.share.length) outs.notes.push('当前分配下没有转运需求（各基地自给自足）');
+  return outs;
+}
+/* 转运清单报告渲染（第 4 期） */
+function RtransHtml(tp){
+  if(!tp) return '';
+  if(!(tp.cross||[]).length&&!(tp.share||[]).length&&!(tp.notes||[]).length) return '';
+  const G='#185FA5', W=RW_COL.warn, B=RW_COL.bad;
+  let h='<div class="c-sub" style="margin-top:6px"><span><b style="color:'+G+'">跨基地转运清单（第 4 期）</b>'
+    +'<span class="lo-tag">按存取口路数校验</span></span></div>';
+  (tp.notes||[]).forEach(n=>{ h+='<div class="c-sub" style="margin-top:2px"><span class="c-id">'+esc(n)+'</span></div>'; });
+  if((tp.cross||[]).length){
+    h+='<div class="c-sub" style="margin-top:4px"><span><b>① 跨地区收货</b> —— 谷地 ↔ 武陵走传输协议，一条路线一次只能传一种</span></div>';
+    tp.cross.forEach(x=>{
+      h+='<div class="c-sub" style="margin-top:2px"><span>· '+esc(x.name)+' <b>'+x.perMin+'</b>/分：'
+        +esc(x.from)+' → <b>'+esc(x.to)+'</b> · '+(x.isPipe?'管道':'传送带')+' <b>'+x.lines+'</b> 条'
+        +(x.blocked?('　<span style="color:'+W+'">'+esc(x.blocked)+'</span>'):'')+'</span></div>';
+    });
+  }
+  if((tp.share||[]).length){
+    h+='<div class="c-sub" style="margin-top:4px"><span><b>② 同地区基地间（共享中间料）</b> —— 现在是「各建一套」，下面是「改一套 + 转运」的账</span></div>';
+    tp.share.forEach(x=>{
+      h+='<div class="c-sub" style="margin-top:2px"><span>· '+esc(x.name)+' <b>'+x.perMin+'</b>/分：'
+        +esc(x.from)+' → <b>'+esc(x.to)+'</b> · '+(x.isPipe?'管道':'传送带')+' <b>'+x.lines+'</b> 条</span></div>';
+      if(x.note) h+='<div class="c-sub" style="margin-top:1px"><span class="c-id">　　'+esc(x.note)+'</span></div>';
+    });
+  }
+  const lids=Object.keys(tp.byBase||{});
+  if(lids.length){
+    h+='<div class="c-sub" style="margin-top:4px"><span><b>③ 逐基地路数校验</b> —— 单边存取口路数（一口占 3 格宽；谷地实测、武陵按公式推算）</span></div>';
+    lids.forEach(lid=>{
+      const b=tp.byBase[lid];
+      h+='<div class="c-sub" style="margin-top:2px"><span>· <b>'+esc(b.zone)+'</b>：转运需要 <b>'+b.lines
+        +'</b> 路 / 单边上限 <b>'+b.slot+'</b> 路'
+        +(b.over?('　<b style="color:'+B+'">⚠ 超出 '+(b.lines-b.slot)+' 路 —— 少转几样，或把相关产线挪到同一片基地</b>')
+                :'　在限内 ✓')+'</span></div>';
+    });
+  }
+  h+='<div class="c-sub" style="margin-top:4px"><span class="c-id">数据边界（硬）：'
+    +'<b>单口 / 整线的每分钟吞吐配置表里没有</b> —— 所以这里只校验「路数」（能接几条带/管），'
+    +'不校验「每分钟过不过得去」；后者要实测，本工具不编数字。'
+    +'路数是<b>单边</b>口径：一片基地铺几条存取线就有几条边可用（谷地主 2 条边、副基地 1 条边，武陵要自己摆）→ 实际可用路数不小于这里列的上限。'
+    +'载具口径：传送带 '+tp.belt+'/分、管道 '+tp.pipe+'/分。</span></div>';
   return h;
 }
 /* ⭐⭐ v160（2026-09-25，博士拍板方案 B「换目标自动重排」）：切换目标物品 → 该地区所有基地的产线**自动跟着换**。
@@ -6409,7 +6563,7 @@ function RgenShipOf(items, region){
        那个用 Lregion()＝当前基地所在地区，必须先选基地、且只在一个地区内工作。 */
 function LgenAll(){
   const L=Linit();
-  L.rbase=null;                 /* 与第 2 期的单地区报告互斥：报告区只显示一份 */
+  L.rbase=null; L.rtrans=null;  /* 与第 2 期的单地区报告互斥：报告区只显示一份 */
   const ts=RxlTargets();
   if(!ts.length){ L.msg='先选目标物品（或用「＋ 目标」加几个）—— 一键生成得先有目标'; render(); return; }
   const alloc=RxlAll(ts);
@@ -6423,6 +6577,8 @@ function LgenAll(){
   (alloc.regions||[]).forEach(r=>{ if(alloc.byRegion[r]&&alloc.byRegion[r].length) rbs.push(RbaseBest(alloc.byRegion[r], r)); });
   L.rgenRbs=rbs;
   L.rgenAdv=RgenAdvice(rbs);
+  /* ⭐第 4 期：转运清单要在分配结果上跑 Rexplode（每地区 ≤4 次）→ 只在这里算一次，不进渲染热路径 */
+  try{ L.rtrans=RtransPlan(rbs); }catch(e){ L.rtrans=null; }
   if(!rbs.some(rb=>rb.assign.some(a=>a.items.length))){
     L.rgenShip=[];
     L.msg='跨地区分配完成，但没有目标真能落到基地上（见报告）'; render(); return;
@@ -7405,7 +7561,7 @@ function Rreport(P, pw, bw, th, lim, st, rawNeed, sc){
         RxlHtml()}
       ${/* ⭐第 3 期：跨地区一键生成报告 —— 点过「一键生成（全地区）」后显示
              （含地区分配 / 各地区基地分配 / 跨地区收货 / 微调建议）。与第 2 期报告互斥（见 LgenAll/LassignRun） */
-        Linit().rgen ? RgenHtml(Linit().rgen, Linit().rgenRbs, Linit().rgenAdv, Linit().rgenShip) : ''}
+        Linit().rgen ? RgenHtml(Linit().rgen, Linit().rgenRbs, Linit().rgenAdv, Linit().rgenShip, Linit().rtrans) : ''}
       ${/* ⭐第 2 期：基地级分配（同一地区内 4 基地）—— 仅当已算过（点过「一键分配落画布」）且无跨地区结果时显示 */
         (Linit().rbase && !Linit().rgen && Linit().rbase.regionName===Lregion()) ? RbaseBestHtml(Linit().rbase) : ''}
       ${P.res.seeds.length?`

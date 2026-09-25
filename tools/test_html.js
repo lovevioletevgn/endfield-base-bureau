@@ -1199,6 +1199,66 @@ chk('第3期 LgenAll：分配结果缓存在 L.rgen（报告区据此渲染）',
     !!(A.LO.rgen && A.LO.rgen.assign && A.LO.rgen.assign.length));
 A.Lundo();
 
+/* ═══ 第 4 期（v167，博士选「同地区基地间 + 跨地区都做」）：跨基地转运清单 + 带宽校验 ═══
+   数据边界（硬，见规格 9.2）：单口/整线吞吐配置表里**没有** → 只按「路数」校验，不编吞吐数字。
+   路数 = bases.json 的 slotsPerSide（谷地主 23 / 副 13 实测；武陵 26 / 16 推算）。 */
+const T4 = (() => {
+  const al = A.RxlAll([{ id: 'item_iron_cmpt', rate: 10 }, { id: 'item_muck_xiranite_1', rate: 10 }]);
+  const rbs = [];
+  al.regions.forEach(r => { if (al.byRegion[r] && al.byRegion[r].length) rbs.push(A.RbaseBest(al.byRegion[r], r)); });
+  return { al: al, rbs: rbs, tp: A.RtransPlan(rbs) };
+})();
+chk('第4期 RtransPlan：空输入给提示、不崩', (() => {
+  const tp = A.RtransPlan([]);
+  return tp && tp.ok === false && tp.notes.length >= 1 && tp.notes[0].indexOf('一键生成') >= 0;
+})());
+chk('第4期 路数口径：谷地主 23 / 副 13、武陵主 26 / 副 16（slotsPerSide）', (() => {
+  const s = {};
+  A.Lbases().forEach(b => { s[b.zoneName] = A.RxlSlots(b.side); });
+  return s['枢纽区'] === 23 && s['谷地通道'] === 13 && s['武陵城'] === 26 && s['景玉谷'] === 16;
+})());
+chk('第4期 RtransPlan：① 跨地区段出清单（料/流量/几条线/起止）', (() => {
+  const tp = T4.tp;
+  return tp.cross.length >= 1 && tp.cross.every(x => x.lines >= 1 && x.cap > 0 && x.perMin > 0 && !!x.to)
+    && Object.keys(tp.byBase).length >= 1;
+})());
+chk('第4期 RtransPlan：③ 逐基地路数校验带 over/slot 判定', (() => {
+  const lids = Object.keys(T4.tp.byBase);
+  return lids.length >= 1 && lids.every(k => typeof T4.tp.byBase[k].over === 'boolean'
+    && typeof T4.tp.byBase[k].slot === 'number' && T4.tp.byBase[k].slot > 0);
+})());
+chk('第4期 RtransPlan：② 同地区段能出「共享中间料 + 线数 + **真算的**台数账」', (() => {
+  /* ⚠️ 别按名字前缀取目标：「同名多 id」是本库常态（赤铜瓶 12 个 id，第一个是「赤铜瓶·清水」变体）；
+     这里用探针实测到的、确实共享中间料的一对（名字精确匹配，找不到就 fail 暴露数据变化）。 */
+  const all = A.RwTargets();
+  const a = all.filter(x => x.name === '优质芽针针剂')[0];
+  const b = all.filter(x => x.name === '优质锦草软饮')[0];
+  if (!a || !b) return false;
+  const fake = [{ regionName: '四号谷地', bases: A.Lbases().filter(x => x.domainName === '四号谷地'),
+    assign: [
+      { levelId: 'map01_lv001', zoneName: '枢纽区', role: '主基地', items: [{ id: a.id, name: a.name, rate: 10 }] },
+      { levelId: 'map01_lv002', zoneName: '谷地通道', role: '副基地', items: [{ id: b.id, name: b.name, rate: 10 }] }] }];
+  const tp = A.RtransPlan(fake);
+  const one = tp.share[0];
+  /* 台数账必须**真算**（now = 两边各建一套之和；merged = 合并需求后的台数）——
+     第一版写「可省转运侧那几台」是高估，探针当场看出来的，这条锁把它钉住。 */
+  return tp.share.length >= 1 && !!one && one.lines >= 1 && !!one.machines
+    && typeof one.machines.now === 'number' && typeof one.machines.merged === 'number'
+    && one.note.indexOf('合计省') >= 0 && one.note.indexOf('两边合计需求') >= 0;
+})());
+chk('第4期 RtransHtml：渲染含标题 / 数据边界 / 逐基地校验三段', (() => {
+  const h = A.RtransHtml(T4.tp);
+  return h.indexOf('跨基地转运清单（第 4 期）') >= 0 && h.indexOf('吞吐配置表里没有') >= 0
+    && h.indexOf('逐基地路数校验') >= 0;
+})());
+chk('第4期 RtransHtml：null 输入返回空串（不崩）', A.RtransHtml(null) === '');
+chk('第4期 反向：RtransPlan 只出清单不改分配（源码级：体内不调 RbaseBest / RxlAll / Lpush）', (() => {
+  const i = rawCode.indexOf('function RtransPlan');
+  if (i < 0) return false;
+  const seg = rawCode.slice(i, i + 4400);
+  return seg.indexOf('RbaseBest(') < 0 && seg.indexOf('RxlAll(') < 0 && seg.indexOf('Lpush(') < 0;
+})());
+
 // 反向锁：不得把 sinkPlan 相关的重活塞进 RbaseBest（谷地不查 sink → 不该调 Rexplode）
 chk('第2期 反向：谷地分配不查 sink（RW_SINK_ZONE_REGIONS 不含四号谷地）',
     html.indexOf("RW_SINK_ZONE_REGIONS=['武陵']") >= 0);
