@@ -275,7 +275,7 @@ HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta content="width=device-width, initial-scale=1.0" name="viewport">
-<title>终末地基建知识库 · 1.5.3</title>
+<title>终末地基建规划局 · 1.5.3</title>
 <style>
 :root{
   --bg:#FAFAF7; --panel:#FFFFFF; --line:#E4E2D9; --line2:#D3D1C7;
@@ -693,7 +693,7 @@ footer{font-size:11.5px;color:var(--ink3);margin-top:36px;padding-top:18px;borde
 <header>
   <div class="hd">
     <div class="hd-top">
-      <h1>终末地基建知识库</h1>
+      <h1>终末地基建规划局</h1>
       <span class="ver" id="ver"></span>
     </div>
     <div class="hd-meta" id="hdmeta"></div>
@@ -8162,7 +8162,7 @@ function renderOverview(){
 
   return `<div class="note">
     <b>⚠ 数据边界（重要）</b><br>
-    本知识库只收录游戏配置表（TableCfg）中的<b>静态数据</b>：设施名称、耗电、占地、配方、描述文本等。<br>
+    本工具只收录游戏配置表（TableCfg）中的<b>静态数据</b>：设施名称、耗电、占地、配方、描述文本等。<br>
     <b>矿脉纯度产率、建设值/RDM 收益、地区建设等级加成</b>这类运行时数值<b>不在配置表内</b>，仍需游戏内实测。<br>
     好消息是：<b>射程、间距、供电范围等机制数值写在建筑描述文本里</b>，本库已自动抽取，见「机制数值」页。
   </div>

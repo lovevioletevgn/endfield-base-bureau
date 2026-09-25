@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-终末地基建知识库 —— 数据构建脚本 v4
+终末地基建规划局 —— 数据构建脚本 v4
 从 AKEDatabase 数据域导出的原始 TableCfg 中提取基建相关内容：
   - 解析文本 ID 指向的中文文本
   - 打地区标签（placeDomains / domainId）
@@ -833,7 +833,7 @@ def main():
         "dataDomain": DATA_DOMAIN,
         "builtAt": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "licenseNote": "游戏数据版权归鹰角网络及相关权利方所有。本项目仅供学习、交流与研究使用。",
-        "caveat": "本知识库只收录游戏配置表（TableCfg）中的静态数据。矿脉产率、建设值收益等运行时数值不在配置表内，需游戏内实测。",
+        "caveat": "本工具只收录游戏配置表（TableCfg）中的静态数据。矿脉产率、建设值收益等运行时数值不在配置表内，需游戏内实测。",
         "blueprintNote": "占地格数取 range.width/depth/height（整数格），可直接用于蓝图排布；modelHeight 是模型实际高度（小数/米），仅供视觉参考。接口坐标以建筑自身占地格为参照。",
         "counts": {
             "buildings": len(building_list),
