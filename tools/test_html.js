@@ -1025,6 +1025,79 @@ chk('v159.1 全失败时切回原基地（done 为空不乱跳）', (() => {
 chk('v159.1 源码级：落点优先（done.length ? done[0].levelId : origBase）',
     /L\.base\s*=\s*done\.length\s*\?\s*done\[0\]\.levelId\s*:\s*origBase/.test(rawCode));
 
+/* ═══ v160（2026-09-25 博士拍板方案 B）：切换目标物品 → 该地区基地产线自动跟着换 ═══
+   病灶：Ltgt 原来只改 L.tgt + L.msg，不碰 L.objs → 画布纹丝不动，必须手动清空才生效。
+   修法：Ltgt 探测「该地区是否有基地画布带排布器生成的产线」，有则调 LretargetAll 逐基地重排。
+   三条关键行为必须锁死：① 有产线 → 真换 ② 空画布 → 不凭空造 ③ 整批一个撤销点。 */
+chk('v160 有产线时切目标：该地区基地的旧链被换成新目标链（真换了，不是提示）', (() => {
+  /* 前置：先在谷地主生成一条产线（用 filter_core 之类的中小链） */
+  A.LbaseSet('map01_lv001'); A.LO.objs = [];
+  A.LO.tgt = 'item_filter_core'; A.LO.rate = 10; A.LO.mt = [];
+  A.LawRun('item_filter_core', 10);
+  const before = A.LO.objs.filter(o => o.planRole === 'machine').map(o => o.r || o.id).join('|');
+  if (!before) return false;                       /* 前置：确实生成了 */
+  /* 换目标 → 应触发 LretargetAll 自动重排 */
+  A.Ltgt('item_iron_cmpt');
+  const after = (A.LO.bases['map01_lv001'] ? A.LO.bases['map01_lv001'].objs || [] : [])
+    .filter(o => o.planRole === 'machine');
+  const afterSig = after.map(o => o.r || o.id).join('|');
+  /* 换上来的链必须与旧链不同，且画布上确实有新件 */
+  return after.length > 0 && afterSig !== before && A.LO.tgt === 'item_iron_cmpt';
+})());
+chk('v160 切目标后视线**留在原基地**（不该被甩去别的画布）', (() => {
+  A.LbaseSet('map01_lv001');
+  A.LawRun('item_filter_core', 10);
+  A.Ltgt('item_iron_cmpt');
+  return A.LO.base === 'map01_lv001';
+})());
+chk('v160 空画布切目标：不凭空生成产线（该地区没有任何 planRole 件 → 只改目标 + 提示）', (() => {
+  /* 清空该地区全部基地的画布内容，且清掉 plan 缓存 */
+  A.Lbases().filter(r => r.domainName === '四号谷地').forEach(r => {
+    if (A.LO.bases[r.levelId]) { A.LO.bases[r.levelId].objs = []; A.LO.bases[r.levelId].plan = null; }
+  });
+  A.LbaseSet('map01_lv001');
+  A.render();
+  A.Ltgt('item_iron_cmpt');
+  /* 空画布 → 走老路径：只改目标与提示，任何基地都不该冒出 planRole 件 */
+  const anyPlan = A.Lbases().filter(r => r.domainName === '四号谷地').some(r => {
+    const s = A.LO.bases[r.levelId];
+    return s && s.objs && s.objs.some(o => o.planRole);
+  });
+  /* ⚠️ 老路径的提示是「排产目标改为「X」」（不含「还没有」——那是 LretargetAll 的前置分支文案）。
+     断言只认两件事实：① 没有任何基地冒出产线 ② 目标确实改了。 */
+  return !anyPlan && A.LO.tgt === 'item_iron_cmpt';
+})());
+chk('v160 自动重排整批只占一个撤销点（不是每基地各一个）', (() => {
+  /* 先造两片基地都有产线的情形，再切目标，比对撤销栈增量 */
+  A.LbaseSet('map01_lv001'); A.LO.objs = []; A.LO.mt = []; A.LO.rate = 10;
+  A.LawRun('item_filter_core', 10);
+  A.LbaseSet('map01_lv002'); A.LO.objs = [];
+  A.LawRun('item_filter_core', 10);
+  A.LbaseSet('map01_lv001');
+  const u0 = A.LO.undo.length;
+  A.Ltgt('item_iron_cmpt');
+  const u1 = A.LO.undo.length;
+  /* 两片基地都重排，但撤销栈只 +1 */
+  return u1 === u0 + 1;
+})());
+chk('v160 源码级：Ltgt 内接入 LretargetAll（且带 anyPlan 前置探测）',
+    /LretargetAll\(v,\s*region\)/.test(rawCode)
+    && /anyPlan/.test(rawCode.slice(rawCode.indexOf('function Ltgt'), rawCode.indexOf('function Ltgt') + 1400)));
+chk('v160 源码级：LretargetAll 只在「画布上有 planRole 件」的基地重排（空基地不动）',
+    (() => {
+      const i = rawCode.indexOf('function LretargetAll');
+      if (i < 0) return false;
+      const seg = rawCode.slice(i, i + 2600);
+      return /o\.planRole/.test(seg) && /targets\.push/.test(seg);
+    })());
+chk('v160 源码级：重排失败时恢复该基地原内容（绝不留空画布）',
+    (() => {
+      const i = rawCode.indexOf('function LretargetAll');
+      if (i < 0) return false;
+      const seg = rawCode.slice(i, i + 2600);
+      return /JSON\.parse\(before\)/.test(seg) && /JSON\.stringify/.test(seg);
+    })());
+
 // 反向锁：不得把 sinkPlan 相关的重活塞进 RbaseBest（谷地不查 sink → 不该调 Rexplode）
 chk('第2期 反向：谷地分配不查 sink（RW_SINK_ZONE_REGIONS 不含四号谷地）',
     html.indexOf("RW_SINK_ZONE_REGIONS=['武陵']") >= 0);

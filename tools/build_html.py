@@ -5192,11 +5192,25 @@ function Lreroll(){
   render();
 }
 /* 目标物品 / 速率的选择 —— 不进撤销栈，也不重渲染速率框（重渲染会让输入框失焦） */
-function Ltgt(v){ const L=Linit(); L.tgt=v; L.msg='排产目标改为「'+RwItemName(v)+'」';
+function Ltgt(v){ const L=Linit(); L.tgt=v;
   /* ⭐v82（博士截图：换了目标，选货网格还挂着旧链的蓝铁矿/蓝铁块）：候选是按目标链算的，
      换目标必须重算。LshipPanel 里「旧选中不在新候选里就回退默认原料叶」会顺手把 shipPick 纠正过来；
      链没换过（新旧目标共用一条链）时重算结果一致，多跑一趟 Rexplode 无感。 */
   if(L.shipIn) LshipPanel(null);
+  /* ⭐v160（2026-09-25，博士拍板方案 B）：切目标 → **该地区所有基地的产线自动跟着换**。
+     病灶：原来这里只改 L.tgt，画布上的件与目标毫无绑定 → 必须手动清空才生效（博士实测）。
+     触发条件：① 在某个基地里（L.base 非空、有地区）② 该地区至少有一片基地画布上有排布器生成的产线。
+     不满足 → 走老路径（只改目标 + 提示），行为与改动前一字不差（自由模式 / 空画布都不受影响）。 */
+  const region=(L.base?((Lbases().filter(r=>r.levelId===L.base)[0]||{}).domainName||''):'');
+  if(region && v){
+    let anyPlan=false;
+    Lbases().filter(r=>r.domainName===region).forEach(r=>{
+      const slot=((LO.bases||{})[r.levelId])||null;
+      if(slot&&slot.objs&&slot.objs.some(o=>o.planRole)) anyPlan=true;
+    });
+    if(anyPlan){ LretargetAll(v, region); return; }   /* 内部自带 render 与提示 */
+  }
+  L.msg='排产目标改为「'+RwItemName(v)+'」';
   render(); }
 function Lrate(v){ const L=Linit(); L.rate=Math.max(1, +v||1); }
 /* ⭐⑥-2 多目标（2026-09-22）：「＋ 目标」行 —— 多个目标共享的中间料只建一套再分流 */
@@ -5790,6 +5804,82 @@ function RbaseBestHtml(rb){
     +'优化逐层：主基地优先 &gt; 溢出基地数最少 &gt; 面积浪费最少。'
     +'报告里的「约 N 格」仍是估算值（仅供横向比较），权威判据是试摆结果。</span></div>';
   return h;
+}
+/* ⭐⭐ v160（2026-09-25，博士拍板方案 B「换目标自动重排」）：切换目标物品 → 该地区所有基地的产线**自动跟着换**。
+   ────────────────────────────────────────────────────────────────────────────
+   病灶（博士实测）：`Ltgt(v)` 只改 L.tgt + L.msg，不碰 L.objs；画布上 planRole='machine' 的件与 L.tgt
+   之间没有绑定 → 切完目标画布纹丝不动，必须**先「清空画布」再重排**才生效。
+   为什么是「全地区」而不是「当前基地」（博士 2026-09-25 选）：tgt/rate 本来就是**全局字段**
+   （见 Linit 注释「显示开关与产线目标参数跨基地共享」）→ 只重排当前基地的话，切到别的基地会看到
+   「目标已变而画布还是旧的」= 新的不一致。所以对齐 LapplyAssign 的形态逐基地换。
+   ⭐ 保护条件（关键）：**只重排「画布上本来就有排布器生成的产线」的基地**。空基地一字不动 ——
+      否则一个地区 4 片基地里 3 片是空的，切个目标就给空基地凭空建 3 条产线 = 失控。
+   ⭐ 失败安全：某基地摆不下（装不下 / 超台数 / 门禁不过）→ **该基地原内容原样保留**，只记进 failed。
+      绝不能出现「切了个目标，画布反而空了」。空速率 / 空目标同理，直接不动。
+   ⚠️ 复用 LapplyAssign 的两条成熟手法：① 整批**只占一个撤销点**（裁掉循环内 LawRun 自 push 的快照）
+      ② 落点回到**原基地**（与 LapplyAssign 的「首个落点」不同：切目标是你主动改参数，
+      不该把你甩去别的画布；原地看结果才符合直觉）。 */
+function LretargetAll(newTgt, region){
+  const L=Linit();
+  const origBase=L.base, origMt=(L.mt||[]).slice();
+  const rate=Math.max(1,+L.rate||1);
+  /* 该地区全部基地（保持 Lbases 顺序：主基地在前） */
+  const bases=Lbases().filter(r=>r.domainName===region);
+  if(!bases.length){ L.msg='当前地区没有可排布的基地'; render(); return; }
+  /* 前置探测：哪些基地「画布上有排布器生成的产线」—— 只有这些才值得重排 */
+  const targets=[];
+  bases.forEach(r=>{
+    const slot=((LO.bases||{})[r.levelId])||null;
+    const objs=slot?slot.objs:null;
+    if(objs&&objs.some(o=>o.planRole)) targets.push(r);
+  });
+  if(!targets.length){
+    /* 一片有产线的基地都没有 → 只记目标，行为与改动前完全一致（不 push、不重算） */
+    L.tgt=newTgt; L.msg='排产目标改为「'+RwItemName(newTgt)+'」（画布上还没有排布器生成的产线，先点「生成产线」）';
+    if(L.shipIn) LshipPanel(null);
+    render(); return;
+  }
+  Lpush();                          /* ① 整批一次撤销点 */
+  const undoMark=L.undo.length;
+  const done=[], failed=[];
+  const keepPick=L.pick;
+  /* ② 逐基地：清旧链 → 按新目标重排。复用与 LapplyAssign 相同的手法。
+     ⚠️ 先切基地后写字段（访问器语义，踩过三次的坑） */
+  for(let i=0;i<targets.length;i++){
+    const r=targets[i];
+    L.base=r.levelId; L.pick=null;
+    const snapshot=null;            /* 不另做快照：整批撤销已由 ① 覆盖 */
+    const before=JSON.stringify((((LO.bases||{})[r.levelId])||{}).objs||null);
+    L.objs=L.objs.filter(o=>!o.planRole); L.sel=[]; L.plan=null;
+    let n=0, why='';
+    try{
+      /* v160：换目标时清掉「＋目标」的额外链 —— 那些是旧目标的搭配，跟着换没有意义；
+         等博士在新目标下重新加。主目标只有一个（就是 newTgt）。 */
+      L.mt=[];
+      LawRun(newTgt, rate);
+      n=L.objs.filter(o=>o.planRole).length;
+      if(!n) why=L.msg||'没有生成任何机器';
+    }catch(e){ why=(e&&e.message)||'异常'; n=0; }
+    if(n>0) done.push({zone:r.zoneName, levelId:r.levelId, objs:n});
+    else{
+      /* 失败 → 把该基地**原内容**恢复回去（绝不留空画布） */
+      try{ if(before!==null && LO.bases[r.levelId]) LO.bases[r.levelId].objs=JSON.parse(before); }catch(e2){}
+      LO.bases[r.levelId] && (LO.bases[r.levelId].plan=null);
+      failed.push({zone:r.zoneName, why:why||'没有生成任何机器'});
+    }
+  }
+  L.mt=origMt; L.pick=keepPick;
+  /* ③ 裁掉循环内 LawRun 自 push 的快照 → 整批只留 ① 那一个撤销点 */
+  if(L.undo.length>undoMark) L.undo.length=undoMark;
+  L.redo.length=0;
+  /* ④ 视线落回**原基地**（切目标不该把博士甩去别的画布） */
+  L.base=origBase;
+  L.msg='目标已切到「'+RwItemName(newTgt)+'」：'+done.length+' 片基地产线已重排'
+    +(done.length?('（'+done.map(d=>d.zone+' '+d.objs+' 件').join('；')+'）'):'')
+    +(failed.length?('；⚠ '+failed.length+' 片没重排（已保留原内容）：'
+      +failed.map(f=>f.zone+'（'+f.why+'）').join('；')):'')
+    +' —— 一次撤销可整批退回';
+  render();
 }
 /* ⭐⭐ 第 2 期 Wave 2（2026-09-25）：把基地级分配结果**落到各基地画布**。
    ────────────────────────────────────────────────────────────────────────────
