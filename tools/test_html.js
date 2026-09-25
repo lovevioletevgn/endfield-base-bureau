@@ -875,6 +875,77 @@ chk('v145 自由模式不出基地页签', tabsOf(outEl.innerHTML || '') === 0);
 loReset(50);
 A.render();
 
+// ---- 5d-7c. 第 2 期 基地级分配（RbaseBest 纯函数 + LapplyAssign 落画布）----
+// 判据见 docs/最优排布-设计规格.md 第七节：B1 地区可行 / B2 容量可行；
+// 装箱顺序 = 主基地优先（装不下才溢副基地）；武陵另有「销毁专区」（谷地不做）。
+// 数据边界（探针实测）：同地区 4 基地地域限定相同、矿点只有地区级 → 只有「可用面积」能区分。
+A.LbaseSet('map01_lv001');
+chk('第2期 RbaseBest：空目标时给提示、不崩', (() => {
+  const rb = A.RbaseBest([], '四号谷地');
+  return rb && rb.note && rb.assign.length === 0;
+})());
+chk('第2期 RbaseBest：小目标进主基地（主基地优先）', (() => {
+  const rb = A.RbaseBest([{ id: 'item_filter_core', name: '分离芯', rate: 10 }], '四号谷地');
+  const main = rb.assign.filter(a => a.role === '主基地')[0];
+  return rb.ok && main && main.items.length === 1 && main.items[0].id === 'item_filter_core'
+    && rb.assign.filter(a => a.role !== '主基地').every(a => !a.items.length);
+})());
+chk('第2期 RbaseBest：基地表按「主基地优先、副基地按可用格降序」排', (() => {
+  const rb = A.RbaseBest([{ id: 'item_filter_core', name: '分离芯', rate: 10 }], '四号谷地');
+  return rb.bases[0].role === '主基地' && rb.bases.slice(1).every(b => b.role !== '主基地');
+})());
+chk('第2期 RbaseBest：谷地不启销毁专区（博士：新手村不做）', (() => {
+  const rb = A.RbaseBest([{ id: 'item_filter_core', name: '分离芯', rate: 10 }], '四号谷地');
+  return rb.sinkZone === '' && rb.sinkMoved.length === 0;
+})());
+chk('第2期 RbaseBest：武陵启销毁专区（带 sink 的小产线挪去副基地）', (() => {
+  const t = A.RwTargets().filter(x => x.name === '实验息壤块')[0];
+  if (!t) return false;
+  const rb = A.RbaseBest([{ id: t.id, name: t.name, rate: 10 }], '武陵');
+  return rb.sinkZone === '武陵' && rb.sinkMoved.length === 1
+    && rb.sinkMoved[0].zone === rb.bases.filter(b => b.role !== '主基地')[0].zoneName;
+})());
+chk('第2期 RbaseBest：装不下的目标如实点名、不静默丢（B2 报告）', (() => {
+  const all = A.RwTargets();
+  const big = all.filter(x => x.name.indexOf('中容武陵电池') >= 0)[0];
+  if (!big) return false;
+  const rb = A.RbaseBest([{ id: big.id, name: big.name, rate: 10 }], '四号谷地');
+  return rb.unassigned.length === 1 && rb.unassigned[0].kind === 'capacity'
+    && rb.unassigned[0].why.indexOf('装不下') >= 0;
+})());
+chk('第2期 RbaseBest：地区不可行的目标点名（B1）', (() => {
+  const all = A.RwTargets();
+  const only = all.filter(x => x.name === '柑实')[0];   /* 柑实：武陵没有机器配方（探针实测） */
+  if (!only) return false;
+  const rb = A.RbaseBest([{ id: only.id, name: only.name, rate: 10 }], '武陵');
+  return rb.unassigned.length === 1 && rb.unassigned[0].kind === 'region';
+})());
+// LapplyAssign：逐基地落盘 + 作用域隔离 + 一次撤销整批回退
+A.LbaseSet('map01_lv001'); A.LO.objs = [];
+A.LO.tgt = 'item_filter_core'; A.LO.rate = 10; A.LO.mt = [];
+A.render();
+const rbG = A.RbaseBest(A.RxlTargets(), '四号谷地');
+A.LapplyAssign(rbG);
+const gvMain = A.LO.bases['map01_lv001'] ? A.LO.bases['map01_lv001'].objs.filter(o => o.planRole).length : 0;
+chk('第2期 LapplyAssign：分配的目标落到主基地画布上（有排布器生成的件）',
+    gvMain > 0, '谷地主 planRole 件数=' + gvMain);
+chk('第2期 LapplyAssign：落画布后 base 回到博士原落点（视线不变）',
+    A.LO.base === 'map01_lv001', A.LO.base);
+chk('第2期 LapplyAssign：只动本地区，武陵基地一字不改', (() => {
+  const wl = A.LO.bases['map02_lv002'];
+  return !wl || !wl.objs || wl.objs.length === 0;
+})());
+const undoLenAfter = A.LO.undo.length;
+A.Lundo();
+const gvAfterUndo = A.LO.bases['map01_lv001'] ? A.LO.bases['map01_lv001'].objs.filter(o => o.planRole).length : 0;
+chk('第2期 一次撤销可整批退回（落画布只占一个撤销点）',
+    undoLenAfter >= 1 && gvAfterUndo === 0, '撤销后 planRole 件数=' + gvAfterUndo);
+// 反向锁：不得把 sinkPlan 相关的重活塞进 RbaseBest（谷地不查 sink → 不该调 Rexplode）
+chk('第2期 反向：谷地分配不查 sink（RW_SINK_ZONE_REGIONS 不含四号谷地）',
+    html.indexOf("RW_SINK_ZONE_REGIONS=['武陵']") >= 0);
+loReset(50);
+A.render();
+
 // ---- 5d-7c. v148 供电范围层（博士：「画布里供电桩也不显示供电范围，放的时候怎么确定设备在不在供电范围里」）----
 // 数据：raw/FactoryPowerPoleTable.json 的 rangeExtend（与气体散布机同字段同口径）。
 // 供电桩/息壤供电桩本体 2×2 外扩 5 → 12×12；中继器/息壤中继器本体 3×3 外扩 2 → 7×7。

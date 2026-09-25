@@ -2118,6 +2118,8 @@ function Linit(){
       palOpen:false,
     /* ⭐v109 协议核心出货：{uid:{口index:物品id}} + 当前打开的选货浮层 {uid,idx} */
     hubPicks:{}, dlvPop:null,
+    /* ⭐第 2 期：基地级分配结果缓存（RbaseBest 的返回；报告区显示用） */
+    rbase:null,
     /* ⭐v145 多基地：基地级字段（LO_BASE_KEYS）按基地各存一份 —— 上面那几个同名字段
        会被 LbaseHook() 用访问器接管，读写都落到 bases[当前基地] 上。 */
     bases:{}};
@@ -2180,8 +2182,12 @@ function Lmk(b,x,y,rot){
   if(vaporizerOf(b)) o.gas=1;
   return o;
 }
-/* ---- 撤销 / 重做：整块快照（尺寸 + 摆放），最简单也最不容易错（单页几十座量级） ---- */
-function Lsnap(){ const L=Linit(); return JSON.stringify({size:L.size, base:L.base, objs:L.objs}); }
+/* ---- 撤销 / 重做：整块快照（尺寸 + 摆放），最简单也最不容易错（单页几十座量级） ----
+   ⭐⭐ 第 2 期（2026-09-25）：快照必须覆盖**全部基地**才能支持跨基地操作（如「一键分配落画布」）。
+   原实现只存当前基地 {size,base,objs} —— 一次改动多个基地时，撤销只能回退当前那片。
+   修法：额外存 `basesAll`（LO.bases 整份）。绝大多数操作只动当前基地，basesAll 与逐字段恢复等价；
+   跨基地操作（LapplyAssign）则靠它整体回退。字段可缺省（旧快照/测试构造的快照仍兼容）。 */
+function Lsnap(){ const L=Linit(); return JSON.stringify({size:L.size, base:L.base, objs:L.objs, basesAll:L.bases}); }
 function Lpush(){
   const L=Linit();
   L.undo.push(Lsnap());
@@ -2191,7 +2197,11 @@ function Lpush(){
 function Lapply(s){
   const L=Linit(), d=JSON.parse(s);
   /* ⭐v145 顺序要紧：基地级字段是访问器，先写 size 会落到**当前**基地上；
-     必须先切 base 指针，再把快照的尺寸/内容写进那个基地（否则「撤销切基地」会把尺寸写错格子）。 */
+     必须先切 base 指针，再把快照的尺寸/内容写进那个基地（否则「撤销切基地」会把尺寸写错格子）。
+     ⭐第 2 期更细：basesAll 整体覆盖 MUST 在「切 base + 写 objs」**之前** ——
+     否则会把 basesAll 里那份「回退目标基地的 objs」又用 d.objs 覆盖（两者应当一致，但先覆盖 basesAll
+     可保证「其他基地」也被整体回退，而 d.objs 只负责当前基地的最终值）。 */
+  if(d.basesAll) L.bases=d.basesAll;
   L.base=d.base||''; L.size=d.size; L.objs=d.objs;
   L.sel=L.sel.filter(u=>L.objs.some(o=>o.uid===u));
 }
@@ -5542,6 +5552,214 @@ function RxlBest(targets){
   combos.sort((a,b)=>a.cost-b.cost);
   return {regions:regions, combos:combos, best:combos[0]};
 }
+/* ⭐⭐ 第 2 期（2026-09-25）：基地级分配 —— 把「哪个成品放哪片基地」下沉到同一地区内 4 个基地。
+   ────────────────────────────────────────────────────────────────────────────
+   与 RxlBest 的区别：RxlBest 分的是**地区**（谷地 vs 武陵，差异在「能不能产 + 收货压力」）；
+   本函数分的是**同一地区内的基地**。实测数据边界（探针 probe_p2_a/b，非推断）：
+     · 同一地区 4 个基地的**地域限定完全相同**（能产的机器一样）→ B1 在基地间不区分；
+     · **矿点数据只有地区级粒度**（mining_power.ores.beds[].mapMax 按地区名），**没有基地级分布**；
+     · 因此真正能区分 4 个基地的**只有「可用面积」一维** → 本函数本质是**带容量约束的装箱**。
+   装箱顺序（博士 2026-09-25 定）：
+     · **主基地优先** —— 默认所有目标先试主基地（枢纽区/武陵城），装不下才溢到副基地。
+       理由：主基地最大、离核心最近、存取口路数最多；现实中博士也优先建在主基地。
+       （放弃了「best-fit 挤最小基地」——数学上省面积，但把东西挤到副基地、主基地空着，不合直觉。）
+     · **销毁专区（地区级开关，仅 RbaseSinkZone 里列的地区启用）** —— 博士 2026-09-25：
+       「四号谷地是新手村不用做，只做武陵，以后新地区开了可能也要做销毁」。
+       启用时：**带 C6 销毁支线且副基地装得下的产线**，挪到专用副基地（选第一个副基地），
+       让主基地摆脱 C6 脏活；装不下的（如 6151 格的大链）只能留主基地，如实报告。
+       ⚠️ 实测依据（probe_p2_e）：仅谷地独有的 sink 产线 = **0 条**（谷地不必做），
+          仅武陵独有的 = 8 条（息壤系列，谷地根本产不了）→ 与博士判断一致。
+   硬约束：B1 地区可行（RxlAnalyze.ok，基地间同过同不过）/ B2 容量可行（ΣareaEst ≤ usableCells）。
+   优化（逐层）：① 溢出基地数最少 ② 面积浪费最少（已用/可用 之和最小）。
+   纯函数、无副作用、不碰 DOM —— 便于回归锁直接断言。 */
+/* 需要「销毁专区」的地区（博士 2026-09-25：谷地不做，武陵做；新地区开放后在此追加即可） */
+const RW_SINK_ZONE_REGIONS=['武陵'];
+function RbaseBest(targets, regionName){
+  const list=(targets||[]).filter(t=>t&&t.id&&+t.rate>0);
+  const outs={ ok:false, regionName:regionName||'', targets:[], bases:[], assign:[], unassigned:[],
+    dupShared:[], over:0, waste:0, sinkZone:'', sinkMoved:[], note:'' };
+  /* 该地区的基地（主+副）：主基地排最前（优先承接），副基地按可用格降序 */
+  const bases=Lbases().filter(b=>b.domainName===regionName&&b.usableCells>0)
+    .map(b=>({levelId:b.levelId, zoneName:b.zoneName, role:b.role, side:b.side,
+      usable:b.usableCells, used:0, items:[]}))
+    .sort((x,y)=>{ const xm=x.role==='主基地'?0:1, ym=y.role==='主基地'?0:1; return xm-ym || y.usable-x.usable; });
+  outs.bases=bases;
+  if(!bases.length){ outs.note='该地区没有可用基地数据'; return outs; }
+  if(!list.length){ outs.note='先选目标物品（或用「＋ 目标」加几个），才做得了基地级分配'; return outs; }
+  /* 每个目标的地区适配（B1）+ 是否带 C6 销毁支线（sink）+ 面积估算 */
+  const sinkZone=(RW_SINK_ZONE_REGIONS.indexOf(regionName)>=0);
+  outs.sinkZone=sinkZone?regionName:'';
+  const an=list.map(t=>{
+    const a=RxlAnalyze(t.id, t.rate, regionName);
+    return {t:t, a:a, est:a.areaEst||0, sinks:0,
+      name:t.name||RwItemName(t.id)};
+  });
+  an.forEach(x=>{ if(!x.a.ok){ outs.unassigned.push({id:x.t.id, name:x.name,
+    rate:x.t.rate, why:'地区不可行：'+((x.a.blocked||[])[0]||'无机器配方'), kind:'region'}); } });
+  const pool=an.filter(x=>x.a.ok);
+  /* 带 sink 判定（仅销毁专区地区才需要 —— 谷地不查，省掉 99 次 Rexplode） */
+  if(sinkZone){
+    pool.forEach(x=>{
+      try{ const res=Rexplode(x.t.id, x.t.rate, {region:regionName});
+        const sp=RflowSinkPlan(res);
+        x.sinks=(sp.sinks?sp.sinks.length:0);
+      }catch(e){ x.sinks=0; }
+    });
+  }
+  /* 装箱：大链优先（first-fit-decreasing）。挑基地的顺序 =
+     「主基地优先，装不下才溢到副基地」；销毁专区地区里，带 sink 且副基地装得下的**优先去副基地**。 */
+  pool.sort((x,y)=>y.est-x.est);
+  const mainB=bases.filter(b=>b.role==='主基地')[0]||bases[0];
+  const subB=bases.filter(b=>b.role!=='主基地');
+  const zoneB=sinkZone?(subB[0]||null):null;   /* 销毁专区专用副基地（第一个副基地） */
+  /* 每个目标挑基地：返回能装下的基地里优先级最高的那个 */
+  const pickFor=x=>{
+    /* 销毁专区：带 sink 且装得进专用副基地 → 直接去那儿（让主基地干净） */
+    if(zoneB && x.sinks>0 && x.est<=zoneB.usable-zoneB.used) return {b:zoneB, sink:true};
+    /* 主基地优先：装得下就放主基地 */
+    if(x.est<=mainB.usable-mainB.used) return {b:mainB, sink:false};
+    /* 溢到副基地（按可用格降序，第一个装得下的；销毁专区副基地也是候选） */
+    for(let i=0;i<subB.length;i++){ const b=subB[i];
+      if(x.est<=b.usable-b.used) return {b:b, sink:false}; }
+    /* 销毁专区兜底：普通溢出都装不下，但专用副基地还有位置（对非 sink 目标也允许填） */
+    if(zoneB && x.est<=zoneB.usable-zoneB.used) return {b:zoneB, sink:false};
+    return null;
+  };
+  pool.forEach(x=>{
+    const pk=pickFor(x);
+    if(pk){
+      pk.b.used+=x.est;
+      pk.b.items.push({id:x.t.id, name:x.name, rate:x.t.rate, est:x.est, sinks:x.sinks});
+      if(pk.sink) outs.sinkMoved.push({name:x.name, rate:x.t.rate, zone:pk.b.zoneName, sinks:x.sinks});
+    }else{
+      const maxB=bases.slice().sort((a,b)=>b.usable-a.usable)[0];
+      outs.unassigned.push({id:x.t.id, name:x.name, rate:x.t.rate,
+        why:'装不下：约 '+x.est+' 格 > 最大基地「'+maxB.zoneName+'」可用 '+maxB.usable+' 格',
+        kind:'capacity', est:x.est});
+    }
+  });
+  /* 账：溢出基地数 + 面积浪费（Σ used/usable） */
+  outs.over=bases.filter(b=>b.used>b.usable).length;
+  outs.waste=Math.round(bases.reduce((s,b)=>s+(b.usable>0?b.used/b.usable:0),0)*1000)/1000;
+  /* 跨基地重复建的共享中间料（分到不同基地的目标对）—— 如实告知成本（见 Spec 7.4 Decision 2） */
+  const nodeOf={};
+  pool.forEach(x=>{ nodeOf[x.t.id]=Object.keys(x.a.nodeSet||{}); });
+  const seen={};
+  bases.forEach(b=>{
+    b.items.forEach(it=>{
+      (nodeOf[it.id]||[]).forEach(nid=>{ (seen[nid]=seen[nid]||[]).push(b.zoneName); });
+    });
+  });
+  Object.keys(seen).forEach(nid=>{
+    const zs=seen[nid].filter((v,i,arr)=>arr.indexOf(v)===i);
+    if(zs.length>1) outs.dupShared.push({itemId:nid, name:RwItemName(nid), zones:zs});
+  });
+  outs.assign=bases.map(b=>({levelId:b.levelId, zoneName:b.zoneName, role:b.role, items:b.items.slice()}));
+  outs.targets=pool.map(x=>({id:x.t.id, name:x.name, rate:x.t.rate, est:x.est, sinks:x.sinks}));
+  outs.ok=(outs.unassigned.length===0);
+  return outs;
+}
+/* 基地级分配的报告文案（纯字符串；供面板与报告共用） */
+function RbaseBestHtml(rb){
+  if(!rb) return '';
+  const W=RW_COL.warn, B=RW_COL.bad, G='#185FA5';
+  if(!rb.targets.length&&!rb.unassigned.length)
+    return '<div class="c-sub" style="margin-top:4px"><span class="c-id">基地级分配（第 2 期）：先选目标物品，这里给出「哪个成品放哪片基地」并可直接落到各画布。</span></div>';
+  let h='<div class="c-sub" style="margin-top:6px"><span><b style="color:'+G+'">基地级分配（第 2 期）—— '+esc(rb.regionName||'该地区')+' 内 4 个基地怎么分</b>'
+    +'<span class="lo-tag">主基地优先，装不下才溢到副基地</span></span></div>';
+  if(rb.note) h+='<div class="c-sub" style="margin-top:2px"><span class="c-id">'+esc(rb.note)+'</span></div>';
+  rb.bases.forEach(b=>{
+    const pct=b.usable>0?Math.round(b.used/b.usable*100):0;
+    const over=b.used>b.usable;
+    const items=b.items.length?b.items.map(it=>esc(it.name)+'@'+it.rate+'（约'+it.est+'格'
+      +(it.sinks?('·♻️销毁×'+it.sinks):'')+'）').join('、'):'<span class="c-id">（无）</span>';
+    h+='<div class="c-sub" style="margin-top:2px"><span>· <b>'+esc(b.zoneName)+'</b>（'+esc(b.role)+' '+b.side+'×'+b.side
+      +'，可用 '+b.usable+' 格）：'+items
+      +'　<b'+(over?(' style="color:'+B+'"'):'')+'>已用约 '+b.used+' 格（'+pct+'%）'+(over?' ⚠ 超容':'')+'</b></span></div>';
+  });
+  if(rb.sinkZone)
+    h+='<div class="c-sub" style="margin-top:2px"><span style="color:'+G+'">♻️ 销毁专区（'+esc(rb.sinkZone)+'）：'
+      +(rb.sinkMoved.length?('已把 '+rb.sinkMoved.length+' 条带销毁支线的产线挪到「'+esc(rb.sinkMoved[0].zone)+'」——'
+        +esc(rb.sinkMoved.map(m=>m.name+'@'+m.rate).join('、'))):'本次没有需要挪的带销毁产线')
+      +'</span></div>';
+  if(rb.dupShared.length)
+    h+='<div class="c-sub" style="margin-top:2px"><span style="color:'+W+'">⚠ 因分到不同基地而重复建的共享中间料：'
+      +esc(rb.dupShared.map(x=>x.name+'（'+x.zones.join('/')+'）').join('；'))
+      +' —— 同一地区内基地共用一个地区仓库，中间品可转运，但两边画布各建一套</span></div>';
+  if(rb.unassigned.length)
+    h+='<div class="c-sub" style="margin-top:2px"><span style="color:'+B+'">✗ 未分配（'+rb.unassigned.length+' 个）：'
+      +esc(rb.unassigned.map(u=>u.name+'@'+u.rate+'（'+u.why+'）').join('；'))+'</span></div>';
+  h+='<div class="c-sub" style="margin-top:2px"><span class="c-id">判据：B1 地区可行 + B2 容量可行（Σ约格 ≤ 可用格）；'
+    +'优化逐层：溢出基地数最少 &gt; 面积浪费最少。面积是「机器格数×2.2」估算，落画布后以实际摆位为准。</span></div>';
+  return h;
+}
+/* ⭐⭐ 第 2 期 Wave 2（2026-09-25）：把基地级分配结果**落到各基地画布**。
+   ────────────────────────────────────────────────────────────────────────────
+   机制（探针 probe_p2_b 已验证）：v145 起 8 个基地级字段是访问器 → 切基地后调 LawRun，
+   落盘自动进对应基地；同进程依次逐基地调用，各基地产线独立保存。**LawRun/LawPlan/RwRoute 一行不改。**
+   做法：对每个基地（有目标才处理）→ 切到该基地 → 清掉上一次排布器生成的件（planRole）→
+        逐目标跑 LawRun 的**摆位段**。同一基地多目标：用 L.mt 合图展开（共享中间料只建一套）。
+   ⚠️ 失败如实上报（R5）：某基地摆不下 → 记进结果，其他基地已成功的保留。
+   ⚠️ 作用域（R4）：只操作当前地区的基地（levelId 匹配本地区），其他地区一字不动。 */
+function LapplyAssign(rb){
+  const L=Linit();
+  if(!rb || !rb.assign || !rb.bases || !rb.bases.length){ L.msg='先做基地级分配，再落画布'; render(); return; }
+  const withItems=rb.assign.filter(a=>a.items.length);
+  if(!withItems.length){ L.msg='这次分配没有任何目标落到基地上（见分配报告）—— 先检查目标是否该地区可产'; render(); return; }
+  const origBase=L.base;                 /* 记住博士原来的落点，整批做完切回去 */
+  Lpush();                               /* ① 整批作为**一次**撤销点（快照含 basesAll → 整体回退） */
+  const undoMark=L.undo.length;          /* ② 记录：循环里 LawRun 自 push 的多余快照要裁掉 */
+  const done=[], failed=[];
+  withItems.forEach(a=>{
+    /* 切到该基地（先切后写 —— 访问器语义） */
+    const keepPick=L.pick;
+    L.base=a.levelId;
+    L.pick=null;
+    /* 清掉该基地上一次排布器生成的件（保留手摆的散件） */
+    L.objs=L.objs.filter(o=>!o.planRole); L.sel=[]; L.plan=null;
+    /* 该基地的目标：第一个当主目标，其余进 L.mt（合图展开，共享料只建一套） */
+    const items=a.items.slice();
+    const main=items[0], rest=items.slice(1);
+    const savedMt=L.mt;
+    L.mt=rest.map(x=>({id:x.id, rate:x.rate}));
+    try{
+      LawRun(main.id, main.rate);            /* 失败时 LawRun 自己写 L.msg 并 return（不抛） */
+      const placed=L.objs.filter(o=>o.planRole).length;
+      if(placed>0) done.push({zone:a.zoneName, levelId:a.levelId, items:items.length, objs:placed});
+      else failed.push({zone:a.zoneName, why:L.msg||'没有生成任何机器'});
+    }catch(e){
+      failed.push({zone:a.zoneName, why:(e&&e.message)||'异常'});
+    }
+    L.mt=savedMt;
+    L.pick=keepPick;
+  });
+  /* ③ 裁掉循环里 LawRun 自 push 的快照 —— 整批只留我们那一个撤销点，
+       这样一次 Ctrl+Z 就能整体回到落画布前（与「整批是一次操作」的语义一致）。 */
+  if(L.undo.length>undoMark) L.undo.length=undoMark;
+  L.redo.length=0;
+  /* ④ 切回博士原来的基地（视线落点不变）；若原来没选基地则切回空 */
+  L.base=origBase;
+  L.msg='基地级落画布：'+done.length+' 片基地完成'
+    +(done.length?('（'+done.map(d=>d.zone+' '+d.items+' 目标 / '+d.objs+' 件').join('；')+'）'):'')
+    +(failed.length?('；⚠ '+failed.length+' 片失败：'+failed.map(f=>f.zone+'（'+f.why.slice(0,40)+'）').join('；')):'')
+    +' —— 用上方页签逐基地查看，画布只渲染当前这片；一次撤销可整批退回';
+  render();
+}
+/* 「一键分配并落画布」入口：分配 + 立即落盘（博士 2026-09-25 选的完整版） */
+function LassignRun(){
+  const L=Linit();
+  const region=Lregion();
+  if(!region){ L.msg='先选一个基地（或选一个地区）—— 基地级分配要在具体地区里做'; render(); return; }
+  const ts=RxlTargets();
+  if(!ts.length){ L.msg='先选目标物品（或用「＋ 目标」加几个），才做得了基地级分配'; render(); return; }
+  const rb=RbaseBest(ts, region);
+  L.rbase=rb;   /* 缓存起来，报告区可显示 */
+  if(!rb.assign.some(a=>a.items.length)){
+    L.msg='基地级分配没有可行的落点：'+(rb.unassigned.map(u=>u.name+'（'+u.why+'）').join('；')||'见分配报告');
+    render(); return;
+  }
+  LapplyAssign(rb);
+}
 /* 面板「选点建议」开关（v1：只出建议，不摆画布） */
 function LpickToggle(){ const L=Linit(); L.pickShow=!L.pickShow; render(); }
 /* ⭐v144 建筑清单折叠开关 */
@@ -6500,6 +6718,8 @@ function Rreport(P, pw, bw, th, lim, st, rawNeed, sc){
       ${P.res.externals.length?`<div class="c-sub" style="margin-top:4px"><span><b>按「外部输入」处理</b>（${P.res.externals.map(x=>esc(RwItemName(x))).join('、')}）—— 这些自己做的代价太深或只有回收路线，<b>建议外部供应 / 野外采集</b>；要展开就调大上限或换个目标物品</span></div>`:''}
       ${/* ⭐⑥-3 跨基地选点（2026-09-22）：多个目标放哪片地区更省 —— 报告里常驻一段（不依赖收货开关） */
         RxlHtml()}
+      ${/* ⭐第 2 期：基地级分配（同一地区内 4 基地）—— 仅当已算过（点过「一键分配落画布」）才显示缓存结果 */
+        (Linit().rbase && Linit().rbase.regionName===Lregion()) ? RbaseBestHtml(Linit().rbase) : ''}
       ${P.res.seeds.length?`
       <div class="c-sub" style="margin-top:6px"><span><b style="color:#8A5A2B">启动料 —— 链上有环，先把这些塞进去才转得起来</b></span></div>
       ${P.res.seeds.map(s=>`<div class="c-sub" style="margin-top:2px"><span>· 在「<b>${esc(s.machineName)}</b>」里先塞 <b>${s.count}</b> 个「<b>${esc(s.name)}</b>」（${esc(s.reason)}）</span></div>`).join('')}`:''}
@@ -7174,6 +7394,7 @@ function renderLayout(){
         <button class="lo-size ${L.selfLoop?'on':''}" onclick="LselfLoop()" title="开：环里的料（惰气那种）自己循环，报告给出「在哪台机器塞什么启动料」；关：那种料按外部输入处理">闭环自持：${L.selfLoop?'开':'关'}</button>
         <button class="lo-size ${L.shipIn?'on':''}" onclick="LshipIn()" title="开：出发地（方向见下方从/到下拉，默认四号谷地）集成工业能产的全部物品都能传（游戏口径：解锁过产能就行、仓库有没有无所谓）；这条链缺的原料/半成品排在最前，全量可传清单在折叠区里可搜索；选中谁，本地就不建谁和它的上游；关：原料一律按野外采集 / 本地自产">跨地区收货：${L.shipIn?'开':'关'}</button>
         <button class="lo-size ${L.pickShow?'on':''}" onclick="LpickToggle()" title="⑥-3 跨基地选点：多个目标放哪个地区更省 —— 按矿脉分布/机器限定/收货压力穷举分配，含口径①地区合计收货反推与口径②取货口建模；只出建议不摆画布">选点建议</button>
+        <button class="lo-size" onclick="LassignRun()" title="第 2 期：把当前目标分配到本地区 4 个基地（主基地优先，装不下才溢到副基地；武陵另有销毁专区），并逐基地落到各自画布。⚠ 会覆盖各基地上一次排布器生成的产线（手摆的散件保留），可一次撤销">一键分配落画布</button>
         <button class="lo-size ${lockMach?'on':'off'}" onclick="Lreroll()" title="锁定件原地不动，其余机器重新分层摆位并绕开它们（管线会整条重铺）。锁定用工具栏的「锁定选中」">重排其余${lockMach?('（锁 '+lockMach+' 台）'):''}</button>
         <button class="lo-size" onclick="LawClear()">清掉产线</button>
         <button class="lo-size" onclick="LsavePlan()" title="把这一版的分数存下来；改个参数再生成一条，两套会自动并排比">存方案比一比</button>
