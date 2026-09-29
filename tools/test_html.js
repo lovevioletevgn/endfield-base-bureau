@@ -1262,6 +1262,50 @@ chk('第4期 反向：RtransPlan 只出清单不改分配（源码级：体内�
 // 反向锁：不得把 sinkPlan 相关的重活塞进 RbaseBest（谷地不查 sink → 不该调 Rexplode）
 chk('第2期 反向：谷地分配不查 sink（RW_SINK_ZONE_REGIONS 不含四号谷地）',
     html.indexOf("RW_SINK_ZONE_REGIONS=['武陵']") >= 0);
+
+/* ═══ v169（2026-09-29，作者「要自动落热能池」）：自动配发电 ═══
+   口径：用电取配置表求和；台数按**地区第一种燃料**（谷地低容电池 220 / 武陵低容电池 1600 /
+   自由模式源矿 50）；只摆本体、不连燃料线；放不下不拒绝生成（摆多少算多少 + 报告点名）。 */
+chk('v169 自动配发电：用电 ≤200（协议核心基础发电）→ 不摆，老路径零改动', (() => {
+  loReset(70);
+  A.LbaseSet('map01_lv001');
+  A.LO.autoGen = true; A.LO.objs = []; A.LO.mt = []; A.LO.shipIn = false;
+  A.LawRun('item_iron_cmpt', 10);
+  return !!A.LO.plan && A.Rpower(A.LO.objs).total <= 200
+    && A.LO.objs.filter(o => o.planRole === 'gen').length === 0
+    && A.LO.plan.genPlan.need === 0;
+})());
+chk('v169 自动配发电：缺口 45 电 → 按低容谷地电池 220/台摆 1 台热能池', (() => {
+  loReset(70);
+  A.LbaseSet('map01_lv001');
+  A.LO.autoGen = true; A.LO.objs = []; A.LO.mt = []; A.LO.shipIn = false;
+  A.LawRun('item_filter_core', 10);
+  const gp = A.LO.plan && A.LO.plan.genPlan;
+  const gen = A.LO.objs.filter(o => o.planRole === 'gen');
+  return !!gp && gp.fuel === '低容谷地电池' && gp.perF === 220 && gp.need === 1
+    && gen.length === 1 && gen[0].id === 'power_station_1';
+})());
+chk('v169 自动配发电：关掉开关 → 一台都不摆（只统计用电）', (() => {
+  loReset(70);
+  A.LbaseSet('map01_lv001');
+  A.LO.autoGen = false; A.LO.objs = []; A.LO.mt = []; A.LO.shipIn = false;
+  A.LawRun('item_filter_core', 10);
+  return A.LO.objs.filter(o => o.planRole === 'gen').length === 0
+    && (!A.LO.plan.genPlan || A.LO.plan.genPlan.sinks.length === 0);
+})());
+chk('v169 重排其余：热能池跟着重摆（不是被丢件）+ 整批只占一个撤销点', (() => {
+  loReset(70);
+  A.LbaseSet('map01_lv001');
+  A.LO.autoGen = true; A.LO.objs = []; A.LO.mt = []; A.LO.shipIn = false;
+  A.LawRun('item_filter_core', 10);
+  const n0 = A.LO.objs.filter(o => o.planRole === 'gen').length;
+  let k = 0;
+  A.LO.objs.forEach(o => { if (o.planRole === 'machine' && k < 2) { o.lock = true; k++; } });
+  const u0 = A.LO.undo.length;
+  A.Lreroll();
+  return n0 === 1 && A.LO.objs.filter(o => o.planRole === 'gen').length === 1
+    && (A.LO.undo.length - u0) === 1 && String(A.LO.msg).indexOf('热能池重摆') >= 0;
+})());
 loReset(50);
 A.render();
 

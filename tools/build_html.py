@@ -2182,7 +2182,7 @@ function LlogiAt(idx,x,y,isPipe){
   return !!b&&!!b.isLogi&&((!!isPipe)===(b.lgMedium==='管道'));
 }
 function Linit(){
-  if(!LO) LO={size:50,pick:null,pickRot:0,objs:[],sel:[],undo:[],redo:[],seq:0,msg:'',lastT:0,lastUid:'',showPort:true,showGas:true,showPwr:true,zone:'',viewRot:0,base:'',plan:null,plans:[],tgt:'item_iron_cmpt',rate:10,selfLoop:false,shipIn:false,tv:0,tvHours:1,mt:[],shipPick:'',shipCands:[],shipDmap:null,shipRawSet:null,
+  if(!LO) LO={size:50,pick:null,pickRot:0,objs:[],sel:[],undo:[],redo:[],seq:0,msg:'',lastT:0,lastUid:'',showPort:true,showGas:true,showPwr:true,zone:'',viewRot:0,base:'',plan:null,plans:[],tgt:'item_iron_cmpt',rate:10,selfLoop:false,shipIn:false,autoGen:true,tv:0,tvHours:1,mt:[],shipPick:'',shipCands:[],shipDmap:null,shipRawSet:null,
     /* ⭐⑥-3 收货方向（2026-09-22 作者：两地对称互传，现在用谷地→武陵；下拉为未来新地区留口） */
     shipFrom:'domain_1', shipTo:'domain_2', pickShow:false,
       /* ⭐v144 建筑清单默认收起（作者：那 45 项的大块一直摊在画布上方，换基建很麻烦） */
@@ -5124,14 +5124,43 @@ function LawRun(targetId, perMin){
     obj.sinkFor=s.forItem;
     L.objs.push(obj);
   });
-  L.plan={res:res, plan:plan, route:rt, rawNeed:rawNeedOf(res), sinkPlan:sinkPlan, sinkPlaced:sinkPlaced};
+  /* ⭐v169 自动配发电（作者 2026-09-29：「要自动落热能池」）：
+     在产线 + 走线 + 暗管 + 销毁支线**全部定形之后**算用电（销毁池 100 电/个要算进去），
+     按地区第一种燃料算台数，捡剩余空位摆热能池。
+     ⚠️ 只摆本体、不连燃料线；放不下不拒绝生成，摆多少算多少 + 报警（见 RgenPlanOf 头部）。 */
+  let genPlan=null, genPlaced=null;
+  if(L.autoGen){
+    genPlan=RgenPlanOf(L.objs, Lregion());
+    if(genPlan.sinks.length){
+      genPlaced=RplaceSinks(genPlan, L.size, function(x,y){
+        for(let i=0;i<L.objs.length;i++){ const o=L.objs[i];
+          if(x>=o.x&&x<o.x+o.w&&y>=o.y&&y<o.y+o.d) return true; }
+        for(let i=0;i<rt.belts.length;i++){ const bl=rt.belts[i];
+          if(bl.x===x&&bl.y===y) return true; }
+        return false;
+      });
+      genPlaced.objs.forEach(g=>{
+        const obj=Lmk(g.b, g.x, g.y, 0);
+        obj.planRole='gen';
+        obj.prod='热能池（发电 '+genPlan.perF+'/台）';
+        L.objs.push(obj);
+      });
+    }
+  }
+  L.plan={res:res, plan:plan, route:rt, rawNeed:rawNeedOf(res), sinkPlan:sinkPlan, sinkPlaced:sinkPlaced,
+          genPlan:genPlan, genPlaced:genPlaced};
   const limWarns=RwPlaceLimitWarn(res);   /* ⑥-4：建筑专属限摆（天有洪炉 ≤12 台）—— 报警不拦截 */
   const sinkNote=sinkPlan.sinks.length?('；♻️ 销毁支线：'+sinkPlan.reasons.join('；')
     +(sinkPlaced.unplaced.length?('；⚠ '+sinkPlaced.unplaced.length+' 个销毁建筑没找到空位（见报告）'):'')):'';
+  /* ⭐v169 自动配发电通报（摆了几台 / 还差几台） */
+  const genNote=(genPlan&&genPlan.need)?('；⚡ 自动配发电：本次摆上热能池 '+genPlaced.objs.length+' 台（需 '+genPlan.need+' 台'
+    +(genPlan.fuel?('，按'+genPlan.fuel+' '+genPlan.perF+'/台'):'')+'）'
+    +(genPlaced.unplaced.length?('；⚠ 还差 '+genPlaced.unplaced.length+' 台没空位（见报告；可关掉自动配发电自己摆）'):'')):'';
   L.msg='产线已生成：'+(res.targets?res.targets.map(t=>t.name+' '+t.perMin+'/分').join(' ＋ ')
     :res.targetName+' '+perMin+'/分')+' —— 机器 '+res.totalMachines+' 台 + 管线 '+rt.belts.length+' 格'
         +(pickNote?('；'+pickNote):'')
         +sinkNote
+        +genNote
         +(limWarns.length?('；⚠ '+limWarns.join('；')):'')
         +(rt.warns.length?('；'+rt.warns.length+' 条提醒见下方'):'');
   render();
@@ -5253,16 +5282,39 @@ function Lreroll(){
       L.objs.push(obj);
     });
   }
+  /* ⭐v169 自动配发电：重排同样会重建 L.objs → 热能池必须跟销毁池一样**重摆**，
+     否则「重排其余」一次就把自动摆的热能池悄悄弄丢（与 C6 假成功同款坑）。
+     用电按重排后的画布重算（机器台数守恒、但接线与池子位置变了）。 */
+  let rerollGen=null, rerollGenPlaced=null;
+  if(L.autoGen){
+    rerollGen=RgenPlanOf(L.objs, Lregion());
+    if(rerollGen.sinks.length){
+      rerollGenPlaced=RplaceSinks(rerollGen, L.size, function(x,y){
+        for(let i=0;i<L.objs.length;i++){ const o=L.objs[i];
+          if(x>=o.x&&x<o.x+o.w&&y>=o.y&&y<o.y+o.d) return true; }
+        for(let i=0;i<best.route.belts.length;i++){ const bl=best.route.belts[i];
+          if(bl.x===x&&bl.y===y) return true; }
+        return false;
+      });
+      rerollGenPlaced.objs.forEach(g=>{
+        const obj=Lmk(g.b, g.x, g.y, 0);
+        obj.planRole='gen'; obj.prod='热能池（发电 '+rerollGen.perF+'/台）';
+        L.objs.push(obj);
+      });
+    }
+  }
   L.sel=locks.map(o=>o.uid);
   /* 评价函数看的是「整套布局」→ 把锁定件 + 新摆件合并后的那份交给它 */
   L.plan={res:P.res, plan:{objs:best.all, bands:best.plan.bands, height:best.plan.height, over:[], order:{}},
-          route:best.route, rawNeed:P.rawNeed, sinkPlan:rerollSink};
+          route:best.route, rawNeed:P.rawNeed, sinkPlan:rerollSink,
+          genPlan:rerollGen, genPlaced:rerollGenPlaced};
   const stR=best.route.stats;
   L.msg='重排完成：锁定 '+locks.length+' 台（位置不动）· 重摆 '+newM+' 台 · 管线 '+best.route.belts.length+' 格 —— '
     +'间'+best.c[0]+'/通道'+best.c[1]+'（连通 '+best.sc.ok+' 段 · 手动连 '+best.sc.manual+' · 试了 '+tried+' 组'
     +(wideTried?('，含宽间距扩搜 '+wideTried+' 组'):'')
     +(stR&&(stR.merge||stR.split)?(' · 汇流 '+stR.merge+' / 分流 '+stR.split):'')+'）'
     +(loose.length?('；画布上另有 '+loose.length+' 个手摆件留在原地，已被当障碍避开'):'')
+    +(rerollGen&&rerollGen.need?('；⚡ 热能池重摆 '+rerollGenPlaced.objs.length+'/'+rerollGen.need+' 台'):'')
     +(best.route.warns.length?('；'+best.route.warns.length+' 条提醒见下方'):'');
   render();
 }
@@ -6603,6 +6655,11 @@ function LassignRun(){
 }
 /* 面板「选点建议」开关（v1：只出建议，不摆画布） */
 function LpickToggle(){ const L=Linit(); L.pickShow=!L.pickShow; render(); }
+/* ⭐v169 自动配发电开关（作者 2026-09-29：「要自动落热能池」）：开 → 生成产线时自动摆热能池 */
+function LautoGen(){ const L=Linit(); L.autoGen=!L.autoGen;
+  L.msg=L.autoGen?'自动配发电：开 —— 生成产线时按用电缺口自动把热能池摆到画布空位（只摆本体、燃料需自接）'
+    :'自动配发电：关 —— 只统计用电，不自动摆发电设备';
+  render(); }
 /* ⭐v144 建筑清单折叠开关 */
 function LpalToggle(){ const L=Linit(); L.palOpen=!L.palOpen; render(); }
 /* ⭐v144 清单宽度自适应：清单 absolute 挂在画布左侧，所以「左边有多少空白就用多宽」。
@@ -7052,6 +7109,24 @@ function Rstorage(usePower){
 function RstationCount(objs){
   const list=objs||Linit().objs;
   return list.filter(o=>{ const b=byBp(o.id); return !!b&&b.id==='power_station_1'; }).length;
+}
+/* ⭐v169 自动配发电（作者 2026-09-29：「要自动落热能池」）：
+   生成产线后，按「用电 − 协议核心基础发电」的缺口，把需要的热能池**自动摆到画布空位**。
+   · 用电：配置表 powerConsume 求和（与报告同源函数 Rpower）；
+   · 台数：按**该地区第一种燃料**算（与报告同源 Rtheories）—— 谷地用低容谷地电池(220)、
+     武陵用低容武陵电池(1600)、自由模式（无地区）退化到「通用 = 源矿(50)」；
+   · 落位：复用销毁支线的 RplaceSinks（捡产线 + 管线的剩余空位，不挤产线）。
+   ⚠️ **只摆本体、不连燃料线** —— 燃料（源矿 / 电池）从哪来由玩家自己安排，
+      报告里如实写明「已摆位、燃料需自接」，不假装闭环。
+   ⚠️ 放不下时**不拒绝生成**（发电可在画布外另建），摆多少算多少 + 明确报警。 */
+function RgenPlanOf(objs, region){
+  const pw=Rpower(objs), th=Rtheories(pw.total, region);
+  const out={sinks:[], use:pw.total, base:th.base, gap:th.gap, need:0, fuel:null, perF:0, fuels:th.fuels};
+  if(th.gap<=0 || !th.fuels.length) return out;
+  const f=th.fuels[0];
+  out.need=f.count; out.fuel=f.item; out.perF=f.power;
+  out.sinks=[{buildingId:'power_station_1', count:f.count, kind:'gen', name:'热能池', forItem:null}];
+  return out;
 }
 /* ========== 评价函数（路线图 ① · 2026-09-21 晚）==========
    为什么先做它：**没有分数，「这版比那版好」就是拍脑袋** ——
@@ -7589,7 +7664,7 @@ function Rreport(P, pw, bw, th, lim, st, rawNeed, sc){
       ${wAll.map(x=>`<div class="c-sub" style="margin-top:2px"><span>· ${esc(x)}</span></div>`).join('')}`:''}
       <div class="c-sub" style="margin-top:8px"><span><b>⚠️ 约束校验</b>（硬校验；协议容量 · 建造上限 · 用电取配置表，发电量 · 矿点数 · 存电取社区实测）</span></div>
       ${''/* ⭐v145 撤项：协议容量不约束基地内设备（只约束集成核心区域外的野外设备）→ 报告不再列此项 */}
-      <div class="c-sub" style="margin-top:2px"><span>· <b>发电</b>：这条产线用电 <b>${pw.total}</b> 电；协议核心自带 <b>${th.base}</b> 基础发电${th.gap>0?(' → 缺口 <b>'+th.gap+'</b>，需要热能池：'+th.fuels.map(f=>esc(f.item)+' <b>'+f.count+'</b> 台（'+f.power+'/台）').join(' · ')):' → <b>不用额外发电</b>'}${th.fuels.length?` <span class="c-id">（按地区选燃料：${esc(Lregion()||'通用')}）</span>`:''}${stations?`　<span class="c-id">画布上已摆热能池 ${stations} 台</span>`:''}</span></div>
+      <div class="c-sub" style="margin-top:2px"><span>· <b>发电</b>：这条产线用电 <b>${pw.total}</b> 电；协议核心自带 <b>${th.base}</b> 基础发电${th.gap>0?(' → 缺口 <b>'+th.gap+'</b>，需要热能池：'+th.fuels.map(f=>esc(f.item)+' <b>'+f.count+'</b> 台（'+f.power+'/台）').join(' · ')):' → <b>不用额外发电</b>'}${th.fuels.length?(' <span class="c-id">（按地区选燃料：'+esc(Lregion()||'通用')+'）</span>'):''}${stations?('　<span class="c-id">画布上已摆热能池 '+stations+' 台</span>'):''}${(P.genPlan&&P.genPlan.need)?('　<span class="c-id">⚡ 自动配发电：本次自动摆 <b>'+(P.genPlaced?P.genPlaced.objs.length:0)+'</b> 台（共需 '+P.genPlan.need+' 台，按'+esc(P.genPlan.fuel||'')+' '+P.genPlan.perF+'/台）'+((P.genPlaced&&P.genPlaced.unplaced.length)?('；⚠ 还差 '+P.genPlaced.unplaced.length+' 台没空位 —— 把画布调大，或关掉「自动配发电」自己摆'):'')+'　<b>只摆本体，燃料（源矿 / 电池）需你自接</b></span>'):''}</span></div>
       <div class="c-sub" style="margin-top:2px"><span>· <b>存电</b> <span class="lo-tag">路线图 ②c · 已纳入</span>：上限 <b>${st.cap.toLocaleString?st.cap.toLocaleString('en-US'):st.cap}</b>（社区实测）${st.gap>0?('　当前缺口 <b>'+st.gap+'</b> 电 → 纯靠存电能撑 <b>'+st.minutes+'</b> 分钟（约 '+r1(st.minutes/60)+' 小时），撑完设备就停；这是缓冲不是电源，得补发电'):'　当前用电没超基础发电，存电不动 ✓'}</span></div>
       <div class="c-sub" style="margin-top:2px"><span>· <b>防御建筑上限</b> <span class="lo-tag">路线图 ②b</span>：${lim.defCap!=null?('<b>'+lim.def+'</b> / '+lim.defCap+'（'+esc(lim.zone||'')+'）'+(lim.defOver?' —— <b style="color:'+RW_COL.bad+'">超了 '+(lim.def-lim.defCap)+'</b>':' —— 在限内 ✓')):'（自由模式没指定基地，没有上限可对）'}<span class="c-id">　按分类「战斗辅助」计</span></span></div>
       <div class="c-sub" style="margin-top:2px"><span>· <b>滑索上限</b> <span class="lo-tag">路线图 ②b</span>：<b>基地画布里不涉及</b> —— 滑索架只放野外，不摆进基地（作者 2026-09-21 定，所以左栏也不提供）。本建造区的上限是 <b>${lim.travCap!=null?lim.travCap:'—'}</b>（配置表 <code>travelPoleLimit</code>），那个数服务的是**野外滑索架**，不是基地内的产线。<span class="c-id">沙盘上滑索数恒为 0，所以这一项永远显示 0 / 上限 —— 不是没做校验，是本来就不该在基地里数。</span></span></div>
@@ -8237,6 +8312,7 @@ function renderLayout(){
         <button class="lo-size" onclick="LmtAdd()" title="⑥-2 多目标：再加一个目标物品一起展开 —— 多个目标共享的中间料只建一套，再分流给各条链">＋ 目标</button>
         <button class="lo-size ${L.selfLoop?'on':''}" onclick="LselfLoop()" title="开：环里的料（惰气那种）自己循环，报告给出「在哪台机器塞什么启动料」；关：那种料按外部输入处理">闭环自持：${L.selfLoop?'开':'关'}</button>
         <button class="lo-size ${L.shipIn?'on':''}" onclick="LshipIn()" title="开：出发地（方向见下方从/到下拉，默认四号谷地）集成工业能产的全部物品都能传（游戏口径：解锁过产能就行、仓库有没有无所谓）；这条链缺的原料/半成品排在最前，全量可传清单在折叠区里可搜索；选中谁，本地就不建谁和它的上游；关：原料一律按野外采集 / 本地自产">跨地区收货：${L.shipIn?'开':'关'}</button>
+        <button class="lo-size ${L.autoGen?'on':''}" onclick="LautoGen()" title="开：生成产线时按「用电 − 协议核心基础发电 200」的缺口，自动把需要的热能池捡空位摆到画布上（按地区第一种燃料算台数：谷地电池 220 / 武陵电池 1600 / 自由模式按源矿 50）。⚠ 只摆本体、不连燃料线 —— 燃料（源矿 / 电池）要你自己接；放不下时不拒绝生成，报告里点名还差几台。关：只统计用电、不摆发电设备">自动配发电：${L.autoGen?'开':'关'}</button>
         <button class="lo-size ${L.pickShow?'on':''}" onclick="LpickToggle()" title="⑥-3 跨基地选点：多个目标放哪个地区更省 —— 按矿脉分布/机器限定/收货压力穷举分配，含口径①地区合计收货反推与口径②取货口建模；只出建议不摆画布">选点建议</button>
         <button class="lo-size on" onclick="LgenAll()" title="第 3 期：不用先选基地 —— 自动判断每个目标该去四号谷地还是武陵，各地区内再自动分基地，逐基地摆位+连线并落到各自画布（收货按基地所在地区自动对齐）。⚠ 会覆盖各基地上一次排布器生成的产线（手摆的散件保留），可一次撤销">一键生成（全地区）</button>
         <button class="lo-size" onclick="LassignRun()" title="第 2 期：把当前目标分配到本地区 4 个基地（主基地优先，装不下才溢到副基地；武陵另有销毁专区），并逐基地落到各自画布。⚠ 会覆盖各基地上一次排布器生成的产线（手摆的散件保留），可一次撤销">一键分配落画布</button>
@@ -8422,7 +8498,9 @@ function renderLayout(){
       ⚠️ <b>每台热能池到底发多少电，配置表里没有</b> —— 建筑表只有 <code>needPower</code> / <code>powerConsume</code> 两个字段，
       <b>没有发电量</b>；文案也只做定性比较。所以发电侧用的是<b>社区数值</b>（报告里会标明出处，要当硬约束用建议游戏里核一下）。<br>
       <b>存电</b> <span class="lo-tag">路线图 ②c · 2026-09-21 晚</span>：协议核心有存电，<b>社区实测上限 10 万</b>（配置表里没有这一项）。
-      用电超过基础发电（200）的部分就是在吃存电 —— 报告会给出<b>纯靠存电还能撑多少分钟</b>，以及按地区燃料补上这个缺口需要几台热能池。
+      用电超过基础发电（200）的部分就是在吃存电 —— 报告会给出<b>纯靠存电还能撑多少分钟</b>，以及按地区燃料补上这个缺口需要几台热能池。<br>
+      <b>自动配发电</b> <span class="lo-tag">v169 · 2026-09-29</span>：按钮「自动配发电」默认<b>开</b> —— 生成产线时会<b>按用电缺口自动把热能池摆到画布空位</b>（按地区第一种燃料算台数：谷地电池 220 / 武陵电池 1600 / 自由模式按源矿 50），整批与产线共用<b>一个撤销点</b>。
+      ⚠️ 只摆<b>本体</b>、<b>不连燃料线</b> —— 燃料（源矿 / 电池）从哪来要你自己安排；放不下时<b>不拒绝生成</b>，摆多少算多少并在报告里点名还差几台。<br>
       ⚠️ 存电是<b>缓冲不是电源</b>：撑的时间只是留给你补发电的，不能当长期方案。<br>
       <b>野外开采产量</b>（7 座采集建筑，按建筑表 <code>quickBarType=资源开采</code> 列全）：<br>
       · 采矿机 —— 便携源石矿机 / 电驱矿机 / 二型电驱矿机 都是 <b>20/分</b>（配置表 <code>msPerRound</code> 3000），
