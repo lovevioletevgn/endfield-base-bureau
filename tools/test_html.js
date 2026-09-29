@@ -1309,6 +1309,44 @@ chk('v169 重排其余：热能池跟着重摆（不是被丢件）+ 整批只�
 loReset(50);
 A.render();
 
+/* ═══ v170（2026-09-29，探针抓到的「假成功」第三形态）：LawRun 失败清场 ═══
+   背景：LawRun 失败早退原来只写 L.msg 就 render(); return —— L.plan 与画布上的产线件原封不动，
+   于是「先 @5 成功、再 @10 失败」时报告区仍挂 @5 的数据、画布仍是 @5 的机器 = 假成功。
+   修法：LawFail(msg) 清 planRole 件 + L.plan=null（不 push 撤销点，手摆件保留）。 */
+chk('v170 失败清场：先成功 @5、再失败 @10 → L.plan 置空（不再挂上一条产线）', (() => {
+  loReset(80);
+  A.LbaseSet('map02_lv002');   /* 武陵主 80×80：中容武陵电池 @5 可放、@10 越界 */
+  A.LO.autoGen = false; A.LO.objs = []; A.LO.mt = []; A.LO.shipIn = false; A.LO.selfLoop = false;
+  A.LawRun('item_proc_battery_5', 5);
+  const ok1 = !!A.LO.plan;
+  const n1 = A.LO.objs.filter(o => o.planRole).length;
+  A.LawRun('item_proc_battery_5', 10);
+  const n2 = A.LO.objs.filter(o => o.planRole).length;
+  return ok1 && n1 > 0 && A.LO.plan === null && n2 === 0
+    && String(A.LO.msg).indexOf('放不下') >= 0;
+})());
+chk('v170 失败清场：没机器配方的目标 → L.plan 置空', (() => {
+  loReset(70);
+  A.LbaseSet('map01_lv001');
+  A.LO.objs = []; A.LO.mt = []; A.LO.shipIn = false;
+  A.LawRun('item_filter_core', 10);
+  const had = !!A.LO.plan;
+  A.LawRun('__no_such_recipe__', 10);   /* 不存在的配方 id */
+  return had && A.LO.plan === null && String(A.LO.msg).indexOf('没有机器配方') >= 0;
+})());
+chk('v170 失败清场：入参不完整（速率 ≤0）→ 不动画布、不清既有计划', (() => {
+  loReset(70);
+  A.LbaseSet('map01_lv001');
+  A.LO.objs = []; A.LO.mt = []; A.LO.shipIn = false;
+  A.LawRun('item_filter_core', 10);
+  const p0 = A.LO.plan, n0 = A.LO.objs.filter(o => o.planRole).length;
+  A.LawRun('item_filter_core', 0);
+  return !!p0 && A.LO.plan === p0 && A.LO.objs.filter(o => o.planRole).length === n0
+    && String(A.LO.msg).indexOf('速率要大于 0') >= 0;
+})());
+loReset(50);
+A.render();
+
 // ---- 5d-7c. v148 供电范围层（作者：「画布里供电桩也不显示供电范围，放的时候怎么确定设备在不在供电范围里」）----
 // 数据：raw/FactoryPowerPoleTable.json 的 rangeExtend（与气体散布机同字段同口径）。
 // 供电桩/息壤供电桩本体 2×2 外扩 5 → 12×12；中继器/息壤中继器本体 3×3 外扩 2 → 7×7。

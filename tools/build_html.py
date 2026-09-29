@@ -4903,12 +4903,11 @@ function LawRun(targetId, perMin){
   } else if(!L.shipIn){ L.shipCands=[]; }
   opt1.shipInList=shipList;
   const res=Rexplode(targetId, perMin, opt1);
-  if(!res.machines.length){ L.msg='「'+res.targetName+'」没有机器配方，排不了产线'; render(); return; }
+  if(!res.machines.length){ return LawFail('「'+res.targetName+'」没有机器配方，排不了产线'); }
   if(res.totalMachines>RW_MAX_MACHINES){
-    L.msg='这条链展开要 '+res.totalMachines+' 台机器（超过上限 '+RW_MAX_MACHINES+'），先不生成 —— '
+    return LawFail('这条链展开要 '+res.totalMachines+' 台机器（超过上限 '+RW_MAX_MACHINES+'），先不生成 —— '
       +'多半是把野外采集的料也自己做了。把速率调小，或换一个更靠上游的目标物品试试'
-      +(res.externals.length?('；这条链里已按外部输入处理的：'+res.externals.map(RwItemName).join('、')):'');
-    render(); return;
+      +(res.externals.length?('；这条链里已按外部输入处理的：'+res.externals.map(RwItemName).join('、')):''));
   }
   /* ⭐⭐ C6-b 阶段 2 门禁（2026-09-25，作者拍板「软门禁」）：
      在**生成阶段**拦住「无去路物品」—— 这是 C6 从体检升级为硬约束的那一步。
@@ -4917,7 +4916,7 @@ function LawRun(targetId, perMin){
      软门禁 = 补不上时**拒绝出方案 + 明确报原因**，不静默作废。
      开销：无必爆项时 RflowSinkPlan 立刻返回 → 老路径行为一字不变。 */
   const sinkGate=RflowSinkGate(res);
-  if(sinkGate){ L.msg=sinkGate; render(); return; }
+  if(sinkGate){ return LawFail(sinkGate); }
   const sinkPlan=RflowSinkPlan(res);
   /* ── [3] 限摆与通道高度自适应 ───────────────────────── */
   /* 层间通道高度**按并联线数自适应**：固定 5 行在产能高的时候会被线挤死（实测 30/分 有 9 条连不上）。
@@ -4985,8 +4984,8 @@ function LawRun(targetId, perMin){
     /* ⑥-4：拒绝生成时也要点名限摆 —— 天有洪炉 >12 台的链单层宽超任何画布（12×(5+间) ≈ 108 列），
        实际上「超限」几乎必然伴随「放不下」；只报放不下玩家会以为是布局器菜，其实是游戏限摆。 */
     const limW=RwPlaceLimitWarn(res);
-    L.msg='画布 '+L.size+'×'+L.size+' 放不下这条产线（试了 '+cands.length+' 组参数都越界），先把画布调大或把目标速率调小'
-        +(limW.length?('；⚠ '+limW.join('；')):''); render(); return;
+    return LawFail('画布 '+L.size+'×'+L.size+' 放不下这条产线（试了 '+cands.length+' 组参数都越界），先把画布调大或把目标速率调小'
+        +(limW.length?('；⚠ '+limW.join('；')):''));
   }
   /* ── [7] 失败驱动的三段补搜 ─────────────────────────── */
   /* ── [7a] 宽间距扩搜（手动连 > 0 才跑）────────────── */
@@ -5074,11 +5073,10 @@ function LawRun(targetId, perMin){
       return false;
     });
     if(preSink.unplaced.length){
-      L.msg='这条产线有物品没有去路，需要摆销毁建筑，但画布上放不下：'
+      return LawFail('这条产线有物品没有去路，需要摆销毁建筑，但画布上放不下：'
         +preSink.unplaced.map(u=>u.sink.forItem+'（'+(u.sink.name||u.sink.buildingId)+' ×'+u.sink.count
           +'，'+u.why+'）').join('；')
-        +'。先把画布调大、降低速率，或清掉画布上一些东西再试。';
-      render(); return;
+        +'。先把画布调大、降低速率，或清掉画布上一些东西再试。');
     }
   }
   Lpush();
@@ -5170,6 +5168,20 @@ function rawNeedOf(res){
   const m={};
   (res.nodes||[]).forEach(n=>{ if(n.raw) m[n.itemId]=(m[n.itemId]||0)+(n.demand||0); });
   return m;
+}
+/* ⭐v170 生成失败统一清场（2026-09-29 探针实锤的「假成功」第三形态）：
+   背景：LawRun 有 8 处失败早退（参数非法 / 没配方 / 超台数上限 / 摆放越界 / 销毁件放不下 …），
+   旧写法每处都只写 L.msg 就 render(); return —— **L.plan 与画布上的产线件原封不动**。
+   后果：作者连续操作时（先 @5 成功、再 @10 失败），报告区仍显示**上一条产线**的数据、
+   画布上仍摆着**上一次的机器** → 用户以为新目标生成成功了，实际只是旧方案没被清掉。
+   实测（2026-09-29）：@5 成功后调 @10，L.plan 仍是 {perMin:5}；传一个不存在的配方 id，
+   也只报「没有机器配方」而 L.plan 不变 —— 与「画布不显示新产线」的困惑完全吻合。
+   修法：失败时**清掉 planRole 件 + 计划状态**，但**不 push 撤销点**（失败不该占撤销），
+   并保留手摆件（只清排布器自己生成的）。msg 由调用方传入。 */
+function LawFail(msg){
+  const L=Linit();
+  L.objs=L.objs.filter(o=>!o.planRole); L.sel=[]; L.plan=null;
+  L.msg=msg; render();
 }
 /* 清掉上次生成的产线（只清 planRole 标记过的） */
 function LawClear(){
