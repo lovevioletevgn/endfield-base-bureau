@@ -1081,7 +1081,9 @@ chk('v160 自动重排整批只占一个撤销点（不是每基地各一个）'
   return u1 === u0 + 1;
 })());
 chk('v160 源码级：Ltgt 内接入 LretargetAll（且带 anyPlan 前置探测）',
-    /LretargetAll\(v,\s*region\)/.test(rawCode)
+    /* ⚠️ v173 起签名多了 prevTgt/prevRate（全失败回滚要旧值，见 v173 锁）——
+       本锁判据放宽为「调用 LretargetAll 且带 v、region」，语义不变。 */
+    /LretargetAll\(\s*v\s*,\s*region/.test(rawCode)
     && /anyPlan/.test(rawCode.slice(rawCode.indexOf('function Ltgt'), rawCode.indexOf('function Ltgt') + 1400)));
 chk('v160 源码级：LretargetAll 只在「画布上有 planRole 件」的基地重排（空基地不动）',
     (() => {
@@ -1096,6 +1098,80 @@ chk('v160 源码级：重排失败时恢复该基地原内容（绝不留空画�
       if (i < 0) return false;
       const seg = rawCode.slice(i, i + 2600);
       return /JSON\.parse\(before\)/.test(seg) && /JSON\.stringify/.test(seg);
+    })());
+
+/* ═══ v173（2026-09-30 作者实测「一点生成就变成源石粉末」）：切目标全失败时回滚 L.tgt ═══
+   病灶：Ltgt 第一行无条件 L.tgt=v；LretargetAll 若一片基地都没重排成功，
+   只恢复画布内容（LO.bases[].objs），**不回滚 L.tgt** → 目标栏写新目标、画布躺旧产线的永久错位。
+   修法：LretargetAll 在「done 为空且有 failed」时把 L.tgt / L.rate 整体回滚 + 提示「目标未切换」。 */
+chk('v173 切目标全失败：L.tgt 回滚到原目标（不落成「目标栏=新、画布=旧」的错位）', (() => {
+  /* 前置：谷地主基地生成一条小链（画布上有 planRole 件 → 会走 LretargetAll） */
+  A.LbaseSet('map01_lv001'); A.LO.objs = []; A.LO.mt = [];
+  A.LawRun('item_filter_core', 10);
+  if (!A.LO.objs.filter(o => o.planRole).length) return false;   /* 前置：确实生成了 */
+  /* 目标停在 filter_core，速率拉大到 400 —— 再切到中容武陵电池：@400 = 6934 台 >> 180，必全失败 */
+  A.LO.tgt = 'item_filter_core'; A.LO.rate = 400;
+  A.Ltgt('item_proc_battery_5');
+  /* 判据：目标必须**停在切换前的 filter_core**（绝不能留在 battery） */
+  return A.LO.tgt === 'item_filter_core';
+})());
+chk('v173 切目标全失败：提示文案含「未切换」（明确告知没生效）', (() => {
+  A.LbaseSet('map01_lv001'); A.LO.objs = []; A.LO.mt = [];
+  A.LawRun('item_filter_core', 10);
+  A.LO.tgt = 'item_filter_core'; A.LO.rate = 400;
+  A.Ltgt('item_proc_battery_5');
+  return String(A.LO.msg || '').indexOf('未切换') >= 0;
+})());
+chk('v173 切目标全失败：画布保留原产线（不清空，与回滚后的目标同源）', (() => {
+  A.LbaseSet('map01_lv001'); A.LO.objs = []; A.LO.mt = [];
+  A.LawRun('item_filter_core', 10);
+  const n0 = (A.LO.bases['map01_lv001'] ? A.LO.bases['map01_lv001'].objs || [] : [])
+    .filter(o => o.planRole).length;
+  if (!n0) return false;
+  A.LO.tgt = 'item_filter_core'; A.LO.rate = 400;
+  A.Ltgt('item_proc_battery_5');
+  const n1 = (A.LO.bases['map01_lv001'] ? A.LO.bases['map01_lv001'].objs || [] : [])
+    .filter(o => o.planRole).length;
+  /* 回滚后：目标 == 画布内容，产线必须还在（不是空画布） */
+  return A.LO.tgt === 'item_filter_core' && n1 === n0;
+})());
+chk('v173 源码级：LretargetAll 接收调用方传入的 origTgt/origRate 并在全失败时回滚',
+    (() => {
+      const i = rawCode.indexOf('function LretargetAll');
+      if (i < 0) return false;
+      const seg = rawCode.slice(i, i + 3600);
+      /* 签名要接 prevTgt/prevRate（不能自己读 L.tgt——那时已被 Ltgt 改成新值） */
+      return /function LretargetAll\(\s*newTgt\s*,\s*region\s*,\s*prevTgt\s*,\s*prevRate\s*\)/.test(seg)
+        && /const origTgt\s*=\s*\(\s*prevTgt\s*!==\s*undefined\s*\)\s*\?\s*prevTgt\s*:\s*L\.tgt/.test(seg)
+        && /L\.tgt\s*=\s*origTgt/.test(seg)
+        && /!done\.length\s*&&\s*failed\.length/.test(seg);
+    })());
+chk('v173 源码级：Ltgt 在改 L.tgt 之前先记下旧值并传给 LretargetAll',
+    (() => {
+      const i = rawCode.indexOf('function Ltgt');
+      if (i < 0) return false;
+      const seg = rawCode.slice(i, i + 1400);
+      return /const prevTgt\s*=\s*L\.tgt\s*,\s*prevRate\s*=\s*L\.rate/.test(seg)
+        && /LretargetAll\(v\s*,\s*region\s*,\s*prevTgt\s*,\s*prevRate\)/.test(seg);
+    })());
+chk('v173 源码级：全失败分支带 return（不再往下走「目标已切到」文案）',
+    (() => {
+      const i = rawCode.indexOf('function LretargetAll');
+      if (i < 0) return false;
+      const seg = rawCode.slice(i, i + 3600);
+      const j = seg.indexOf('L.tgt=origTgt');
+      if (j < 0) return false;
+      const tail = seg.slice(j, j + 420);
+      return /render\(\);\s*return;/.test(tail);
+    })());
+chk('v173 部分成功保留切换（不是全失败 → 不回滚，目标停在新值）',
+    (() => {
+      /* 谷地主 + 通道各一条小链 → 切到另一个同样能生成的目标 → 应全部成功 → 目标留在新值 */
+      A.LbaseSet('map01_lv001'); A.LO.objs = []; A.LO.mt = []; A.LO.rate = 10;
+      A.LawRun('item_filter_core', 10);
+      A.LO.tgt = 'item_filter_core'; A.LO.rate = 10;
+      A.Ltgt('item_iron_cmpt');
+      return A.LO.tgt === 'item_iron_cmpt';
     })());
 
 /* ═══ 第 3 期（v166，作者选「跨地区全自动一键」）：目标先分地区、再分基地 ═══

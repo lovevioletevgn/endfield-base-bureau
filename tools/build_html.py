@@ -5347,7 +5347,12 @@ function Lreroll(){
   render();
 }
 /* 目标物品 / 速率的选择 —— 不进撤销栈，也不重渲染速率框（重渲染会让输入框失焦） */
-function Ltgt(v){ const L=Linit(); L.tgt=v;
+function Ltgt(v){
+  const L=Linit();
+  /* ⭐v173：**先记旧目标再改** —— `LretargetAll` 全失败时要回滚到这，
+     而它内部读 L.tgt 时已经被下面这行改掉了（作者实测的「保持 X」写成新目标，就是这里取坏）。 */
+  const prevTgt=L.tgt, prevRate=L.rate;
+  L.tgt=v;
   /* ⭐v82（作者截图：换了目标，选货网格还挂着旧链的蓝铁矿/蓝铁块）：候选是按目标链算的，
      换目标必须重算。LshipPanel 里「旧选中不在新候选里就回退默认原料叶」会顺手把 shipPick 纠正过来；
      链没换过（新旧目标共用一条链）时重算结果一致，多跑一趟 Rexplode 无感。 */
@@ -5363,10 +5368,20 @@ function Ltgt(v){ const L=Linit(); L.tgt=v;
       const slot=((LO.bases||{})[r.levelId])||null;
       if(slot&&slot.objs&&slot.objs.some(o=>o.planRole)) anyPlan=true;
     });
-    if(anyPlan){ LretargetAll(v, region); return; }   /* 内部自带 render 与提示 */
+    if(anyPlan){ LretargetAll(v, region, prevTgt, prevRate); return; }   /* 内部自带 render 与提示 */
   }
   L.msg='排产目标改为「'+RwItemName(v)+'」';
   render(); }
+/* ⭐v173（2026-09-30，作者实测「一点生成就变成源石粉末」）：切目标**全部失败时回滚 L.tgt**。
+   ────────────────────────────────────────────────────────────────────────────
+   病灶（探针 diag5 实测复现）：`Ltgt(v)` 在第一行就无条件执行 `L.tgt=v`。
+   随后 `LretargetAll` 若因「新目标超机器上限 / 摆不下」而**一片基地都没重排成功**，
+   它只把画布内容恢复回去（`LO.bases[].objs=JSON.parse(before)`），**却不恢复 L.tgt**
+   → 落成「目标栏写着新目标、画布躺着旧产线」的永久错位。
+   作者看到的正是这个：选「中容武陵电池」→ 电池@当前速率超限 180 台 → 重排失败 →
+   目标栏显示电池、画布却还是上一次的「源石粉末 80 台」。
+   修法：`LretargetAll` 在「done 为空」时把 L.tgt / L.rate 一并回滚（画家与目标栏必须同源）。
+   ⚠️ 只在**全失败**时回滚；部分成功保留切换（确实换了的那几片基地是真的换成了新目标）。 */
 function Lrate(v){ const L=Linit(); L.rate=Math.max(1, +v||1); }
 /* ⭐⑥-2 多目标（2026-09-22）：「＋ 目标」行 —— 多个目标共享的中间料只建一套再分流 */
 function LmtAdd(){ const L=Linit(); if(!L.mt) L.mt=[];
@@ -6709,9 +6724,15 @@ function RtransHtml(tp){
    ⚠️ 复用 LapplyAssign 的两条成熟手法：① 整批**只占一个撤销点**（裁掉循环内 LawRun 自 push 的快照）
       ② 落点回到**原基地**（与 LapplyAssign 的「首个落点」不同：切目标是你主动改参数，
       不该把你甩去别的画布；原地看结果才符合直觉）。 */
-function LretargetAll(newTgt, region){
+function LretargetAll(newTgt, region, prevTgt, prevRate){
   const L=Linit();
   const origBase=L.base, origMt=(L.mt||[]).slice();
+  /* ⭐v173：切换前的目标与速率 —— 由调用方 Ltgt 传入（它改了 L.tgt **之前**取的值）。
+     ⚠️ 不能在这里 `const origTgt=L.tgt`：Ltgt 已先行 `L.tgt=v`，读到的是**新目标**，
+        回滚就成了「保持新目标」的假回滚（探针 diag_v173beh3 实测踩中）。
+     ⚠️ 兼容：万一有旧调用点没传（不该有），退回读 L.tgt（至少不会崩）。 */
+  const origTgt=(prevTgt!==undefined)?prevTgt:L.tgt;
+  const origRate=(prevRate!==undefined)?prevRate:L.rate;
   const rate=Math.max(1,+L.rate||1);
   /* 该地区全部基地（保持 Lbases 顺序：主基地在前） */
   const bases=Lbases().filter(r=>r.domainName===region);
@@ -6764,6 +6785,19 @@ function LretargetAll(newTgt, region){
   L.redo.length=0;
   /* ④ 视线落回**原基地**（切目标不该把作者甩去别的画布） */
   L.base=origBase;
+  /* ⭐v173：**全失败 → 整体回滚目标**（画家与目标栏必须同源）。
+     一片都没换成功时，画布上还是旧目标的产线；此时若保留新目标，就落成
+     「目标栏写新目标、画布躺旧产线」的永久错位（作者实测：选电池 → 画布却还是源石粉末）。
+     回滚后提示改成「目标未切换」，明确告诉作者这次没生效、以及为什么。 */
+  if(!done.length && failed.length){
+    L.tgt=origTgt; L.rate=origRate;
+    /* ⚠️ 不动撤销点：这次尝试本身就「可撤销」（撤销一次回到切换前），
+       语义与「操作发生了但没改变画布」一致；强行 pop 反而会误删上一步的真实撤销点。 */
+    L.msg='目标**未切换**（保持「'+RwItemName(origTgt)+'」）—— 新目标「'+RwItemName(newTgt)+'」'
+      +failed.length+' 片基地全部重排失败，已保留原画布：'
+      +failed.map(f=>f.zone+'（'+f.why+'）').join('；');
+    render(); return;
+  }
   L.msg='目标已切到「'+RwItemName(newTgt)+'」：'+done.length+' 片基地产线已重排'
     +(done.length?('（'+done.map(d=>d.zone+' '+d.objs+' 件').join('；')+'）'):'')
     +(failed.length?('；⚠ '+failed.length+' 片没重排（已保留原内容）：'
