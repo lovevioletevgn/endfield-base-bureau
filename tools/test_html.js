@@ -1309,6 +1309,61 @@ chk('v169 重排其余：热能池跟着重摆（不是被丢件）+ 整批只�
 loReset(50);
 A.render();
 
+/* ═══ v172（2026-09-30，对标 yituliu 电池分流计算器）：发电报告补「燃料速率 + 喂料带数 + 超喂提示」═══
+   口径：热能池 = 固定燃烧速率设备（源矿 1/8s=7.5/分；电池 1/40s=1.5/分/台），每份燃料→功率值。
+   台数公式（缺口÷功率值）与参考计算器**恒等、不变**；本版只**新增**输出：
+     Rtheories.fuels[].seconds/perBankMin/burnPerMin/belts；RgenPlanOf 同名字段透传。
+   ⚠️ 向后兼容判据：item/power/count 三个老字段一字不动。详见 docs/对标评估-参考计算器.md。 */
+chk('v172 Rtheories：燃料速率口径正确（电池 1.5/分·台、源矿 7.5/分·台）', (() => {
+  const th = A.Rtheories(4400, '四号谷地');   /* 缺口 4200 */
+  const f = th.fuels[0];                       /* 低容谷地电池 220 */
+  /* 缺口 4200 → 20 台；单台 60/40=1.5 → 总烧 30/分 → 1 条带 */
+  return th.gap === 4200 && f.item === '低容谷地电池' && f.power === 220 && f.count === 20
+    && f.seconds === 40 && f.perBankMin === 1.5 && f.burnPerMin === 30 && f.belts === 1;
+})());
+chk('v172 Rtheories：源矿走 8 秒口径（7.5/分·台）→ 台数与带数都对', (() => {
+  const th = A.Rtheories(575, '通用');          /* 缺口 375 */
+  const f = th.fuels[0];                         /* 源矿 50 */
+  /* 375/50 = 8 台；单台 60/8=7.5 → 总烧 60/分 → 2 条带 */
+  return th.gap === 375 && f.item === '源矿' && f.power === 50 && f.count === 8
+    && f.seconds === 8 && f.perBankMin === 7.5 && f.burnPerMin === 60 && f.belts === 2;
+})());
+chk('v172 Rtheories：老字段零改动（item/power/count 与口径不变）', (() => {
+  const th = A.Rtheories(4400, '四号谷地');
+  return th.base === 200 && th.gap === 4200
+    && JSON.stringify(th.fuels.map(f => [f.item, f.power, f.count]))
+      === JSON.stringify([['低容谷地电池', 220, 20], ['中容谷地电池', 420, 10], ['高容谷地电池', 1100, 4]]);
+})());
+chk('v172 RgenPlanOf：燃料速率字段透传（burnPerMin/belts/seconds/perBankMin）', (() => {
+  loReset(70);
+  A.LbaseSet('map01_lv001');
+  A.LO.autoGen = true; A.LO.objs = []; A.LO.mt = []; A.LO.shipIn = false;
+  A.LawRun('item_filter_core', 10);
+  const gp = A.LO.plan && A.LO.plan.genPlan;
+  return !!gp && gp.need === 1 && gp.perF === 220
+    && gp.seconds === 40 && gp.perBankMin === 1.5 && gp.burnPerMin === 1.5 && gp.belts === 1;
+})());
+chk('v172 报告渲染：发电行含「喂料速率 + 传送带条数 + 超喂提示」三要素（源码级）', (() => {
+  /* 判据：从**产物内联脚本**（rawCode）里找渲染串 —— 与其它源码级锁同源，不读 build_html.py */
+  return rawCode.indexOf('每分钟要喂 <b>') >= 0
+    && rawCode.indexOf('条传送带供料') >= 0
+    && rawCode.indexOf('把整条带全塞给一台也不会多发一度电') >= 0
+    && rawCode.indexOf('喂料口径') >= 0;
+})());
+chk('v172 自动配发电通报：带上「喂多少 / 几条带」', (() => {
+  loReset(70);
+  A.LbaseSet('map01_lv001');
+  A.LO.autoGen = true; A.LO.objs = []; A.LO.mt = []; A.LO.shipIn = false;
+  A.LawRun('item_filter_core', 10);
+  return String(A.LO.msg).indexOf('燃料要喂') >= 0 && String(A.LO.msg).indexOf('条带') >= 0;
+})());
+chk('v172 零缺口时不出喂料提示（老路径零改动）', (() => {
+  const th = A.Rtheories(150, '四号谷地');   /* 用电 < 基础发电 200 → gap=0 */
+  return th.gap === 0 && th.fuels.every(f => f.count === 0 && f.burnPerMin === 0 && f.belts === 0);
+})());
+loReset(50);
+A.render();
+
 /* ═══ v170（2026-09-29，探针抓到的「假成功」第三形态）：LawRun 失败清场 ═══
    背景：LawRun 失败早退原来只写 L.msg 就 render(); return —— L.plan 与画布上的产线件原封不动，
    于是「先 @5 成功、再 @10 失败」时报告区仍挂 @5 的数据、画布仍是 @5 的机器 = 假成功。

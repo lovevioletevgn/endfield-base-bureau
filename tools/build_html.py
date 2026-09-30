@@ -5155,7 +5155,7 @@ function LawRun(targetId, perMin){
       genPlaced.objs.forEach(g=>{
         const obj=Lmk(g.b, g.x, g.y, 0);
         obj.planRole='gen';
-        obj.prod='热能池（发电 '+genPlan.perF+'/台）';
+        obj.prod='热能池（发电 '+genPlan.perF+'/台'+(genPlan.perBankMin>0?('，烧 '+genPlan.fuel+' '+genPlan.perBankMin+'/分'):'')+'）';
         L.objs.push(obj);
       });
     }
@@ -5165,9 +5165,10 @@ function LawRun(targetId, perMin){
   const limWarns=RwPlaceLimitWarn(res);   /* ⑥-4：建筑专属限摆（天有洪炉 ≤12 台）—— 报警不拦截 */
   const sinkNote=sinkPlan.sinks.length?('；♻️ 销毁支线：'+sinkPlan.reasons.join('；')
     +(sinkPlaced.unplaced.length?('；⚠ '+sinkPlaced.unplaced.length+' 个销毁建筑没找到空位（见报告）'):'')):'';
-  /* ⭐v169 自动配发电通报（摆了几台 / 还差几台） */
+  /* ⭐v169 自动配发电通报（摆了几台 / 还差几台）；⭐v172 补燃料供给口径（喂多少 / 几条带） */
   const genNote=(genPlan&&genPlan.need)?('；⚡ 自动配发电：本次摆上热能池 '+genPlaced.objs.length+' 台（需 '+genPlan.need+' 台'
     +(genPlan.fuel?('，按'+genPlan.fuel+' '+genPlan.perF+'/台'):'')+'）'
+    +(genPlan.burnPerMin>0?('；燃料要喂 '+genPlan.burnPerMin+' 个/分（单台 '+genPlan.perBankMin+' 个/分）→ '+genPlan.belts+' 条带'):'')
     +(genPlaced.unplaced.length?('；⚠ 还差 '+genPlaced.unplaced.length+' 台没空位（见报告；可关掉自动配发电自己摆）'):'')):'';
   L.msg='产线已生成：'+(res.targets?res.targets.map(t=>t.name+' '+t.perMin+'/分').join(' ＋ ')
     :res.targetName+' '+perMin+'/分')+' —— 机器 '+res.totalMachines+' 台 + 管线 '+rt.belts.length+' 格'
@@ -5325,7 +5326,7 @@ function Lreroll(){
       });
       rerollGenPlaced.objs.forEach(g=>{
         const obj=Lmk(g.b, g.x, g.y, 0);
-        obj.planRole='gen'; obj.prod='热能池（发电 '+rerollGen.perF+'/台）';
+        obj.planRole='gen'; obj.prod='热能池（发电 '+rerollGen.perF+'/台'+(rerollGen.perBankMin>0?('，烧 '+rerollGen.fuel+' '+rerollGen.perBankMin+'/分'):'')+'）';
         L.objs.push(obj);
       });
     }
@@ -7315,13 +7316,31 @@ function Rbandwidth(objs){
   const cap=(row&&row.caps)?row.caps.bandwidth:null;
   return {use:use, cap:cap, over:(cap!=null&&use>cap), zone:row?row.zoneName:null};
 }
+/* ⭐v172 发电报告补「燃料速率 + 喂料带数 + 超喂提示」（对标 yituliu 电池分流计算器，见 docs/对标评估-参考计算器.md）：
+   背景 —— 热能池不是「喂满料就发固定 X 电」的设备，它有**固定燃烧速率**（源矿 1 个/8 秒 = 7.5/分；
+   电池 1 个/40 秒 = 1.5/分/台），每份燃料贡献「功率值」。所以：
+     · 台数公式与参考计算器恒等（缺口 ÷ 功率值），不变；
+     · 但**要补两个参考站有、我们没有的数**：每分钟要喂多少燃料、这要几条传送带；
+     · 还要点明**超喂＝废料**：把整条带全塞给一台，它只烧 1.5/分，多余的送不进发电（社区「1拖4」蓝图的由来）。
+   `seconds` 取自 DB.mining_power.power.generation.fuelPower（按物品名匹配，该字段数据早就有、只是没被用过）。
+   ⚠️ 向后兼容：只**新增** seconds/perBankMin/burnPerMin/belts 字段，fuels[].item/power/count 一个不动。 */
 function Rtheories(usePower, regionName){
   const mp=DB.mining_power||{}, gen=(mp.power||{}).generation||{};
   const base=+(gen.baseOutput||200);
   const byReg=(mp.power||{}).fuelByRegion||{};
-  const fuels=byReg[regionName]||byReg['通用']||[];
+  const fuels0=byReg[regionName]||byReg['通用']||[];
+  const secOf={}; (gen.fuelPower||[]).forEach(f=>{ secOf[f.item]=+f.seconds||0; });
   const gap=Math.max(0, (+usePower||0)-base);
-  return {base:base, gap:gap, fuels:fuels.map(f=>({item:f.item, power:f.power, count: gap>0?Math.ceil(gap/f.power):0}))};
+  const fuels=fuels0.map(f=>{
+    const count=gap>0?Math.ceil(gap/f.power):0;
+    const sec=secOf[f.item]||0;                 // 燃烧一盘燃料的秒数（0 = 数据缺，如实不编）
+    const perBankMin=sec>0?(60/sec):0;          // 单台热能池每分钟燃烧的量（电池 1.5 / 源矿 7.5）
+    const burnPerMin=+((count*perBankMin).toFixed(4));   // 这批台数每分钟一共要喂多少
+    const belts=perBankMin>0?Math.ceil(burnPerMin/RW_BELT):0; // 要几条传送带供料（带 30/分）
+    return {item:f.item, power:f.power, count:count,
+            seconds:sec, perBankMin:+perBankMin.toFixed(4), burnPerMin:burnPerMin, belts:belts};
+  });
+  return {base:base, gap:gap, fuels:fuels};
 }
 /* 矿石满采上限（按矿种）。三种数据形态要分开对待：
      · 矿脉类（源矿 / 紫晶矿 / 蓝铁矿）：可放矿机数 = 矿脉数 × 每脉 2~6 点 → 给区间
@@ -7558,9 +7577,13 @@ function RstationCount(objs){
 function RgenPlanOf(objs, region){
   const pw=Rpower(objs), th=Rtheories(pw.total, region);
   const out={sinks:[], use:pw.total, base:th.base, gap:th.gap, need:0, fuel:null, perF:0, fuels:th.fuels};
+  /* ⭐v172 燃料供给口径（透传给报告 / 自动配发电提示）：每分钟要喂多少、要几条带、单台燃烧速率 */
+  out.seconds=0; out.perBankMin=0; out.burnPerMin=0; out.belts=0;
   if(th.gap<=0 || !th.fuels.length) return out;
   const f=th.fuels[0];
   out.need=f.count; out.fuel=f.item; out.perF=f.power;
+  out.seconds=f.seconds||0; out.perBankMin=f.perBankMin||0;
+  out.burnPerMin=f.burnPerMin||0; out.belts=f.belts||0;
   out.sinks=[{buildingId:'power_station_1', count:f.count, kind:'gen', name:'热能池', forItem:null}];
   return out;
 }
@@ -8100,7 +8123,8 @@ function Rreport(P, pw, bw, th, lim, st, rawNeed, sc){
       ${wAll.map(x=>`<div class="c-sub" style="margin-top:2px"><span>· ${esc(x)}</span></div>`).join('')}`:''}
       <div class="c-sub" style="margin-top:8px"><span><b>⚠️ 约束校验</b>（硬校验；协议容量 · 建造上限 · 用电取配置表，发电量 · 矿点数 · 存电取社区实测）</span></div>
       ${''/* ⭐v145 撤项：协议容量不约束基地内设备（只约束集成核心区域外的野外设备）→ 报告不再列此项 */}
-      <div class="c-sub" style="margin-top:2px"><span>· <b>发电</b>：这条产线用电 <b>${pw.total}</b> 电；协议核心自带 <b>${th.base}</b> 基础发电${th.gap>0?(' → 缺口 <b>'+th.gap+'</b>，需要热能池：'+th.fuels.map(f=>esc(f.item)+' <b>'+f.count+'</b> 台（'+f.power+'/台）').join(' · ')):' → <b>不用额外发电</b>'}${th.fuels.length?(' <span class="c-id">（按地区选燃料：'+esc(Lregion()||'通用')+'）</span>'):''}${stations?('　<span class="c-id">画布上已摆热能池 '+stations+' 台</span>'):''}${(P.genPlan&&P.genPlan.need)?('　<span class="c-id">⚡ 自动配发电：本次自动摆 <b>'+(P.genPlaced?P.genPlaced.objs.length:0)+'</b> 台（共需 '+P.genPlan.need+' 台，按'+esc(P.genPlan.fuel||'')+' '+P.genPlan.perF+'/台）'+((P.genPlaced&&P.genPlaced.unplaced.length)?('；⚠ 还差 '+P.genPlaced.unplaced.length+' 台没空位 —— 把画布调大，或关掉「自动配发电」自己摆'):'')+'　<b>只摆本体，燃料（源矿 / 电池）需你自接</b></span>'):''}</span></div>
+      <div class="c-sub" style="margin-top:2px"><span>· <b>发电</b>：这条产线用电 <b>${pw.total}</b> 电；协议核心自带 <b>${th.base}</b> 基础发电${th.gap>0?(' → 缺口 <b>'+th.gap+'</b>，需要热能池：'+th.fuels.map(f=>esc(f.item)+' <b>'+f.count+'</b> 台（'+f.power+'/台）'+(f.perBankMin>0?('　每分钟要喂 <b>'+f.burnPerMin+'</b> 个'+esc(f.item)+'（单台 '+f.perBankMin+' 个/分）→ 需 <b>'+f.belts+'</b> 条传送带供料'):'')).join(' · ')):' → <b>不用额外发电</b>'}${th.fuels.length?(' <span class="c-id">（按地区选燃料：'+esc(Lregion()||'通用')+'）</span>'):''}${stations?('　<span class="c-id">画布上已摆热能池 '+stations+' 台</span>'):''}${(P.genPlan&&P.genPlan.need)?('　<span class="c-id">⚡ 自动配发电：本次自动摆 <b>'+(P.genPlaced?P.genPlaced.objs.length:0)+'</b> 台（共需 '+P.genPlan.need+' 台，按'+esc(P.genPlan.fuel||'')+' '+P.genPlan.perF+'/台）'+((P.genPlaced&&P.genPlaced.unplaced.length)?('；⚠ 还差 '+P.genPlaced.unplaced.length+' 台没空位 —— 把画布调大，或关掉「自动配发电」自己摆'):'')+'　<b>只摆本体，燃料（源矿 / 电池）需你自接</b></span>'):''}</span></div>
+      ${(th.gap>0&&th.fuels.length&&th.fuels[0].perBankMin>0)?`<div class="c-sub" style="margin-top:2px"><span class="c-id">⚠ <b>喂料口径</b>（对标社区电池分流计算器）：热能池是<b>固定燃烧速率</b>设备 —— 单台只烧 <b>${th.fuels[0].perBankMin}</b> 个/分（${esc(th.fuels[0].item)} ${th.fuels[0].seconds} 秒/个）<b>，把整条带全塞给一台也不会多发一度电</b>，多余的燃料请在分流器上分流回仓库。想省燃料就让台数正好够、别堆料。</span></div>`:''}
       <div class="c-sub" style="margin-top:2px"><span>· <b>存电</b> <span class="lo-tag">路线图 ②c · 已纳入</span>：上限 <b>${st.cap.toLocaleString?st.cap.toLocaleString('en-US'):st.cap}</b>（社区实测）${st.gap>0?('　当前缺口 <b>'+st.gap+'</b> 电 → 纯靠存电能撑 <b>'+st.minutes+'</b> 分钟（约 '+r1(st.minutes/60)+' 小时），撑完设备就停；这是缓冲不是电源，得补发电'):'　当前用电没超基础发电，存电不动 ✓'}</span></div>
       <div class="c-sub" style="margin-top:2px"><span>· <b>防御建筑上限</b> <span class="lo-tag">路线图 ②b</span>：${lim.defCap!=null?('<b>'+lim.def+'</b> / '+lim.defCap+'（'+esc(lim.zone||'')+'）'+(lim.defOver?' —— <b style="color:'+RW_COL.bad+'">超了 '+(lim.def-lim.defCap)+'</b>':' —— 在限内 ✓')):'（自由模式没指定基地，没有上限可对）'}<span class="c-id">　按分类「战斗辅助」计</span></span></div>
       <div class="c-sub" style="margin-top:2px"><span>· <b>滑索上限</b> <span class="lo-tag">路线图 ②b</span>：<b>基地画布里不涉及</b> —— 滑索架只放野外，不摆进基地（作者 2026-09-21 定，所以左栏也不提供）。本建造区的上限是 <b>${lim.travCap!=null?lim.travCap:'—'}</b>（配置表 <code>travelPoleLimit</code>），那个数服务的是**野外滑索架**，不是基地内的产线。<span class="c-id">沙盘上滑索数恒为 0，所以这一项永远显示 0 / 上限 —— 不是没做校验，是本来就不该在基地里数。</span></span></div>
