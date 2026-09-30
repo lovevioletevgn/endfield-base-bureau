@@ -1174,6 +1174,59 @@ chk('v173 部分成功保留切换（不是全失败 → 不回滚，目标停�
       return A.LO.tgt === 'item_iron_cmpt';
     })());
 
+/* ═══ v174（2026-10-01 作者截图：「我还是出现了」—— 目标栏=源石粉末、报告区=中容武陵电池）═══
+   真根因：`LawRun` 开头无条件写 `L.tgt=targetId; L.rate=perMin;`（全局字段）。
+   单目标/不拆链时无害（传的就是 L.tgt），但**v171 拆链**让 `LapplyAssignAll` 对每个「段」调
+   `LawRun(段目标, 段速率)` → 末段的段料（源石粉末）与段速率（400）**反写进全局目标**
+   → 作者一点「一键生成（全地区）」，目标栏就从「中容武陵电池」变成「源石粉末」；
+   而报告区读的是 `L.plan.res`（当次生成的电池计划）→ 两栏打架。
+   ⚠️ `LawRun` 段内此后**再没读过 L.tgt/L.rate**（全文只用局部 targetId/perMin）→ 删掉该行零副作用。
+   修法：① LawRun 不再写全局目标 ② LapplyAssignAll 结尾显式护住 origTgt/origRate（防御）。
+   ⚠️ 这是 v171 拆链引入的回归；v173 只修了「切换失败不回滚」，覆盖不到「生成时被污染」。 */
+chk('v174 LawRun 不再写全局 L.tgt（生成不污染目标：传段目标也不改 L.tgt）', (() => {
+  loReset(70); A.LbaseSet('map01_lv001');
+  A.LO.tgt = 'item_proc_battery_5'; A.LO.rate = 10;
+  /* 直接传一个**不同**的目标 + 不同速率（模拟拆链段的调用） */
+  A.LawRun('item_originium_powder', 400);
+  /* 老实现会把 L.tgt 写成源石粉末、L.rate 写成 400 —— 必须保持电池@10 */
+  return A.LO.tgt === 'item_proc_battery_5' && A.LO.rate === 10;
+})());
+chk('v174 LawRun 不再写全局 L.rate（同上，速率也不被段速率覆盖）', (() => {
+  loReset(70); A.LbaseSet('map01_lv001');
+  A.LO.tgt = 'item_iron_cmpt'; A.LO.rate = 7;
+  A.LawRun('item_iron_cmpt', 99);
+  return A.LO.rate === 7;
+})());
+chk('v174 一键生成（全地区）后 L.tgt 不被段目标改写（电池 @10 → 拆链 → 目标仍是电池）', (() => {
+  loReset(80); A.LbaseSet('map02_lv002');
+  A.LO.tgt = 'item_proc_battery_5'; A.LO.rate = 10; A.LO.mt = [];
+  A.LgenAll();
+  /* 拆链时末段产出源石粉末链的中间料 → 老实现 L.tgt 会变成 item_originium_powder */
+  return A.LO.tgt === 'item_proc_battery_5';
+})());
+chk('v174 一键生成后速率不被段速率（400）覆盖', (() => {
+  loReset(80); A.LbaseSet('map02_lv002');
+  A.LO.tgt = 'item_proc_battery_5'; A.LO.rate = 10; A.LO.mt = [];
+  A.LgenAll();
+  return A.LO.rate === 10;
+})());
+chk('v174 源码级：LawRun 内不再出现 L.tgt= / L.rate=（只做局部校验）', (() => {
+  const i = rawCode.indexOf('function LawRun(');
+  if (i < 0) return false;
+  const j = rawCode.indexOf('\nfunction ', i + 10);
+  const seg = rawCode.slice(i, j < 0 ? i + 15000 : j);
+  /* ⚠️ 先剥掉块注释 —— 注释里会提到 `L.tgt=targetId`（说明「老实现如此」），不能当代码判据 */
+  const noCmt = seg.replace(/\/\*[\s\S]*?\*\//g, '');
+  return !/L\.tgt\s*=[^=]/.test(noCmt) && !/L\.rate\s*=[^=]/.test(noCmt);
+})());
+chk('v174 源码级：LapplyAssignAll 结尾护住 origTgt/origRate（防御性恢复）', (() => {
+  const i = rawCode.indexOf('function LapplyAssignAll(');
+  if (i < 0) return false;
+  const j = rawCode.indexOf('\nfunction ', i + 10);
+  const seg = rawCode.slice(i, j < 0 ? i + 7000 : j);
+  return /origTgt/.test(seg) && /L\.tgt\s*=\s*origTgt/.test(seg);
+})());
+
 /* ═══ 第 3 期（v166，作者选「跨地区全自动一键」）：目标先分地区、再分基地 ═══
    判据见 docs/最优排布-设计规格.md 第八节：D1 地区可行 / D2 沿用第 2 期真试摆 / D3 收货一致。
    与第 2 期的关系：RxlAll 是 RxlBest 的泛化（地区来源换成「有可用基地的地区」，成本公式同源）；

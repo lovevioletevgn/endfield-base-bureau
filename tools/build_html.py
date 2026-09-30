@@ -4878,7 +4878,16 @@ function LawRun(targetId, perMin){
   if(!targetId){ L.msg='先选一个目标物品'; render(); return; }
   perMin=+perMin||0;
   if(perMin<=0){ L.msg='目标速率要大于 0'; render(); return; }
-  L.tgt=targetId; L.rate=perMin;
+  /* ⭐v174（2026-10-01 作者截图「我还是出现了」）：**这里不再写全局 L.tgt / L.rate**。
+     ─────────────────────────────────────────────────────────────────────
+     老实现无条件 `L.tgt=targetId; L.rate=perMin;`。单目标/不拆链时无害（传的就是 L.tgt），
+     但 v171 拆链让 `LapplyAssignAll` 对每个「段」调 `LawRun(段目标, 段速率)`：
+       电池@10 → 拆成 3 段 → **末段的段料（源石粉末）+ 段速率（400）反写进全局目标**
+       → 作者一点「一键生成（全地区）」，目标栏就从「中容武陵电池」变成「源石粉末」，
+         而报告区读的是 `L.plan.res`（当次生成的电池计划）→ 两栏打架。
+     ⚠️ 本函数此后**再没读过 L.tgt/L.rate**（全文只用局部 targetId/perMin）→ 删掉零副作用。
+     ⚠️ 目标同步由调用方负责：UI 下拉走 `Ltgt`、切目标走 `LretargetAll`（v173 已含回滚），
+        `LapplyAssignAll` 末尾另作防御性恢复 —— 三条路径都不依赖本函数的副作用。 */
   /* ── [2] 两趟展开（跨地区收货两遍走）───────────────── */
   /* ⭐⑥-1 跨地区收货（作者 2026-09-22：「只用从四号谷地向武陵超库存传输」）
      做法是**两趟展开**：第一趟按老口径展开，拿到它认出来的「原料」清单；
@@ -6940,6 +6949,8 @@ function LapplyAssignAll(rbs){
     && rb.assign.some(a=>a.items.length));
   if(!list.length){ L.msg='没有可落画布的分配结果 —— 见上方报告'; render(); return; }
   const origBase=L.base;
+  /* ⭐v174：记下「生成前作者选的目标 / 速率」—— 一键生成不该改它，结尾原样恢复（防御）。 */
+  const origTgt=L.tgt, origRate=L.rate;
   Lpush();                              /* ① 整批一次撤销点（快照含 basesAll） */
   const undoMark=L.undo.length;
   const done=[], failed=[], shipUsed=[];
@@ -7049,6 +7060,10 @@ function LapplyAssignAll(rbs){
   /* ⭐v171：拆链收货是**落画布这一次**的临时注入，收尾必须清零 ——
      否则作者之后手动切目标重生成时，上一片的截断料还挂在 segShip 里（串味）。 */
   L.segShip=[]; L.segShipNote='';
+  /* ⭐v174：**防御性护住全局目标 / 速率** —— 「一键生成」是「按当前目标摆画布」，
+     不该改变作者选的目标。v174 起 LawRun 已不再写 L.tgt/L.rate，这里再保一道：
+     万一将来有别的段/子流程动了它，也不会把目标栏改花（作者实测的错位就是它造成的）。 */
+  L.tgt=origTgt; L.rate=origRate;
   /* ④ 视线落到首个落点基地（v159.1 口径）；全失败 → 切回原基地 */
   L.base = done.length ? done[0].levelId : origBase;
   const viewZone = done.length
