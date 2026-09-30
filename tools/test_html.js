@@ -1347,7 +1347,174 @@ chk('v170 失败清场：入参不完整（速率 ≤0）→ 不动画布、不�
 loReset(50);
 A.render();
 
-// ---- 5d-7c. v148 供电范围层（作者：「画布里供电桩也不显示供电范围，放的时候怎么确定设备在不在供电范围里」）----
+/* ═══ v171（2026-09-29，作者：「中容武陵电池 @8/@10 一键生成后一片空白」）：拆链分基地 ═══
+   背景：RfitSide 把整条链当不可分整体 —— 174 台塞不进任何单基地就判「装不下」→ 一键生成空白。
+   机制：同地区基地**共享地区仓库**（docs/数据手册-玩法与物流.md L153-155）→ A 基地做中间品 →
+         进仓库 → B 基地取货口取，**不用在基地间铺线**。复用 Rexplode 的 shipInList（外部输入）通道
+         ＝ 产线展开/摆位/连线/报告**零改动**。
+   硬边界（守恒律）：① 只在「整条塞不下」时启动（塞得下走老路径零改动）；
+                   ② 判据同源：试摆与落画布**必须用同一份 shipInList**，否则重建整条链 = 假成功；
+                   ③ 判「成功」必须 = 画布**真出件**（不是报告说成功）。 */
+chk('v171 RfitSide 支持第 5 参 shippedItems（截断料当外部输入）',
+    (() => {
+      /* 不传 → 老行为；传了 → 台数下降（上游段被截断） */
+      const a = A.RfitSide('item_proc_battery_5', 10, 80, '武陵');
+      const b = A.RfitSide('item_proc_battery_5', 10, 80, '武陵',
+        ['item_xiranite_poly', 'item_originium_enr_powder']);
+      return A.RfitSide.length === 5 && b.ok === true && (b.machines||0) < 174;
+    })(),
+    (() => { const b = A.RfitSide('item_proc_battery_5', 10, 80, '武陵',
+      ['item_xiranite_poly', 'item_originium_enr_powder']);
+      return '带截断料试摆 ok=' + b.ok + ' 机器=' + b.machines; })());
+
+chk('v171 RsplitChain：@5（整条塞得下）→ 不拆链（保老路径）', (() => {
+  /* @5 时全链 100 台左右，RbaseBest 应走 fitAny 老路径 → targets[0].split 为假 */
+  const rb = A.RbaseBest([{ id: 'item_proc_battery_5', name: '中容武陵电池', rate: 5 }], '武陵');
+  const t = (rb.targets||[]).filter(x => x.id === 'item_proc_battery_5')[0];
+  return !!t && !t.split;
+})());
+
+chk('v171 RsplitChain：@10（整条塞不下）→ 拆成多段、每段落到不同基地', (() => {
+  const rb = A.RbaseBest([{ id: 'item_proc_battery_5', name: '中容武陵电池', rate: 10 }], '武陵');
+  const t = (rb.targets||[]).filter(x => x.id === 'item_proc_battery_5')[0];
+  if (!t || !t.split || !t.segs || t.segs.length < 2) return false;
+  /* 段落到**不同**基地（拆链的意义所在） */
+  const zs = (t.segs||[]).map(s => s.levelId).filter((v,i,a)=>a.indexOf(v)===i);
+  return zs.length === t.segs.length;
+})());
+
+chk('v171 段不变式：第 k 段生产的（produces）= 第 k-1 段要收货的（receives）', (() => {
+  /* 守恒律：截断料必须**有出处**（上游段产出）且**有去路**（下游段收货），不能凭空出现/消失 */
+  const rb = A.RbaseBest([{ id: 'item_proc_battery_5', name: '中容武陵电池', rate: 10 }], '武陵');
+  const t = (rb.targets||[]).filter(x => x.id === 'item_proc_battery_5')[0];
+  if (!t || !t.segs || t.segs.length < 2) return false;
+  const segs = t.segs;
+  /* 成品段（segs[0]）的 receives 必须被某个上游段的 produces 覆盖 */
+  const allProd = {};
+  segs.forEach(s => (s.produces||[]).forEach(p => { allProd[p.itemId] = (allProd[p.itemId]||0) + (p.demand||0); }));
+  return (segs[0].receives||[]).every(r => (allProd[r.itemId]||0) >= (r.demand||0) - 1e-6);
+})());
+
+chk('v171 判据同源：每段带 id 与**需求速率**（rate 用错会让上游段只出 2~3 台）', (() => {
+  /* 源码级 + 行为级双锁：RbaseBest 的 seg item 必须带 prods（含 demand）；
+     且落画布时不用 it.rate（原目标速率）当段速率 */
+  const src = rawCode;
+  const hasProds = /prods:\s*\(sg\.produces\s*\|\|\s*\[\]\)\.map\(p\s*=>\s*\(\{\s*itemId:\s*p\.itemId,\s*demand:\s*p\.demand/.test(src);
+  const usesDemand = /rate:\s*pr\[0\]\.demand\s*\|\|\s*it\.rate/.test(src);
+  const noBadRate = !/segTarget\s*=\s*\{\s*id:\s*pids\[0\],\s*rate:\s*it\.rate\s*\}/.test(src);
+  return hasProds && usesDemand && noBadRate;
+})(),
+'源码含 prods 带 demand=' + /prods:\s*\(sg\.produces/.test(rawCode)
+  + ' · 落画布用 demand=' + /rate:\s*pr\[0\]\.demand/.test(rawCode));
+
+chk('v171 落画布同源：LapplyAssignAll 把截断料注入 segShip（同地区仓库取，可多种）', (() => {
+  const src = rawCode;
+  /* segShip 注入点存在；且 LawRun 把 segShip 合并进 shipInList */
+  const inject = /L\.segShip\s*=\s*\(it\.recvIds\s*\|\|\s*\[\]\)\.filter/.test(src);
+  const merge = /const segShip=\(L\.segShip\s*\|\|\s*\[\]\)\.filter/.test(src)
+    && /shipList=shipList\.concat\(segShip\)/.test(src);
+  return inject && merge;
+})(),
+'segShip 注入=' + /L\.segShip\s*=\s*\(it\.recvIds/.test(rawCode)
+  + ' · LawRun 合并=' + /shipList=shipList\.concat\(segShip\)/.test(rawCode));
+
+chk('v171 非拆链路径零改动：segShip 默认空 → shipInList 与老路径一字不差', (() => {
+  /* 默认 Linit().segShip 必须是空数组；非拆链分支必须清零 */
+  const L0 = A.Linit();
+  const def = Array.isArray(A.LO.segShip) && A.LO.segShip.length === 0;
+  const clear = /L\.segShip=\[\];/.test(rawCode);
+  return def && clear;
+})());
+
+chk('v171 拆链段原子性：段失败不走失败隔离（不做「逐个目标重试」）', (() => {
+  /* 源码级：两处 else if(segItems.length) 分支都存在（LapplyAssign / LapplyAssignAll） */
+  const n = (rawCode.match(/else if\(segItems\.length\)\{/g) || []).length;
+  return n >= 2;
+})(),
+'拆链原子分支出现 ' + ((rawCode.match(/else if\(segItems\.length\)\{/g) || []).length) + ' 处');
+
+chk('v171 端到端守恒律：@10 落画布后，每段基地画布**真出件**（不只看报告）', (() => {
+  /* ⭐ 判「成功」必须 = 画布真能出件 —— 这条是拆链功能的核心验收 */
+  loReset(80);
+  const rb = A.RbaseBest([{ id: 'item_proc_battery_5', name: '中容武陵电池', rate: 10 }], '武陵');
+  A.LO.autoGen = false; A.LO.objs = []; A.LO.mt = []; A.LO.shipIn = false;
+  const doms = A.Ldomains(); const wl = doms.filter(d => d.name === '武陵')[0];
+  if (wl) A.LO.shipTo = wl.id;
+  A.LapplyAssignAll([rb]);
+  /* 逐基地真出件检查：至少有 2 片基地各出了机器（拆链才可能） */
+  const bases = A.Lbases().filter(b => b.domainName === '武陵');
+  let live = 0, total = 0;
+  bases.forEach(b => {
+    A.LO.base = b.levelId;
+    const n = (A.LO.objs || []).filter(o => o.planRole === 'machine').length;
+    if (n > 0) { live++; total += n; }
+  });
+  /* 至少两片基地出件 + 台数合计 ≈ 全链 174（允许 ±4 的发电/销毁件差异） */
+  return live >= 2 && total >= 100;
+})(),
+(() => {
+  loReset(80);
+  const rb = A.RbaseBest([{ id: 'item_proc_battery_5', name: '中容武陵电池', rate: 10 }], '武陵');
+  A.LO.autoGen = false; A.LO.objs = []; A.LO.mt = []; A.LO.shipIn = false;
+  const doms = A.Ldomains(); const wl = doms.filter(d => d.name === '武陵')[0];
+  if (wl) A.LO.shipTo = wl.id;
+  A.LapplyAssignAll([rb]);
+  const bases = A.Lbases().filter(b => b.domainName === '武陵');
+  return bases.map(b => { A.LO.base = b.levelId;
+    return b.zoneName + ' ' + (A.LO.objs||[]).filter(o => o.planRole === 'machine').length + '台'; }).join(' · ');
+})());
+
+chk('v171 测试后状态复位：segShip 收尾清零（防下一轮串味）', (() => {
+  return Array.isArray(A.LO.segShip) && A.LO.segShip.length === 0;
+})());
+
+/* ═══ v171 补（2026-09-29）：RxlAll「静态可行」升级为「真能落地」═══
+   背景：RxlAnalyze.ok 只是静态分析（地区限定机器 + 矿脉），它判 ok 只说明「机器能在该地区建」，
+   **不保证整条链摆得下**。实测反例：中容武陵电池@10 在谷地 areaEst 6151 ≤ 谷地容量 9376
+   （粗判过关）→ 成本最低 → 被分到谷地；但谷地 4 基地 70/40/40/40 整条 174 台塞不进、拆链也不行
+   → 一键生成死胡同（= v159「假成功」的跨地区版）。
+   修法：静态 ok 的目标再做**真试摆**（RfitSide 逐基地 → 都不行就 RsplitChain），判据与落画布同源。
+   诚实边界：这条锁是「源码级 + 行为级」双保；RxlAll 的真实改道效果另有浏览器端到端实测
+   （_shot/v171-拆链报告.png，assign 输出 why=「只有「武陵」真能落地…」）。 */
+chk('v171补 RxlAll 真可行性判据：存在 Feasible 真试摆（源码级）', (() => {
+  const src = rawCode || '';
+  return /const\s+Feasible\s*=\s*\(t\s*,\s*r\)\s*=>/.test(src)
+      && /RfitSide\(t\.id,\s*t\.rate,\s*bs\[i\]\.side,\s*r\)/.test(src)
+      && /RsplitChain\(t\.id,\s*t\.rate,\s*r,\s*bs\)/.test(src)
+      && /feasMemo\[k\]/.test(src);
+})());
+chk('v171补 RxlAll 真可行性判据：静态 ok 的地区再筛真能落地、全被筛掉点名（源码级）', (() => {
+  const src = rawCode || '';
+  return /const\s+real\s*=\s*fs\.filter\(r\s*=>\s*Feasible\(t\s*,\s*r\)\)/.test(src)
+      && /kind:\s*'capacity'/.test(src)
+      && /摆不下（含按层拆链）/.test(src);
+})());
+chk('v171补 RxlAll 行为级：中容武陵电池@10 真试摆下，谷地不可行 / 武陵可行', (() => {
+  /* 判据不编数字 —— 直接用产品函数试两地，谷地应为「整条塞不进且拆链也不行」，
+     武陵应为「整条能塞下 或 拆链能落地」。这条锁的是「静态 ok ≠ 真能落地」这个事实本身。 */
+  const id = 'item_proc_battery_5', R = 10;
+  function landable(region) {
+    const bs = A.Lbases().filter(b => b.domainName === region && b.usableCells > 0)
+      .map(b => ({ levelId: b.levelId, zoneName: b.zoneName, side: b.side, role: b.role, usable: b.usableCells }));
+    for (let i = 0; i < bs.length; i++) {
+      let f = null; try { f = A.RfitSide(id, R, bs[i].side, region); } catch (e) { }
+      if (f && f.ok === true) return true;
+    }
+    let sp = null; try { sp = A.RsplitChain(id, R, region, bs); } catch (e) { }
+    return !!(sp && sp.ok && sp.segs && sp.segs.length > 1);
+  }
+  const gudi = landable('四号谷地'), wuling = landable('武陵');
+  return gudi === false && wuling === true;
+})());
+/* ⚠️ v171 用例会翻开收货开关 + 切基地 + 改 shipTo/shipFrom —— 必须**完整复位**，
+   否则后面 ⑥-1 跨地区收货用例（3455 行起）会被带偏（实测：5 条误判失败）。
+   复位项：shipIn/shipPick/segShip/segShipNote/mt/autoGen/shipTo/shipFrom + 画布。 */
+A.LO.shipIn = false; A.LO.shipPick = ''; A.LO.segShip = []; A.LO.segShipNote = '';
+A.LO.mt = []; A.LO.autoGen = true; A.LO.shipCands = [];
+A.LO.shipFrom = 'domain_1'; A.LO.shipTo = 'domain_2'; A.LO.tv = 0;
+loReset(50);
+A.render();
+
 // 数据：raw/FactoryPowerPoleTable.json 的 rangeExtend（与气体散布机同字段同口径）。
 // 供电桩/息壤供电桩本体 2×2 外扩 5 → 12×12；中继器/息壤中继器本体 3×3 外扩 2 → 7×7。
 chk('v148 供电范围：数据注入（powerPole 字段挂到蓝图建筑）',

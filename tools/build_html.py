@@ -2193,6 +2193,12 @@ function Linit(){
     rbase:null,
     /* ⭐第 3 期：跨地区分配缓存（RxlAll 输出）+ 各地区基地级分配（RbaseBest 数组）+ 微调建议 + 收货记录 */
     rgen:null, rgenRbs:null, rgenAdv:[], rgenShip:[],
+    /* ⭐v171 同地区拆链收货：该基地**从本地区仓库取**的截断料 id 列表（如 ['item_originium_enr_powder']）。
+       ⚠️ 与 shipPick（跨地区传输协议，一次只能传一种）**不是一回事** ——
+          同地区基地共享地区仓库，不走传输协议 → **可以同时取多种**，不受「一次一种」限制。
+       落画布时由 LapplyAssignAll 按段注入；LawRun 把两者**合并**进 Rexplode 的 shipInList。 */
+    segShip:[],
+    segShipNote:'',
     /* ⭐第 4 期：跨基地转运清单（RtransPlan 输出，报告区显示；只在一键生成时算一次） */
     rtrans:null,
     /* ⭐v145 多基地：基地级字段（LO_BASE_KEYS）按基地各存一份 —— 上面那几个同名字段
@@ -4901,6 +4907,15 @@ function LawRun(targetId, perMin){
     LshipPanel(res0);
     if(L.shipPick) shipList=[L.shipPick];
   } else if(!L.shipIn){ L.shipCands=[]; }
+  /* ⭐⭐ v171（2026-09-29）同地区拆链收货：落画布时注入的**截断料**清单。
+     与上面的跨地区单选**合并** —— 两者机制不同、互不挤占：
+       · 跨地区传输协议：走 domain，**一次只能传一种**（shipPick 单选）；
+       · 同地区基地间：共用地区仓库，**不走协议、可同时取多种**（segShip 全量）。
+     ⚠️ 判据同源（守恒律）：RbaseBest 的拆链试摆用 RfitSide(…, shippedItems) 判「塞得下」，
+        落画布必须用同一份 shipInList 展开 —— 否则画布重建完整链 = 假成功（v159 教训）。
+     ⚠️ 空数组时（非拆链路径）segShip 为空 → shipInList 与老路径**一字不差**（零回归）。 */
+  const segShip=(L.segShip||[]).filter(id=>id && RwCanReceive(id) && shipList.indexOf(id)<0);
+  if(segShip.length) shipList=shipList.concat(segShip);
   opt1.shipInList=shipList;
   const res=Rexplode(targetId, perMin, opt1);
   if(!res.machines.length){ return LawFail('「'+res.targetName+'」没有机器配方，排不了产线'); }
@@ -5745,6 +5760,39 @@ function RxlAll(targets){
   if(!ts.length){ outs.note='先选目标物品（或用「＋ 目标」加几个），才做得了跨地区分配'; return outs; }
   const an={};
   const A=(t,r)=>{ const k=t.id+'@'+t.rate+'@'+r; if(!an[k]) an[k]=RxlAnalyze(t.id, t.rate, r); return an[k]; };
+  /* ⭐⭐ v171 补（2026-09-29）：把「静态可行」升级为「**真能落地**」——
+     RxlAnalyze.ok 是纯静态分析（地区限定机器 + 矿脉），它判 ok 只说明「机器能在该地区建」，
+     **不保证那条链真的摆得下**。实测反例（作者环境）：中容武陵电池@10 在四号谷地 RxlAnalyze.ok=true、
+     areaEst 6151 ≤ 谷地容量 9376（粗判过关）→ 成本最低 → 被分到谷地；
+     但谷地 4 个基地是 70/40/40/40，**整条 174 台塞不进任何一片**，拆链也不行（副基地只有 40×40）
+     → 一键生成走到死胡同、报告说「没有目标真能落到基地上」。
+     这是 v159「假成功」的**跨地区版**（粗判过关、真试摆才暴雷），v171 之前就存在。
+     修法：静态 ok 的目标再做一遍**真试摆**（RfitSide 逐基地 → 都不行就 RsplitChain 拆链再试），
+     判据与落画布**同源**；不可行的地区从候选里剔除，让 RxlAll 自动改道到真能做的地区。
+     ⚠️ 成本：每目标每地区最多 4 次 RfitSide + 1 次 RsplitChain（后者内部已有缓存级复用）——
+        现状 2 地区 × ≤4 目标，实测毫秒级；结果按 id@rate@region 缓存（feasMemo）不重复算。 */
+  const feasMemo={};
+  const Feasible=(t,r)=>{
+    const k=t.id+'@'+t.rate+'@'+r;
+    if(feasMemo[k]!=null) return feasMemo[k];
+    const bs=Lbases().filter(b=>b.domainName===r&&b.usableCells>0)
+      .map(b=>({levelId:b.levelId, zoneName:b.zoneName, side:b.side,
+        role:b.role, usable:b.usableCells}));
+    let ok=false;
+    for(let i=0;i<bs.length && !ok;i++){
+      let f=null;
+      try{ f=RfitSide(t.id, t.rate, bs[i].side, r); }catch(e){ f=null; }
+      if(f&&f.ok===true) ok=true;
+    }
+    if(!ok){
+      /* 整条塞不进任何单基地 → 试拆链（v171）；拆链成功也算「该地区真能做到」 */
+      let sp=null;
+      try{ sp=RsplitChain(t.id, t.rate, r, bs); }catch(e){ sp=null; }
+      if(sp&&sp.ok&&sp.segs&&sp.segs.length>1) ok=true;
+    }
+    feasMemo[k]=ok;
+    return ok;
+  };
   /* D1：逐目标挑可行地区；一个都不行 → 点名（带每个地区被卡的理由） */
   const opts=[], pool=[];
   ts.forEach(t=>{
@@ -5754,7 +5802,15 @@ function RxlAll(targets){
         why:'哪个地区都建不了 —— '+regions.map(r=>r+'（'+((A(t,r).blocked||[])[0]||'无机器配方')+'）').join('；')});
       return;
     }
-    pool.push(t); opts.push(fs);
+    /* ⭐v171：静态 ok 的地区再筛「真能落地」；全被筛掉 → 如实点名（区分「建不了」与「塞不下」） */
+    const real=fs.filter(r=>Feasible(t,r));
+    if(!real.length){
+      outs.unassigned.push({id:t.id, name:t.name||RwItemName(t.id), rate:t.rate, kind:'capacity',
+        why:'机器能在 '+fs.join('、')+' 建，但整条链（约 '+(A(t,fs[0]).totalMachines||'?')+' 台）'
+          +'在这些地区的基地里都摆不下（含按层拆链）—— 把速率调小、或换一个更靠上游的目标'});
+      return;
+    }
+    pool.push(t); opts.push(real);
   });
   if(!pool.length) return outs;
   const M=pool.length;
@@ -5819,8 +5875,14 @@ function RxlAll(targets){
   outs.assign=pool.map((t,i)=>{
     const region=best.assign[i];
     let why='';
-    if(opts[i].length===1) why='只有这个地区能产';
-    else{
+    if(opts[i].length===1){
+      /* ⭐v171：唯一的可行地区可能是「静态筛出来就一个」，也可能是「别的地区真摆不下被筛掉」——
+         后者要写明，否则作者会以为别处也能做却选了这个。 */
+      const staticAll=regions.filter(r=>A(t,r).ok);
+      why=(staticAll.length>opts[i].length)
+        ? '只有「'+region+'」真能落地（'+staticAll.filter(r=>r!==region).join('、')+' 机器能建，但整条链摆不下）'
+        : '只有这个地区能产';
+    }else{
       const alts=opts[i].filter(r=>r!==region).map(r=>{
         const a=A(t,r)||{};
         const parts=[];
@@ -5875,10 +5937,20 @@ const RW_SINK_ZONE_REGIONS=['武陵'];
      `pl.over` 为空即视为**能摆下**（真判据，含走线通道与间距）。
    ⚠️ 只判「有没有解」，不追求最优布局——最终落画布仍由 LawRun 走全网格择优，两者不冲突。
    ⚠️ 成本：单次 LawPlan 约 10~300ms（随台数增长）；只在分配阶段跑，不进渲染热路径。
-   注意：失败路径要**回退到 est 粗判**（res 拿不到时不能崩）。 */
-function RfitSide(targetId, perMin, size, regionName){
+   注意：失败路径要**回退到 est 粗判**（res 拿不到时不能崩）。
+
+   ⭐v171（2026-09-29）：新增第 5 参 shippedItems —— 试摆判据必须**与真实落画布同源**。
+     老版内部写死 `Rexplode(targetId, perMin, {region:regionName})`（不带收货清单），
+     ⇒ 「拆链分基地」方案里「把上游料当外部输入后能否塞进小基地」**试摆不出来**
+       （Rexplode 重做完整展开 → 台数没瘦下来 → 误报「装不下」）。
+     现透传：不传 = 老行为一字不变（向后兼容）；传了 = 按截断后展开试摆。
+     ⚠️ 形参名用 shippedItems，**不是 shipInList** —— 后者是这函数体内要用的入口对象数组，
+        参数若同名会与外层约定混淆（Rexplode 的 opt 字段才叫 shipInList）。 */
+function RfitSide(targetId, perMin, size, regionName, shippedItems){
+  const rOpt={region:regionName};
+  if(shippedItems && shippedItems.length) rOpt.shipInList=shippedItems;
   let res=null;
-  try{ res=Rexplode(targetId, perMin, {region:regionName}); }catch(e){ return {ok:null, why:'展开失败'}; }
+  try{ res=Rexplode(targetId, perMin, rOpt); }catch(e){ return {ok:null, why:'展开失败'}; }
   if(!res || !(res.machines||[]).length) return {ok:false, why:'没有机器配方'};
   if((res.totalMachines||0)>RW_MAX_MACHINES)
     return {ok:false, why:'超机器上限（'+res.totalMachines+' 台 > '+RW_MAX_MACHINES+'）'};
@@ -5902,6 +5974,215 @@ function RfitSide(targetId, perMin, size, regionName){
   }
   return {ok:false, why:'画布 '+size+'×'+size+' 摆不下（试了 '+cands.length+' 组参数）',
     machines:res.totalMachines||0};
+}
+/* ⭐⭐ v171（2026-09-29）拆链分基地求解器 —— 「一条链塞不下一个基地」的正解。
+   ──────────────────────────────────────────────────────────────────────────────
+   【为什么需要】RfitSide 把整条链当**不可分的整体**：139 台塞不进 80×80 就判「装不下」，
+     从不考虑把链切开分到同地区多个基地 → 中容武陵电池 @8/@10 一键生成后空白（作者实测）。
+   【机制依据】同地区基地**共享该地区仓库**（docs/数据手册-玩法与物流.md L153-155）：
+     A 基地做中间品 → 进地区仓库 → B 基地取货口取 → **不用在基地间铺线**。
+     这与项目已有的「跨地区收货」是同一机制，只是跨度缩短到同地区 ⇒ 复用 shipInList 通道，
+     产线展开 / 摆位 / 连线 / 报告**零改动**。
+   【实测段大小（中容武陵电池 @10，全链 174 台）】
+     · 不切：成品段 174 台（塞不进任何基地）
+     · 切「壤晶+致密源石粉末」：成品段 **10 台** + 上游段 **100 台**
+     · 切「致密源石粉末」    ：成品段  40 台 + 上游段 134 台
+     ⇒ 成品段小、上游段大 ⇒ **大基地要给上游段**（且方向随切法变，不能写死）。
+   【算法】分两趟试（基地方向自适应）：
+     把 bases 分别按「大→小」「小→大」两种顺序当「段位序」，
+     段 0 = 成品段（receives = 切点集），段 k = 上游段（produces = 上一段的 receives），
+     逐段就地找「能让本段塞进本基地」的最小切点集（候选 = 本段链上的祖先中间料，machines 降序贪心）。
+     哪一趟能全部段落地就用哪一趟；两趟都不行 → ok:false（如实报原因）。
+   【硬边界】
+     · 切点只取**层边界上、RwCanReceive 为真**的中间料（同地区仓库能流转的才切）；
+     · 判据同源：试摆必须带 shipInList（否则 Rexplode 重做完整展开 = 假成功）；
+     · 每段都是真 `LawPlan` 试摆，不是估算。
+   【代价】不同画布**必然各建一套** —— 截断料若被多个下游段共用会在多处重复建；
+     报告层据此如实告知（复用 dupShared 口径）。 */
+function RsplitChain(targetId, perMin, regionName, basesIn, maxSegs){
+  const allBases=(basesIn||[]).slice();
+  if(!allBases.length) return {ok:false, why:'该地区没有可用基地', segs:[]};
+  const cap=Math.max(1, Math.min(allBases.length, maxSegs||allBases.length));
+  const fail=why=>({ok:false, why:why, segs:[]});
+  /* 全链展开（不切）—— 拿层级结构 + 各节点需求当「切点池」 */
+  let full=null;
+  try{ full=Rexplode(targetId, perMin, {region:regionName}); }
+  catch(e){ return fail('展开失败：'+e.message); }
+  if(!full || !(full.machines||[]).length) return fail('没有机器配方，没有可拆的链');
+  if((full.totalMachines||0)>RW_MAX_MACHINES)
+    return fail('链条展开要 '+full.totalMachines+' 台 > 上限 '+RW_MAX_MACHINES+' 台，拆链也救不了（请调小速率）');
+  /* 切点池：有配方、能在同地区仓库流转（RwCanReceive）、不是根目标的中间品。
+     同 itemId 只留一台（memo 去重后本来也只建一套）。按 machines 降序 = 先切最肥的层。 */
+  const poolMap={};
+  (full.machines||[]).forEach(n=>{
+    if(!n.itemId || n.itemId===targetId) return;
+    if(!n.recipeId) return;                 /* 原料/外部输入节点没有机器，不是切点 */
+    if(!RwCanReceive(n.itemId)) return;     /* 同地区仓库传不了的（野外交付类）不切 */
+    const cur=poolMap[n.itemId];
+    if(!cur || (n.machines||0)>(cur.machines||0))
+      poolMap[n.itemId]={itemId:n.itemId, name:RwItemName(n.itemId), demand:n.demand||0,
+        machines:n.machines||0, depth:n.depth==null?9:n.depth};
+  });
+  const pool=Object.keys(poolMap).map(k=>poolMap[k])
+    .sort((a,b)=>(b.machines-a.machines)||(b.depth-a.depth));
+  if(!pool.length) return fail('链上没有「可在同地区仓库流转」的中间料可切，拆不了了');
+  const asItems=ids=>ids.map(id=>({itemId:id, name:RwItemName(id),
+    demand:(poolMap[id]?poolMap[id].demand:0)}));
+
+  /* ── 试摆工具（判据与 RfitSide 同源：真 LawPlan） ─────────────────── */
+  /* 下游段（成品段）：原链 + 收货清单 */
+  const fitDown=(sid, cuts)=>RfitSide(targetId, perMin, sid, regionName, cuts.length?cuts:null);
+  /* 上游段：以 produces（带需求）为 seed 展开 + 收货清单当外部输入 → LawPlan 真试摆 */
+  const fitUp=(sid, produces, receives)=>{
+    const seeds=produces.map(p=>({itemId:p.itemId, perMin:p.demand||1}));
+    if(!seeds.length) return {ok:false, why:'上游段没有要生产的料'};
+    let res=null;
+    try{
+      const opt={region:regionName, seeds:seeds};
+      if(receives&&receives.length) opt.shipInList=receives;
+      res=Rexplode(seeds[0].itemId, seeds[0].perMin, opt);
+    }catch(e){ return {ok:null, why:'上游段展开失败：'+e.message}; }
+    if(!res || !(res.machines||[]).length) return {ok:false, why:'上游段没有机器配方'};
+    if((res.totalMachines||0)>RW_MAX_MACHINES)
+      return {ok:false, why:'上游段超机器上限（'+res.totalMachines+' 台）', machines:res.totalMachines};
+    const depLines=res.machines.reduce((s,n)=>s+(n.children||[]).reduce((t,c)=>
+      t+(c.recipeId?Math.max(c.machines||1, n.machines||1, RwLines(c.demand, RwFluid(c.phase))):0),0),0);
+    const small=(res.totalMachines||0)<=8 || depLines<3;
+    const cands=[];
+    [false,true].forEach(al=>{ (small?[5,3]:[Math.min(5,depLines)]).forEach(cb=>{
+      cands.push({gapX:RW_GAP_X_T, align:al, corrBase:cb, mode:null}); }); });
+    [RW_GAP_X_T,2].forEach(gx=>{ cands.push({gapX:gx, align:false, corrBase:Math.min(5,depLines), mode:'down'}); });
+    for(let i=0;i<cands.length;i++){
+      const c=cands[i];
+      const corr=Math.max(c.corrBase, Math.min(14, Math.ceil(depLines/2)+2));
+      let pl=null;
+      try{ pl=LawPlan(res, sid, corr, {gapX:c.gapX, align:c.align, mode:c.mode||undefined}); }catch(e){ continue; }
+      if(pl && !pl.over.length) return {ok:true, machines:res.totalMachines||0, tries:i+1};
+    }
+    return {ok:false, why:'画布 '+sid+'×'+sid+' 摆不下（试了 '+cands.length+' 组参数）',
+      machines:res.totalMachines||0};
+  };
+  /* 候选切点：必须是**本段链里真实存在**的祖先中间料。
+     · 成品段：本段链 = 全链 → 候选 = 全池；
+     · 上游段：本段链 = toProduce 的展开 → 候选 = 该展开里出现过的池内中间料
+       （排除 toProduce 自身 —— 那是要交出去的，不是要收货的）。
+     ⚠️ toProduce 是**物品对象数组**（{itemId,name,demand}），不是 id 串数组 ——
+        混用会让 toProduce[0].itemId 变 undefined（v171 实锤：候选池凭空为空 → 段全跳过）。 */
+  const candidatesFor=(isFirst, toProduce)=>{
+    if(isFirst) return pool.slice();
+    if(!toProduce.length) return [];
+    let up=null;
+    try{ up=Rexplode(toProduce[0].itemId, toProduce[0].demand||1,
+      {region:regionName, seeds:toProduce.map(p=>({itemId:p.itemId, perMin:p.demand||1}))}); }
+    catch(e){ return []; }
+    if(!up) return [];
+    const inChain={};
+    (up.machines||[]).forEach(n=>{ if(n.itemId && n.recipeId) inChain[n.itemId]=1; });
+    const forbidden={}; toProduce.forEach(p=>{ forbidden[p.itemId]=1; });
+    return pool.filter(p=>inChain[p.itemId] && !forbidden[p.itemId]);
+  };
+
+  /* ── 单趟求解：按给定「段位序」basesOrder 逐段落地 ────────────────────
+     ⚠️ 关键：**本段在当前基地放不下时，不是失败，而是顺位跳过、换下一个更大的基地**
+        （basesOrder 已按尺寸排；跳过的基地仍可能在后面的段用上）。
+        因为段尺寸不单调（@8 成品段比上游段大），「哪个基地给哪段」无法预判；
+        跳过策略让「小基地给小段、大基地留给大段」自然涌现。
+     ⚠️ receives / toProduce 一律是**物品对象数组**（保持同一口径，别再混 id 串）。 */
+  const solve=(basesOrder, segCap)=>{
+    const segs=[];
+    let receives=[];                 /* 本段要「从上游收货」的料（物品对象数组） */
+    let toProduce=[];                /* 本段要生产的料（= 上一段的 receives）；段 0 为空 */
+    let cursor=0, guard=0;
+    while(segs.length<segCap && cursor<basesOrder.length && guard++<16){
+      const bi=segs.length;          /* 本段序号 = 已落地段数 */
+      const b=basesOrder[cursor];
+      const isFirst=(bi===0);
+      const attempt=cuts=>isFirst ? fitDown(b.side, cuts) : fitUp(b.side, toProduce, cuts);
+      /* ① 先试「本段不再额外切」 */
+      let r=attempt(receives);
+      /* ② 不行就把本段链上的中间料交给上游，直到本段能摆下。
+         ⚠️ 切法优先「少切」（先试单个候选，再试两两、三三…）——
+            实测 @10 段0 只切 [致密源石粉末] 就够（成品段 40 台），
+            而按 machines 前缀贪心会切 [源石粉末+致密源石粉末] → 上游段被撑到 234 台反而更糟。
+            切得越少 → 上游段越小 → 后面越容易落地。 */
+      if(r.ok!==true){
+        if(r.ok===null) return {err:r.why||'试摆异常'};
+        const cand=candidatesFor(isFirst, toProduce).map(p=>p.itemId)
+          .filter(id=>!receives.some(x=>x.itemId===id));
+        let chosen=null;
+        for(let sz=1; sz<=cand.length && !chosen; sz++){
+          /* 枚举 cand 里取 sz 个的组合（cand 已按 machines 降序，组合按字典序剪枝） */
+          const idx=[];
+          for(let k=0;k<sz;k++) idx.push(k);
+          while(idx.length && !chosen){
+            const trial=receives.concat(asItems(idx.map(k=>cand[k])));
+            const rr=attempt(trial);
+            if(rr.ok===true){ chosen={cuts:trial, r:rr}; break; }
+            if(rr.ok===null) return {err:rr.why||'试摆异常'};
+            /* 下一个组合 */
+            let p=sz-1;
+            while(p>=0 && idx[p]===cand.length-(sz-p)) p--;
+            if(p<0) break;
+            idx[p]++;
+            for(let q=p+1;q<sz;q++) idx[q]=idx[q-1]+1;
+          }
+        }
+        if(!chosen){ cursor++; continue; }   /* 本基地放不下本段 → 跳过，换下一个基地 */
+        receives=chosen.cuts; r=chosen.r;
+      }
+      /* ③ 本段成立 */
+      segs.push({levelId:b.levelId, zoneName:b.zoneName, side:b.side, role:b.role,
+        receives:receives.slice(), produces:toProduce.slice(),
+        machines:r.machines||0, product:isFirst});
+      cursor++;
+      /* ④ 接力：下一段（上游）要生产 = 本段的 receives */
+      if(!receives.length || !receives.some(x=>x.itemId))
+        return {segs:segs};       /* 没有要上游供的料 → 完成 */
+      toProduce=receives.slice(); receives=[];
+    }
+    if(segs.length && toProduce.length && !receives.length){
+      /* 段都落地了但还有料没人生产（基地用完）—— 本趟如实失败 */
+      return {err:'基地用尽，仍有中间料（'+toProduce.map(x=>x.name).join('、')+'）没人生产'};
+    }
+    return {segs:segs, partial:(toProduce.length>0)};
+  };
+
+  /* ── 段位序候选：段尺寸不单调（实测 @8 成品段 75 台 > 上游段 64 台；@10 反过来），
+        所以不能写死「成品段吃哪个基地」。改为**枚举少量有希望的段位序**，
+        每个序跑一遍 solve（段放不下就顺位跳过），再逐段用**真 LawPlan 复核**；
+        第一个全段落地的即答案。候选序（≤4 基地，代价可控）：
+          · 大→小（主基地先）· 小→大
+          · [最大, 其余小基地升序] · [最小, 其余降序]  —— 覆盖「成品段在最大 / 在最小」两向
+        去重后逐个试。 */
+  const byDesc=allBases.slice().sort((x,y)=>y.side-x.side);    /* 大→小 */
+  const byAsc=allBases.slice().sort((x,y)=>x.side-y.side);     /* 小→大 */
+  const big=byDesc[0], small=byAsc[0];
+  const orders=[byDesc, byAsc,
+    [big].concat(byAsc.filter(b=>b.levelId!==big.levelId)),
+    [small].concat(byDesc.filter(b=>b.levelId!==small.levelId))];
+  /* 去重（按 levelId 序列） */
+  const seen={}, uniq=[];
+  orders.forEach(o=>{ const k=o.map(b=>b.levelId).join('>');
+    if(!seen[k]){ seen[k]=1; uniq.push(o); } });
+  let lastErr='';
+  for(let oi=0;oi<uniq.length;oi++){
+    const res=solve(uniq[oi], uniq[oi].length);
+    if(res && !res.err && !res.partial && res.segs.length){
+      /* 守恒律复核：每段在它自己的基地里真能摆下（判「成功」必须 = 真能出件） */
+      let bad=null;
+      res.segs.forEach((s,idx)=>{
+        if(bad) return;
+        const chk=(s.product? fitDown(s.side, s.receives)
+                             : fitUp(s.side, s.produces, s.receives));
+        if(chk.ok!==true) bad='段'+idx+'（'+s.zoneName+' '+s.side+'×'+s.side+'）复检未通过';
+      });
+      if(!bad)
+        return {ok:true, segs:res.segs, targetId:targetId, perMin:perMin, region:regionName,
+          basesUsed:res.segs.length, pool:pool.length};
+      lastErr=bad;
+    }else if(res && res.err) lastErr=res.err;
+  }
+  return fail(lastErr||'拆链后仍装不下（这条链太大或有太多共用中间料）');
 }
 function RbaseBest(targets, regionName){
   const list=(targets||[]).filter(t=>t&&t.id&&+t.rate>0);
@@ -5951,10 +6232,19 @@ function RbaseBest(targets, regionName){
       x.fit[b.levelId]=!!r.ok;
     });
     x.fitAny=bases.some(b=>x.fit[b.levelId]);
+    /* ⭐⭐ v171（2026-09-29）拆链分基地：整条链一个基地都塞不下时，**先尝试按层切链**，
+       把成品段留在小基地、上游段落到大基地，截断料走同地区仓库（复用 shipInList，零改动）。
+       ⭐ 硬边界：**只在「整条塞不下」时启动** —— 塞得下就维持现状，老路径零改动。 */
+    if(!x.fitAny){
+      const sp=RsplitChain(x.t.id, x.t.rate, regionName, bases);
+      if(sp.ok && sp.segs.length>1){ x.split=sp; x.fitAny=true; }
+      else x.splitFail=(sp.why||'');
+    }
     if(!x.fitAny){
       outs.unassigned.push({id:x.t.id, name:x.name, rate:x.t.rate,
         why:'装不下：试摆了本地区 '+bases.length+' 个基地（'+bases.map(b=>b.zoneName+' '+b.side+'×'+b.side).join('、')
-          +'）都摆不下（约 '+x.machines+' 台 / 估算 '+x.est+' 格）—— 调小速率或换更小的目标',
+          +'）都摆不下（约 '+x.machines+' 台 / 估算 '+x.est+' 格）'
+          +(x.splitFail?('；按层拆链也失败：'+x.splitFail):'；链上没有可拆的中间料'),
         kind:'capacity', est:x.est, machines:x.machines,
         /* ⭐第 3 期：把「哪些基地试摆通过」带上 —— 微调建议层据此判「挪基地 / 换地区」，
            不必重跑昂贵的 RfitSide（本项此时必全 false，带上是为格式统一 + 未来复用）。 */
@@ -5995,6 +6285,34 @@ function RbaseBest(targets, regionName){
     return null;
   };
   pool.forEach(x=>{
+    /* ⭐⭐ v171 拆链目标：段已由 RsplitChain 定好「哪段在哪基地」，逐段就位（不再走 pickFor）。
+       每段是一段独立的产线：成品段 receives=上游料（从同地区仓库取）、上游段 produces=交给下游的料。
+       ⚠️ 容量账照记（每段占它自己基地的面积），判据已在 RsplitChain 里用真 LawPlan 试摆过。 */
+    if(x.split && x.split.segs){
+      let ok=true;
+      x.split.segs.forEach(sg=>{
+        const b=bases.filter(bb=>bb.levelId===sg.levelId)[0];
+        if(!b){ ok=false; return; }
+        const segEst=Math.round(sg.machines*2.2);        /* 段面积估算（仅供容量账；权威判据是试摆） */
+        b.used+=segEst;
+        b.items.push({id:x.t.id, name:x.name, rate:x.t.rate, est:segEst, sinks:0,
+          seg:true, machines:sg.machines, product:!!sg.product,
+          /* ⭐v171：段的截断料**带 id**（落画布要把 id 注入 segShip 当外部输入；
+             只带名字会让落画布还原不出 id → 又去重建整条链 = 假成功）。
+             ⚠️ 还要带**需求速率**：上游段的生产目标速率 = produces[].demand（如 400/分），
+                绝不是原目标速率（10/分）—— 用错会让上游段只出 2~3 台（v171 实锤）。 */
+          recvIds:(sg.receives||[]).map(r=>r.itemId),
+          recvRates:(sg.receives||[]).map(r=>r.demand||0),
+          prods:(sg.produces||[]).map(p=>({itemId:p.itemId, demand:p.demand||0})),
+          prodIds:(sg.produces||[]).map(p=>p.itemId),
+          receives:(sg.receives||[]).map(r=>r.name), produces:(sg.produces||[]).map(p=>p.name)});
+      });
+      if(!ok){   /* 段找不到对应基地（理论上不会）→ 如实退回未分配 */
+        outs.unassigned.push({id:x.t.id, name:x.name, rate:x.t.rate,
+          why:'拆链后段与基地对不上（内部错误）', kind:'capacity', est:x.est, machines:x.machines, fit:x.fit});
+      }
+      return;
+    }
     const pk=pickFor(x);
     if(pk){
       pk.b.used+=x.est;
@@ -6018,9 +6336,13 @@ function RbaseBest(targets, regionName){
   /* 账：溢出基地数 + 面积浪费（Σ used/usable） */
   outs.over=bases.filter(b=>b.used>b.usable).length;
   outs.waste=Math.round(bases.reduce((s,b)=>s+(b.usable>0?b.used/b.usable:0),0)*1000)/1000;
-  /* 跨基地重复建的共享中间料（分到不同基地的目标对）—— 如实告知成本（见 Spec 7.4 Decision 2） */
+  /* 跨基地重复建的共享中间料（分到不同基地的目标对）—— 如实告知成本（见 Spec 7.4 Decision 2）
+     ⚠️ v171：拆链目标**不参与本判据** —— 它的 `a.nodeSet` 是**整条链**的节点集，
+        而拆链后「上游料只在某一基地做、下游基地从仓库取」并不是重复建。
+        拆链目标各段之间没有重复建（每段各管一段），跨段共用料是**授权转运**。
+        ⇒ 只对**未拆链**的目标做 dupShared 统计。 */
   const nodeOf={};
-  pool.forEach(x=>{ nodeOf[x.t.id]=Object.keys(x.a.nodeSet||{}); });
+  pool.forEach(x=>{ if(!x.split) nodeOf[x.t.id]=Object.keys(x.a.nodeSet||{}); });
   const seen={};
   bases.forEach(b=>{
     b.items.forEach(it=>{
@@ -6032,7 +6354,8 @@ function RbaseBest(targets, regionName){
     if(zs.length>1) outs.dupShared.push({itemId:nid, name:RwItemName(nid), zones:zs});
   });
   outs.assign=bases.map(b=>({levelId:b.levelId, zoneName:b.zoneName, role:b.role, items:b.items.slice()}));
-  outs.targets=pool.map(x=>({id:x.t.id, name:x.name, rate:x.t.rate, est:x.est, sinks:x.sinks}));
+  outs.targets=pool.map(x=>({id:x.t.id, name:x.name, rate:x.t.rate, est:x.est, sinks:x.sinks,
+    split:!!x.split, segs:(x.split&&x.split.segs)?x.split.segs:null}));
   outs.ok=(outs.unassigned.length===0);
   return outs;
 }
@@ -6051,12 +6374,41 @@ function RbaseBestHtml(rb, inGen){
   rb.bases.forEach(b=>{
     const pct=b.usable>0?Math.round(b.used/b.usable*100):0;
     const over=b.used>b.usable;
-    const items=b.items.length?b.items.map(it=>esc(it.name)+'@'+it.rate+'（约'+it.est+'格'
-      +(it.sinks?('·♻️销毁×'+it.sinks):'')+'）').join('、'):'<span class="c-id">（无）</span>';
+    const items=b.items.length?b.items.map(it=>{
+      if(it.seg){   /* ⭐v171 拆链段：标明「成品段/上游段」+ 收发什么 */
+        const tag=it.product?'成品段':'上游段';
+        const io=[];
+        if(it.receives&&it.receives.length) io.push('收 '+it.receives.join('·'));
+        if(it.produces&&it.produces.length) io.push('交 '+it.produces.join('·'));
+        return esc(it.name)+'@'+it.rate+'（拆链·'+tag+'，'+it.machines+' 台'
+          +(io.length?('，'+esc(io.join('；'))):'')+'）';
+      }
+      return esc(it.name)+'@'+it.rate+'（约'+it.est+'格'+(it.sinks?('·♻️销毁×'+it.sinks):'')+'）';
+    }).join('、'):'<span class="c-id">（无）</span>';
     h+='<div class="c-sub" style="margin-top:2px"><span>· <b>'+esc(b.zoneName)+'</b>（'+esc(b.role)+' '+b.side+'×'+b.side
       +'，可用 '+b.usable+' 格）：'+items
       +'　<b'+(over?(' style="color:'+B+'"'):'')+'>已用约 '+b.used+' 格（'+pct+'%）'+(over?' ⚠ 超容':'')+'</b></span></div>';
   });
+  /* ⭐⭐ v171 拆链方案清单：一条链塞不下一个基地时，按层切开分到同地区多个基地 ——
+     截断料走**同地区仓库**转运（A 基地产出进仓库 → B 基地取货口取），**不用在基地间铺线**。 */
+  const splitTargets=(rb.targets||[]).filter(t=>t.split&&t.segs&&t.segs.length>1);
+  if(splitTargets.length){
+    h+='<div class="c-sub" style="margin-top:4px"><span><b style="color:'+G+'">🧩 拆链分基地 —— '
+      +splitTargets.length+' 条大链按层切到了多个基地</b>'
+      +'<span class="lo-tag">同地区基地共用一个仓库，截断料走仓库转运，不用铺基地间的线</span></span></div>';
+    splitTargets.forEach(t=>{
+      h+='<div class="c-sub" style="margin-top:2px"><span>· <b>'+esc(t.name)+'</b>@'+t.rate
+        +' → 切成 '+t.segs.length+' 段：'+t.segs.map((s,i)=>{
+          const tag=s.product?'成品段':'上游段';
+          const io=[];
+          if(s.receives&&s.receives.length) io.push('从仓库收 '+s.receives.map(x=>esc(x.name)).join('、'));
+          if(s.produces&&s.produces.length) io.push('产出 '+s.produces.map(x=>esc(x.name)).join('、')+' 交给下游段');
+          return '<b>'+esc(s.zoneName)+'</b> 做'+tag+'（'+s.machines+' 台'+(io.length?('，'+io.join('；')):'')+'）';
+        }).join(' → ')+'</span></div>';
+    });
+    h+='<div class="c-sub" style="margin-top:2px"><span class="c-id">⚠ 代价：分到不同画布必然各建一套。'
+      +'本方案里「截断料」只在**上游段所在基地**建一次，下游段从仓库取 —— 不重复建（与「同一目标分到两基地」不同）。</span></div>';
+  }
   if(rb.sinkZone)
     h+='<div class="c-sub" style="margin-top:2px"><span style="color:'+G+'">♻️ 销毁专区（'+esc(rb.sinkZone)+'）：'
       +(rb.sinkMoved.length?('已把 '+rb.sinkMoved.length+' 条带销毁支线的产线挪到「'+esc(rb.sinkMoved[0].zone)+'」——'
@@ -6108,7 +6460,9 @@ function RgenAdvice(rbs){
       if(fitLids.length){
         push(nm,'本地区的「'+fitLids.map(zoneOf).join('、')+'」真装得下它，只是容量账被先排的目标占满 —— 把它排在前面、或少排一个别的目标');
       }else{
-        /* 本地区全装不下 → 试摆别的地区（真试摆，只在失败时跑） */
+        /* 本地区全装不下 → 试摆别的地区（真试摆，只在失败时跑）。
+           ⭐v171：与 RxlAll 的可行性判据**同源** —— 先 RfitSide 逐基地，都不行再 RsplitChain 拆链；
+           否则会出现「建议说都摆不下、可真做时拆链能做」的自相矛盾。 */
         const found=[];
         regions.filter(r=>r!==cur).forEach(r=>{
           const bs=Lbases().filter(b=>b.domainName===r&&b.usableCells>0)
@@ -6117,6 +6471,14 @@ function RgenAdvice(rbs){
             let f=null;
             try{ f=RfitSide(u.id, u.rate, bs[i].side, r); }catch(e){ f=null; }
             if(f&&f.ok){ found.push(r+'·'+bs[i].zoneName+'（'+bs[i].side+'×'+bs[i].side+'）'); break; }
+          }
+          if(!found.length || found[found.length-1].indexOf(r+'·')!==0){
+            /* 整条塞不进任何单基地 → 试拆链（v171）；成功则点名「拆链分基地」这条路 */
+            let sp=null;
+            try{ sp=RsplitChain(u.id, u.rate, r, bs.map(b=>({levelId:b.levelId, zoneName:b.zoneName,
+              side:b.side, role:b.role, usable:b.usableCells}))); }catch(e){ sp=null; }
+            if(sp&&sp.ok&&sp.segs&&sp.segs.length>1)
+              found.push(r+'（拆链分 '+sp.segs.length+' 段到 '+(sp.segs||[]).map(s=>s.zoneName).join('、')+'）');
           }
         });
         if(found.length)
@@ -6434,7 +6796,17 @@ function LapplyAssign(rb){
     L.objs=L.objs.filter(o=>!o.planRole); L.sel=[]; L.plan=null;
     /* 该基地的目标：第一个当主目标，其余进 L.mt（合图展开，共享料只建一套） */
     const items=a.items.slice();
-    const main=items[0], rest=items.slice(1);
+    /* ⭐v171：单地区入口同样支持拆链段 —— 与 LapplyAssignAll 同款映射（判据同源）。 */
+    const segItems=items.filter(it=>it&&it.seg);
+    let segTarget=null, segMt=[];
+    if(segItems.length){
+      const it=segItems[0];
+      const pr=(it.prods||[]).filter(x=>x&&x.itemId);
+      L.segShip=(it.recvIds||[]).filter(x=>x);
+      if(pr.length){ segTarget={id:pr[0].itemId, rate:pr[0].demand||it.rate, name:RwItemName(pr[0].itemId)};
+        segMt=pr.slice(1).map(x=>({id:x.itemId, rate:x.demand||it.rate, name:RwItemName(x.itemId)})); }
+    }else{ L.segShip=[]; }
+    const main=segTarget||items[0], rest=segTarget?segMt:items.slice(1);
     const savedMt=L.mt;
     /* ⭐v159 失败隔离：合图里只要有一个目标生成失败，**整包都不出**（作者实测「一堆产线出不来」）。
        做法 = 失败时把目标逐个丢给 LawRun 试一遍，能出的留下（用 L.mt 重跑其余），
@@ -6446,8 +6818,16 @@ function LapplyAssign(rb){
     let placed=0;
     try{
       placed=tryRun(main, rest);
-      if(placed>0) done.push({zone:a.zoneName, levelId:a.levelId, items:items.length, objs:placed});
-      else{
+      if(placed>0) done.push({zone:a.zoneName, levelId:a.levelId, items:items.length, objs:placed,
+        seg:segItems.length>0});
+      else if(segItems.length){
+        /* ⭐v171：拆链段是原子的，不做失败隔离（同 LapplyAssignAll）。 */
+        const sg=segItems[0];
+        failed.push({zone:a.zoneName,
+          name:(sg.product?'成品段（收 '+(sg.receives||[]).join('、')+'）'
+            :'上游段（产 '+(sg.produces||[]).join('、')+'）'),
+          rate:main.rate, why:L.msg||'没有生成任何机器'});
+      }else{
         /* 首轮失败 → 隔离：只留下真能生成的目标，其余逐个点名（附完整原因） */
         const keep=[], bad=[];
         for(let i=0;i<items.length;i++){
@@ -6476,6 +6856,8 @@ function LapplyAssign(rb){
        这样一次 Ctrl+Z 就能整体回到落画布前（与「整批是一次操作」的语义一致）。 */
   if(L.undo.length>undoMark) L.undo.length=undoMark;
   L.redo.length=0;
+  /* ⭐v171：拆链收货是这一次落画布的临时注入，收尾清零（防串味） */
+  L.segShip=[]; L.segShipNote='';
   /* ④ 视线落点：**有落点就切到第一个落点基地**（v159.1，作者 2026-09-25 选①）。
      原来固定切回 origBase → 若落点不在原基地，作者点完「一键分配」看到的是**空画布**（件落到别的基地去了），
      容易以为没生效。现在改成落点优先：done[0].levelId 就是「最该看的这片」。
@@ -6542,17 +6924,47 @@ function LapplyAssignAll(rbs){
       L.pick=null;
       L.objs=L.objs.filter(o=>!o.planRole); L.sel=[]; L.plan=null;
       const items=a.items.slice();
+      /* ⭐⭐ v171（2026-09-29）同地区拆链：本基地的 items 是**段**（it.seg）时，
+         不能按原目标整条建 —— 必须只建本段，并把截断料当外部输入。
+         ─────────────────────────────────────────────────────────────────────
+         映射规则（与 RsplitChain 的试摆判据同源）：
+           · 成品段（product=true，produces 空）：target = 原目标（it.id），segShip = it.recvIds；
+           · 上游段：target = 本段要生产的第一个料（it.prodIds[0]），
+                     L.mt = 其余要生产的料，segShip = it.recvIds。
+         ⚠️ 判据同源（守恒律）：RsplitChain 用 RfitSide(…, shippedItems=receives) 判「塞得下」，
+             这里必须用同一份 shipInList（经 L.segShip → LawRun 合并）展开 —— 否则重建整条链 = 假成功。 */
+      const segItems=items.filter(it=>it&&it.seg);
+      let segTarget=null, segMt=[];
+      if(segItems.length){
+        const it=segItems[0];
+        const pr=(it.prods||[]).filter(x=>x&&x.itemId);
+        L.segShip=(it.recvIds||[]).filter(x=>x);       /* 截断料 → 同地区仓库取（LawRun 合并进 shipInList） */
+        if(pr.length){ segTarget={id:pr[0].itemId, rate:pr[0].demand||it.rate, name:RwItemName(pr[0].itemId)};
+          /* ⚠️ 速率取 produces[].demand（如 400/分），不是 it.rate（原目标 10/分）——v171 实锤。 */
+          segMt=pr.slice(1).map(x=>({id:x.itemId, rate:x.demand||it.rate, name:RwItemName(x.itemId)})); }
+        /* pr 为空 = 成品段：segTarget 留 null → 下面走「原目标」分支 */
+      }else{
+        L.segShip=[];                                  /* ⚠️ 非拆链路径必须清零（否则上一片的收货串味） */
+      }
+      L.segShipNote=segItems.length
+        ?(segItems[0].product?'成品段：从地区仓库收 '+(segItems[0].receives||[]).join('、')
+          :'上游段：产出 '+(segItems[0].produces||[]).join('、')+'，交给下游段')
+        :'';
       /* ②-D3：按本基地目标链的收货需求设收货。一次只能传一种（游戏口径）——
-         需求最大的那种走传输，其余如实点名（不静默按本地自产处理）。 */
-      const ship=RgenShipOf(items, region);
+         需求最大的那种走传输，其余如实点名（不静默按本地自产处理）。
+         ⚠️ v171：拆链段走 segShip（同地区、可多种），跨地区收货按**本段实际要收/要产的链**重算。 */
+      const ship=RgenShipOf(segTarget?[segTarget].concat(segMt):items, region);
       L.shipIn=(ship.keys.length>0);
       if(L.shipIn){
         if(fromDom) L.shipFrom=fromDom.id;
         L.shipPick=ship.pick;
         shipUsed.push({zone:a.zoneName, region:region, pick:ship.pick,
-          pickName:RwItemName(ship.pick), extra:ship.keys.filter(k=>k!==ship.pick).map(RwItemName)});
+          pickName:RwItemName(ship.pick), extra:ship.keys.filter(k=>k!==ship.pick).map(RwItemName),
+          seg:(segItems.length?{product:!!segItems[0].product,
+            recv:(segItems[0].receives||[]).slice(),
+            prod:(segItems[0].produces||[]).slice()}:null)});
       }else L.shipPick='';
-      const main=items[0], rest=items.slice(1);
+      const main=segTarget||items[0], rest=segTarget?segMt:items.slice(1);
       const savedMt=L.mt;
       const tryRun=(m, rs)=>{ L.mt=rs.map(x=>({id:x.id, rate:x.rate})); L.pick=null;
         LawRun(m.id, m.rate);
@@ -6560,8 +6972,17 @@ function LapplyAssignAll(rbs){
       let placed=0;
       try{
         placed=tryRun(main, rest);
-        if(placed>0) done.push({zone:a.zoneName, region:region, levelId:a.levelId, items:items.length, objs:placed});
-        else{
+        if(placed>0) done.push({zone:a.zoneName, region:region, levelId:a.levelId, items:items.length,
+          objs:placed, seg:segItems.length>0});
+        else if(segItems.length){
+          /* ⭐v171：拆链段是**原子**的 —— 不做失败隔离（段只有一个目标，「逐个试」毫无意义）。
+             失败必是真实失败（试摆通过但落画布不同源）→ 如实点名，含段身份与截断料，便于溯源。 */
+          const sg=segItems[0];
+          failed.push({zone:a.zoneName,
+            name:(sg.product?'成品段（收 '+(sg.receives||[]).join('、')+'）'
+              :'上游段（产 '+(sg.produces||[]).join('、')+'）'),
+            rate:main.rate, why:L.msg||'没有生成任何机器'});
+        }else{
           /* 首轮失败 → 失败隔离：能出的先出，失败者逐个点名带完整原因（v159 口径） */
           const keep=[], bad=[];
           for(let i=0;i<items.length;i++){
@@ -6590,6 +7011,9 @@ function LapplyAssignAll(rbs){
   /* ③ 裁掉循环里 LawRun 自 push 的快照 —— 整批只留一个撤销点 */
   if(L.undo.length>undoMark) L.undo.length=undoMark;
   L.redo.length=0;
+  /* ⭐v171：拆链收货是**落画布这一次**的临时注入，收尾必须清零 ——
+     否则作者之后手动切目标重生成时，上一片的截断料还挂在 segShip 里（串味）。 */
+  L.segShip=[]; L.segShipNote='';
   /* ④ 视线落到首个落点基地（v159.1 口径）；全失败 → 切回原基地 */
   L.base = done.length ? done[0].levelId : origBase;
   const viewZone = done.length
