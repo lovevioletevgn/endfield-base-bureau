@@ -485,7 +485,19 @@ def main():
         grp = c.get("formulaGroupId", "")
         ms = group_ms.get(grp, 1000)
         total = c.get("totalProgress", 0)
-        seconds = round(total / 1000.0 * ms / 1000.0, 2) if total else None
+        # ⭐v176（2026-10-01，作者指出「流星飞武陵城只用一台封装机产电池」）：
+        #   **配方耗时 = progressRound（秒）**。
+        #   原实现是 `total/1000 * ms/1000`，而 `FactoryMachineCraftTable` 里
+        #   317/317 条配方恒满足 `totalProgress ≡ progressRound × 6000`（progressRound 只有 2/10/20 三档），
+        #   且 28 个配方组的 msPerRound 恒为 1000 —— 于是原式等价于 `progressRound × 6`：
+        #   **所有配方耗时被高估 6 倍、单台产能只有真值的 1/6**，整条产线台数随之高估 6 倍。
+        #   三重外部验证一致：TapTap「封装机产中型电池满产能 10 秒一个，能供 4 台热容池」、
+        #   巴哈「全速中容量武陵电池 6/min，需 8 条黄矿 + 30/min 壤晶」「中武陵电池 2 台产 12/分」
+        #   → progressRound=10 → 10 秒 → 6/分 ✓；源石粉末 progressRound=2 → 2 秒 → 30/分
+        #   （正好喂满一条传送带，符合设计直觉）。
+        #   兜底：万一某条缺 progressRound，退回 totalProgress/6000（数值等价）。
+        pr = c.get("progressRound")
+        seconds = pr if pr else (round(total / 6000.0, 2) if total else None)
         mid = c.get("machineId")
         bld = building_map.get(mid, {})
         craft_list.append({

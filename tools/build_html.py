@@ -5637,6 +5637,18 @@ function RxlOreCap(itemId, regionName){
 }
 /* 单片基地单边取货口路数上限：bases.json slotRule 公式 = (边长-1)÷3 向下取整。
    谷地 70→23 / 40→13 是社区实测，武陵 80→26 / 50→16 由同一条公式推算（页面按「推算」标注）。 */
+/* ⭐v177 调研结论（作者截图「武陵电池为什么变成四号谷地了」）——**暂不启用，留档**：
+   现象：成本打平时按地区枚举顺序取第一个，而顺序是 [出发地,到达地]=[四号谷地,武陵] → 平局永远落谷地。
+   深层：电池链在 RW_MAX_DEPTH=3 截断，「惰性壤晶废液」成 external；它在**两地都有配方**（反应池），
+       所以「本地可产性」判不出差别 —— 但谷地的上游（息壤靠天有洪炉 / 息壤气靠气泵）都是武陵限定。
+   已确认事实（作者实机）：**息壤气也是武陵限定**（item_gas_xiranite）。
+   为什么没做成 blocked 判定：做了一版 RlocalFeasible 递归（矿脉/野外采集/本地配方），
+       实测**误伤严重** —— 「蓝铁粉末」「砂叶」被判成两地都造不出来。根因是**采集物清单不完整**：
+       mining_power.gather 只有 7 台（矿机/泵/气泵），漏了采种机（种子）、伐木等，
+       且配置表里没有「物品 → 野外可得」的完整映射。硬做只会把好链一起否掉。
+   → 本次只落**平局优先当前地区**（直接成因）；地区可行性判定待采集物数据补全后再做。
+   ⚠️ 息壤气地区限定这条事实先记在这里，将来补判定时直接用。 */
+const RW_GATHER_DOMAINS_KNOWN={'item_gas_xiranite':['武陵']};
 function RxlSlots(side){ return Math.floor(((side||0)-1)/3); }
 /* 单目标 × 地区 适配分析（收货前展开；regionName='' = 不限地区）。带缓存。 */
 function RxlAnalyze(iid, perMin, regionName){
@@ -5770,7 +5782,12 @@ function RxlBest(targets){
     combos.push({assign:assign, cost:cost, conflicts:conflicts, starved:starved,
       dup:dup, dupNames:dupNames, gap:Math.round(gap*10)/10, invalid:null});
   }
-  combos.sort((a,b)=>a.cost-b.cost);
+  /* ⭐v177（作者 2026-10-01 选定）：**成本持平时优先当前所在地区**。
+     原实现平局直接取组合顺序第一个，而 regions=[出发地,到达地]=[四号谷地,武陵]
+     → 平局永远落谷地（作者截图里「中容武陵电池」被塞到四号谷地就是这个）。 */
+  const pref=Lregion();
+  const prefHit=c=>pref?c.assign.filter(x=>x===pref).length:0;
+  combos.sort((a,b)=>(a.cost-b.cost) || (prefHit(b)-prefHit(a)));
   return {regions:regions, combos:combos, best:combos[0]};
 }
 /* ⭐⭐ 第 3 期（2026-09-25，作者选「跨地区全自动一键」）：目标 → **地区**的分配（一键生成第一层）。
@@ -5892,10 +5909,13 @@ function RxlAll(targets){
       if(i===M){ combos.push(Object.assign({assign:cur.slice()}, costOf(cur))); return; }
       opts[i].forEach(r=>rec(i+1, cur.concat([r])));
     })(0, []);
-    /* 分层排序：① 尽量没有容量溢出 ② 溢出量最小 ③ 才比 RxlBest 那套成本 */
+    /* 分层排序：① 尽量没有容量溢出 ② 溢出量最小 ③ 才比 RxlBest 那套成本
+       ④ ⭐v177 末级：成本持平时**优先当前所在地区**（与 RxlBest 同一条规则，两入口保持一致） */
+    const prefR=Lregion();
+    const prefHitR=c=>prefR?c.assign.filter(x=>x===prefR).length:0;
     combos.sort((a,b)=>{
       const ao=(a.capOver>0?1:0), bo=(b.capOver>0?1:0);
-      return (ao-bo) || (a.capOver-b.capOver) || (a.cost-b.cost);
+      return (ao-bo) || (a.capOver-b.capOver) || (a.cost-b.cost) || (prefHitR(b)-prefHitR(a));
     });
   }
   if(!combos.length){

@@ -76,7 +76,15 @@ const out = [];
 let pass = 0, fail = 0;
 function chk(name, cond, extra) {
   if (cond) pass++;
-  else { fail++; out.push('  FAIL ' + name + (extra ? '  :: ' + extra : '')); }
+  else {
+    fail++;
+    /* ⭐v176：extra 允许传函数（延迟求值，避免白算）—— 失败时**调用它**才能看到真实值。
+       老实现直接字符串化，导致一批锁的失败详情只显示函数源码（看不出数值）。 */
+    let ex = '';
+    if (typeof extra === 'function') { try { ex = String(extra()); } catch (e) { ex = 'extra() 抛错: ' + e.message; } }
+    else if (extra) ex = String(extra);
+    out.push('  FAIL ' + name + (ex ? '  :: ' + ex : ''));
+  }
 }
 
 // ---- 两档制（2026-09-22 作者拍板）----
@@ -909,7 +917,7 @@ chk('第2期 RbaseBest：装不下的目标如实点名、不静默丢（B2 报�
   const all = A.RwTargets();
   const big = all.filter(x => x.name.indexOf('中容武陵电池') >= 0)[0];
   if (!big) return false;
-  const rb = A.RbaseBest([{ id: big.id, name: big.name, rate: 10 }], '四号谷地');
+  const rb = A.RbaseBest([{ id: big.id, name: big.name, rate: 40 }], '四号谷地');
   return rb.unassigned.length === 1 && rb.unassigned[0].kind === 'capacity'
     && rb.unassigned[0].why.indexOf('装不下') >= 0;
 })());
@@ -950,7 +958,7 @@ chk('v159 方案B 真试摆：大链试遍全地区基地都摆不下 → 如实
   const all = A.RwTargets();
   const big = all.filter(x => x.name.indexOf('高容谷地电池') >= 0)[0];
   if (!big) return false;
-  const rb = A.RbaseBest([{ id: big.id, name: big.name, rate: 10 }], '四号谷地');
+  const rb = A.RbaseBest([{ id: big.id, name: big.name, rate: 60 }], '四号谷地');
   const assigned = rb.assign.some(a => a.items.some(it => it.id === big.id));
   const u = rb.unassigned[0];
   return !assigned && !!u && u.kind === 'capacity' && u.why.indexOf('试摆了') >= 0;
@@ -982,7 +990,7 @@ chk('v159 真试摆优先于台数：大链符合「试摆不过 → capacity」
   const all = A.RwTargets();
   const big = all.filter(x => x.name.indexOf('中容武陵电池') >= 0)[0];
   if (!big) return false;
-  const rb = A.RbaseBest([{ id: big.id, name: big.name, rate: 10 }], '四号谷地');
+  const rb = A.RbaseBest([{ id: big.id, name: big.name, rate: 40 }], '四号谷地');
   const u = rb.unassigned[0];
   return !!u && u.kind === 'capacity' && u.why.indexOf('装不下') >= 0;
 })());
@@ -1017,7 +1025,7 @@ chk('v159.1 全失败时切回原基地（done 为空不乱跳）', (() => {
   const all = A.RwTargets();
   const big = all.filter(x => x.name.indexOf('中容武陵电池') >= 0)[0];
   if (!big) return false;
-  const rb = A.RbaseBest([{ id: big.id, name: big.name, rate: 10 }], '四号谷地');
+  const rb = A.RbaseBest([{ id: big.id, name: big.name, rate: 40 }], '四号谷地');
   if (rb.assign.some(a => a.items.length)) return false;    /* 前置：确实没落点 */
   A.LapplyAssign(rb);
   return A.LO.base === 'map02_lv002';
@@ -1105,8 +1113,15 @@ chk('v160 源码级：重排失败时恢复该基地原内容（绝不留空画�
    只恢复画布内容（LO.bases[].objs），**不回滚 L.tgt** → 目标栏写新目标、画布躺旧产线的永久错位。
    修法：LretargetAll 在「done 为空且有 failed」时把 L.tgt / L.rate 整体回滚 + 提示「目标未切换」。 */
 chk('v173 切目标全失败：L.tgt 回滚到原目标（不落成「目标栏=新、画布=旧」的错位）', (() => {
-  /* 前置：谷地主基地生成一条小链（画布上有 planRole 件 → 会走 LretargetAll） */
-  A.LbaseSet('map01_lv001'); A.LO.objs = []; A.LO.mt = [];
+  /* 前置：谷地**副**基地（40×40）生成一条小链（画布上有 planRole 件 → 会走 LretargetAll）。
+     ⚠️ v176 起台数大幅下降，只有 40×40 这种小画布才会让「切目标」真的失败。 */
+  /* ⚠️ 必须清空**整个地区**：LretargetAll 会重排该地区所有有产线的基地，
+     只清当前基地 → 主基地仍有旧产线 → 变成「部分成功」而非「全失败」，测不到回滚。 */
+  A.Lbases().filter(r => r.domainName === '四号谷地').forEach(r => {
+    if (A.LO.bases[r.levelId]) { A.LO.bases[r.levelId].objs = []; A.LO.bases[r.levelId].plan = null; }
+  });
+  A.LbaseSet('map01_lv002'); A.LO.objs = []; A.LO.mt = [];
+  if (A.LO.bases['map01_lv002']) A.LO.bases['map01_lv002'].size = 40;   /* ⚠️ 尺寸存在基地自己的槽位 */
   A.LawRun('item_filter_core', 10);
   if (!A.LO.objs.filter(o => o.planRole).length) return false;   /* 前置：确实生成了 */
   /* 目标停在 filter_core，速率拉大到 400 —— 再切到中容武陵电池：@400 = 6934 台 >> 180，必全失败 */
@@ -1116,21 +1131,33 @@ chk('v173 切目标全失败：L.tgt 回滚到原目标（不落成「目标栏=
   return A.LO.tgt === 'item_filter_core';
 })());
 chk('v173 切目标全失败：提示文案含「未切换」（明确告知没生效）', (() => {
-  A.LbaseSet('map01_lv001'); A.LO.objs = []; A.LO.mt = [];
+  /* ⚠️ 必须清空**整个地区**：LretargetAll 会重排该地区所有有产线的基地，
+     只清当前基地 → 主基地仍有旧产线 → 变成「部分成功」而非「全失败」，测不到回滚。 */
+  A.Lbases().filter(r => r.domainName === '四号谷地').forEach(r => {
+    if (A.LO.bases[r.levelId]) { A.LO.bases[r.levelId].objs = []; A.LO.bases[r.levelId].plan = null; }
+  });
+  A.LbaseSet('map01_lv002'); A.LO.objs = []; A.LO.mt = [];
+  if (A.LO.bases['map01_lv002']) A.LO.bases['map01_lv002'].size = 40;   /* ⚠️ 尺寸存在基地自己的槽位 */
   A.LawRun('item_filter_core', 10);
   A.LO.tgt = 'item_filter_core'; A.LO.rate = 400;
   A.Ltgt('item_proc_battery_5');
   return String(A.LO.msg || '').indexOf('未切换') >= 0;
 })());
 chk('v173 切目标全失败：画布保留原产线（不清空，与回滚后的目标同源）', (() => {
-  A.LbaseSet('map01_lv001'); A.LO.objs = []; A.LO.mt = [];
+  /* ⚠️ 必须清空**整个地区**：LretargetAll 会重排该地区所有有产线的基地，
+     只清当前基地 → 主基地仍有旧产线 → 变成「部分成功」而非「全失败」，测不到回滚。 */
+  A.Lbases().filter(r => r.domainName === '四号谷地').forEach(r => {
+    if (A.LO.bases[r.levelId]) { A.LO.bases[r.levelId].objs = []; A.LO.bases[r.levelId].plan = null; }
+  });
+  A.LbaseSet('map01_lv002'); A.LO.objs = []; A.LO.mt = [];
+  if (A.LO.bases['map01_lv002']) A.LO.bases['map01_lv002'].size = 40;   /* ⚠️ 尺寸存在基地自己的槽位 */
   A.LawRun('item_filter_core', 10);
-  const n0 = (A.LO.bases['map01_lv001'] ? A.LO.bases['map01_lv001'].objs || [] : [])
+  const n0 = (A.LO.bases['map01_lv002'] ? A.LO.bases['map01_lv002'].objs || [] : [])
     .filter(o => o.planRole).length;
   if (!n0) return false;
   A.LO.tgt = 'item_filter_core'; A.LO.rate = 400;
   A.Ltgt('item_proc_battery_5');
-  const n1 = (A.LO.bases['map01_lv001'] ? A.LO.bases['map01_lv001'].objs || [] : [])
+  const n1 = (A.LO.bases['map01_lv002'] ? A.LO.bases['map01_lv002'].objs || [] : [])
     .filter(o => o.planRole).length;
   /* 回滚后：目标 == 画布内容，产线必须还在（不是空画布） */
   return A.LO.tgt === 'item_filter_core' && n1 === n0;
@@ -1329,7 +1356,10 @@ chk('第3期 RxlAll：byRegion 与 assign 一致（每地区一桶、不丢目�
   return n === al.assign.length;
 })());
 chk('第3期 RgenAdvice：超台数 → 给出「降到多少/分」的可操作建议（R6①）', (() => {
-  const rb = A.RbaseBest([{ id: 'item_iron_cmpt', rate: 600 }], '四号谷地');
+  const all = A.RwTargets();
+  const big = all.filter(x => x.name.indexOf('中容武陵电池') >= 0)[0];
+  if (!big) return false;
+  const rb = A.RbaseBest([{ id: big.id, name: big.name, rate: 80 }], '四号谷地');
   if (rb.unassigned.length !== 1) return false;
   const adv = A.RgenAdvice([rb]);
   return adv.length >= 1 && adv[0].text.indexOf('降到') >= 0;
@@ -1338,7 +1368,7 @@ chk('第3期 RgenAdvice：装不下时至少给一条建议（不静默失败，
   const all = A.RwTargets();
   const big = all.filter(x => x.name.indexOf('中容武陵电池') >= 0)[0];
   if (!big) return false;
-  const rb = A.RbaseBest([{ id: big.id, name: big.name, rate: 10 }], '四号谷地');
+  const rb = A.RbaseBest([{ id: big.id, name: big.name, rate: 40 }], '四号谷地');
   if (!rb.unassigned.length) return false;
   return A.RgenAdvice([rb]).length >= 1;
 })());
@@ -1455,15 +1485,15 @@ chk('v169 自动配发电：用电 ≤200（协议核心基础发电）→ 不�
     && A.LO.objs.filter(o => o.planRole === 'gen').length === 0
     && A.LO.plan.genPlan.need === 0;
 })());
-chk('v169 自动配发电：缺口 45 电 → 按低容谷地电池 220/台摆 1 台热能池', (() => {
+chk('v169 自动配发电：缺口 245 电 → 按低容谷地电池 220/台摆 2 台热能池', (() => {
   loReset(70);
   A.LbaseSet('map01_lv001');
   A.LO.autoGen = true; A.LO.objs = []; A.LO.mt = []; A.LO.shipIn = false;
   A.LawRun('item_filter_core', 10);
   const gp = A.LO.plan && A.LO.plan.genPlan;
   const gen = A.LO.objs.filter(o => o.planRole === 'gen');
-  return !!gp && gp.fuel === '低容谷地电池' && gp.perF === 220 && gp.need === 1
-    && gen.length === 1 && gen[0].id === 'power_station_1';
+  return !!gp && gp.fuel === '低容谷地电池' && gp.perF === 220 && gp.need === 2
+    && gen.length === 2 && gen[0].id === 'power_station_1';
 })());
 chk('v169 自动配发电：关掉开关 → 一台都不摆（只统计用电）', (() => {
   loReset(70);
@@ -1483,7 +1513,7 @@ chk('v169 重排其余：热能池跟着重摆（不是被丢件）+ 整批只�
   A.LO.objs.forEach(o => { if (o.planRole === 'machine' && k < 2) { o.lock = true; k++; } });
   const u0 = A.LO.undo.length;
   A.Lreroll();
-  return n0 === 1 && A.LO.objs.filter(o => o.planRole === 'gen').length === 1
+  return n0 === 2 && A.LO.objs.filter(o => o.planRole === 'gen').length === 2
     && (A.LO.undo.length - u0) === 1 && String(A.LO.msg).indexOf('热能池重摆') >= 0;
 })());
 loReset(50);
@@ -1520,8 +1550,8 @@ chk('v172 RgenPlanOf：燃料速率字段透传（burnPerMin/belts/seconds/perBa
   A.LO.autoGen = true; A.LO.objs = []; A.LO.mt = []; A.LO.shipIn = false;
   A.LawRun('item_filter_core', 10);
   const gp = A.LO.plan && A.LO.plan.genPlan;
-  return !!gp && gp.need === 1 && gp.perF === 220
-    && gp.seconds === 40 && gp.perBankMin === 1.5 && gp.burnPerMin === 1.5 && gp.belts === 1;
+  return !!gp && gp.need === 2 && gp.perF === 220
+    && gp.seconds === 40 && gp.perBankMin === 1.5 && gp.burnPerMin === 3 && gp.belts === 1;
 })());
 chk('v172 报告渲染：发电行含「喂料速率 + 传送带条数 + 超喂提示」三要素（源码级）', (() => {
   /* 判据：从**产物内联脚本**（rawCode）里找渲染串 —— 与其它源码级锁同源，不读 build_html.py */
@@ -1556,13 +1586,15 @@ chk('v170 失败清场：先成功 @5、再失败 @10 → L.plan 置空（不再
      影响不到它）→ 必须直接写 bases[levelId].size，否则画布可能停在别处留下的尺寸。 */
   if (A.LO.bases['map02_lv002']) A.LO.bases['map02_lv002'].size = 80;
   A.LO.autoGen = false; A.LO.objs = []; A.LO.mt = []; A.LO.shipIn = false; A.LO.selfLoop = false;
-  A.LawRun('item_proc_battery_5', 5);
+  A.LawRun('item_proc_battery_5', 30);
   const ok1 = !!A.LO.plan;
   const n1 = A.LO.objs.filter(o => o.planRole).length;
-  A.LawRun('item_proc_battery_5', 10);
+  A.LawRun('item_proc_battery_5', 40);
   const n2 = A.LO.objs.filter(o => o.planRole).length;
+  /* ⚠️ v176：台数大幅下降后，80×80 上「放不下」的档位不存在了 —— @40 起改成 C6 销毁门禁先拦
+     （销毁池合计 23 个 > 上限 16）。失败原因换了，但「失败必须清场」的语义不变。 */
   return ok1 && n1 > 0 && A.LO.plan === null && n2 === 0
-    && String(A.LO.msg).indexOf('放不下') >= 0;
+    && String(A.LO.msg).indexOf('去路') >= 0;
 })());
 chk('v170 失败清场：没机器配方的目标 → L.plan 置空', (() => {
   loReset(70);
@@ -1613,8 +1645,8 @@ chk('v171 RsplitChain：@5（整条塞得下）→ 不拆链（保老路径）',
   return !!t && !t.split;
 })());
 
-chk('v171 RsplitChain：@10（整条塞不下）→ 拆成多段、每段落到不同基地', (() => {
-  const rb = A.RbaseBest([{ id: 'item_proc_battery_5', name: '中容武陵电池', rate: 10 }], '武陵');
+chk('v171 RsplitChain：@50（整条塞不下）→ 拆成多段、每段落到不同基地', (() => {
+  const rb = A.RbaseBest([{ id: 'item_proc_battery_5', name: '中容武陵电池', rate: 50 }], '武陵');
   const t = (rb.targets||[]).filter(x => x.id === 'item_proc_battery_5')[0];
   if (!t || !t.split || !t.segs || t.segs.length < 2) return false;
   /* 段落到**不同**基地（拆链的意义所在） */
@@ -1624,7 +1656,7 @@ chk('v171 RsplitChain：@10（整条塞不下）→ 拆成多段、每段落到�
 
 chk('v171 段不变式：第 k 段生产的（produces）= 第 k-1 段要收货的（receives）', (() => {
   /* 守恒律：截断料必须**有出处**（上游段产出）且**有去路**（下游段收货），不能凭空出现/消失 */
-  const rb = A.RbaseBest([{ id: 'item_proc_battery_5', name: '中容武陵电池', rate: 10 }], '武陵');
+  const rb = A.RbaseBest([{ id: 'item_proc_battery_5', name: '中容武陵电池', rate: 50 }], '武陵');
   const t = (rb.targets||[]).filter(x => x.id === 'item_proc_battery_5')[0];
   if (!t || !t.segs || t.segs.length < 2) return false;
   const segs = t.segs;
@@ -1672,10 +1704,10 @@ chk('v171 拆链段原子性：段失败不走失败隔离（不做「逐个目�
 })(),
 '拆链原子分支出现 ' + ((rawCode.match(/else if\(segItems\.length\)\{/g) || []).length) + ' 处');
 
-chk('v171 端到端守恒律：@10 落画布后，每段基地画布**真出件**（不只看报告）', (() => {
+chk('v171 端到端守恒律：@50 落画布后，每段基地画布**真出件**（不只看报告）', (() => {
   /* ⭐ 判「成功」必须 = 画布真能出件 —— 这条是拆链功能的核心验收 */
   loReset(80);
-  const rb = A.RbaseBest([{ id: 'item_proc_battery_5', name: '中容武陵电池', rate: 10 }], '武陵');
+  const rb = A.RbaseBest([{ id: 'item_proc_battery_5', name: '中容武陵电池', rate: 50 }], '武陵');
   A.LO.autoGen = false; A.LO.objs = []; A.LO.mt = []; A.LO.shipIn = false;
   const doms = A.Ldomains(); const wl = doms.filter(d => d.name === '武陵')[0];
   if (wl) A.LO.shipTo = wl.id;
@@ -1693,7 +1725,7 @@ chk('v171 端到端守恒律：@10 落画布后，每段基地画布**真出件*
 })(),
 (() => {
   loReset(80);
-  const rb = A.RbaseBest([{ id: 'item_proc_battery_5', name: '中容武陵电池', rate: 10 }], '武陵');
+  const rb = A.RbaseBest([{ id: 'item_proc_battery_5', name: '中容武陵电池', rate: 50 }], '武陵');
   A.LO.autoGen = false; A.LO.objs = []; A.LO.mt = []; A.LO.shipIn = false;
   const doms = A.Ldomains(); const wl = doms.filter(d => d.name === '武陵')[0];
   if (wl) A.LO.shipTo = wl.id;
@@ -1728,10 +1760,10 @@ chk('v171补 RxlAll 真可行性判据：静态 ok 的地区再筛真能落地�
       && /kind:\s*'capacity'/.test(src)
       && /摆不下（含按层拆链）/.test(src);
 })());
-chk('v171补 RxlAll 行为级：中容武陵电池@10 真试摆下，谷地不可行 / 武陵可行', (() => {
+chk('v171补 RxlAll 行为级：中容武陵电池@40 真试摆下，谷地不可行 / 武陵可行', (() => {
   /* 判据不编数字 —— 直接用产品函数试两地，谷地应为「整条塞不进且拆链也不行」，
      武陵应为「整条能塞下 或 拆链能落地」。这条锁的是「静态 ok ≠ 真能落地」这个事实本身。 */
-  const id = 'item_proc_battery_5', R = 10;
+  const id = 'item_proc_battery_5', R = 40;
   function landable(region) {
     const bs = A.Lbases().filter(b => b.domainName === region && b.usableCells > 0)
       .map(b => ({ levelId: b.levelId, zoneName: b.zoneName, side: b.side, role: b.role, usable: b.usableCells }));
@@ -1831,18 +1863,18 @@ chk('组声明是「能力上限」而非一对一：存在组声明的口配方
 const rIron = recs.filter(r => r.id === 'furnance_iron_nugget_1')[0];
 chk('精炼炉「铁锭」配方存在', !!rIron);
 const rtIron = rIron ? A.Rrate(rIron) : null;
-chk('产能：12 秒/轮 → 5 轮/分', !!rtIron && rtIron.seconds === 12 && rtIron.roundsPerMin === 5,
+chk('产能：2 秒/轮 → 30 轮/分', !!rtIron && rtIron.seconds === 2 && rtIron.roundsPerMin === 30,
     JSON.stringify(rtIron && [rtIron.seconds, rtIron.roundsPerMin]));
-chk('产能：铁矿石 5/分 进 → 铁锭 5/分 出',
-    !!rtIron && rtIron.in[0].perMin === 5 && rtIron.out[0].perMin === 5,
+chk('产能：铁矿石 30/分 进 → 铁锭 30/分 出',
+    !!rtIron && rtIron.in[0].perMin === 30 && rtIron.out[0].perMin === 30,
     JSON.stringify(rtIron && [rtIron.in[0].perMin, rtIron.out[0].perMin]));
 chk('全固态配方不带流体口', !!rtIron && rtIron.fluidIn === 0 && rtIron.ports.pipeIn.length === 0);
 chk('载具换算：5/分 → 1 条带；31/分 → 2 条带；120/分 → 1 条管',
     A.Rcarriers(5, false) === 1 && A.Rcarriers(31, false) === 2 && A.Rcarriers(120, true) === 1,
     [A.Rcarriers(5, false), A.Rcarriers(31, false), A.Rcarriers(120, true)].join(','));
-chk('Rplan 反推台数：要 12/分 → 3 台（单台 5/分），料需求 15/分', (() => {
+chk('Rplan 反推台数：要 12/分 → 1 台（单台 30/分），料需求 30/分', (() => {
   const p = A.Rplan('furnance_iron_nugget_1', 12);
-  return !!p && p.machines === 3 && p.need[0].perMin === 15;
+  return !!p && p.machines === 1 && p.need[0].perMin === 30;
 })());
 chk('Rplan 不传目标速率 → 单台', (() => {
   const p = A.Rplan('furnance_iron_nugget_1');
@@ -1936,15 +1968,15 @@ chk('RwMade：有机器配方的物品 200 个', Object.keys(A.RwMade()).length 
 
 // ① 干净链：铁制零件 10/分 = 配件机×2 ← 精炼炉×2 ← 蓝铁矿
 const rwA = A.Rexplode('item_iron_cmpt', 10);
-chk('铁制零件 10/分 → 4 台机器', rwA.totalMachines === 4, String(rwA.totalMachines));
-chk('铁制零件：根节点是配件机 ×2，单台 5/分',
-    rwA.root.machineName === '配件机' && rwA.root.machines === 2 && rwA.root.perMachine === 5);
+chk('铁制零件 10/分 → 2 台机器', rwA.totalMachines === 2, String(rwA.totalMachines));
+chk('铁制零件：根节点是配件机 ×1，单台 30/分',
+    rwA.root.machineName === '配件机' && rwA.root.machines === 1 && rwA.root.perMachine === 30);
 chk('铁制零件：原料是蓝铁矿、没有外部输入、没有启动料',
     rwA.raw.length === 1 && A.RwItemName(rwA.raw[0]) === '蓝铁矿' &&
     rwA.externals.length === 0 && rwA.seeds.length === 0, JSON.stringify(rwA.raw));
-chk('铁制零件：第二层是精炼炉 ×2（按整台算，产出与需求相等）',
-    rwA.root.children[0].machineName === '精炼炉' && rwA.root.children[0].machines === 2 &&
-    rwA.root.children[0].actualOut === 10);
+chk('铁制零件：第二层是精炼炉 ×1（按整台算，产出与需求相等）',
+    rwA.root.children[0].machineName === '精炼炉' && rwA.root.children[0].machines === 1 &&
+    rwA.root.children[0].actualOut === 30);
 
 // ② 环 + 采集资源：赤铜耐压罐。必须收敛（曾经的 bug 是展开成 134 台 / 深度 13）
 const rwB = A.Rexplode('item_copper_jar', 10);
@@ -1962,7 +1994,7 @@ chk('拆解机「空罐 ← 装惰气罐」被判定为**回收**（灌装机用
 chk('同一条配方对「惰气」也判回收（灌装机是拿惰气灌的装罐）→ 所以惰气只能按外部输入处理',
     !!jRec && A.RwIsRecycle(jRec, 'item_gas_inert') === true);
 chk('RwPerMin 按「该物品在产物里的那一项」算，不是 outcomes[0]',
-    !!jRec && A.RwPerMin(jRec, 'item_gas_inert') === 5 && A.RwPerMin(jRec, 'item_copper_jar') === 5);
+    !!jRec && A.RwPerMin(jRec, 'item_gas_inert') === 30 && A.RwPerMin(jRec, 'item_copper_jar') === 30);
 chk('「分离配方」判定：原料里有自己产的那个物品',
     A.RwIsSplit({ ingredients: [{ id: 'x' }], outcomes: [{ id: 'x', count: 1 }] }, 'x') === true &&
     A.RwIsSplit({ ingredients: [{ id: 'y' }], outcomes: [{ id: 'x', count: 1 }] }, 'x') === false);
@@ -2077,7 +2109,7 @@ chk('连通率：纯固态链 10/分 **全部连上，零残留**', (() => {
   A.LawRun('item_iron_cmpt', 10);
   const L = A.LO.plan;
   if (!L) return false;
-  return L.route.warns.filter(w => w.indexOf('手动连') >= 0).length === 0 && L.route.links.length >= 2;
+  return L.route.warns.filter(w => w.indexOf('手动连') >= 0).length === 0 && L.route.links.length >= 1;
 })());
 chk('连通率：纯固态链 30/分 也全部连上（6 条并联零残留）', (() => {
   loReset(50);
@@ -2086,7 +2118,7 @@ chk('连通率：纯固态链 30/分 也全部连上（6 条并联零残留）',
   const L = A.LO.plan;
   if (!L) return false;
   return L.route.warns.filter(w => w.indexOf('手动连') >= 0).length === 0 &&
-    L.route.links.filter(k => k.item === '蓝铁块').length === 6;
+    L.route.links.filter(k => k.item === '蓝铁块').length === 1;
 })(), '并联 6 条');
 chk('连通率：端点会被**预留**（先挑端口再统一走线，不是边挑边铺）', (() => {
   loReset(70);
@@ -2095,7 +2127,7 @@ chk('连通率：端点会被**预留**（先挑端口再统一走线，不是�
   const L = A.LO.plan;
   if (!L) return false;
   /* 清水 4 条全连上 —— 端点预留修好之前只有 3 条 */
-  return L.route.links.filter(k => k.item === '清水').length === 4;
+  return L.route.links.filter(k => k.item === '清水').length === 2;
 })(), '清水 4 条');
 chk('连通率：走线阶段不许穿过别人预留的端点格（RwProbe 与 RwPath 同口径）',
     typeof A.RwProbe === 'function' &&
@@ -2171,10 +2203,10 @@ if (HEAVY) {
     const t = A.RwTargets().filter(x => x.name === '赫铜块')[0];
     loReset(80);
     A.LO.size = 80;
-    A.LawRun(t.id, 30);
+    A.LawRun(t.id, 120);
     return A.LO.plan;
   })();
-  chk('自动汇流：多台上游并线时**真的摆出汇流器**（赫铜块@30）', (() => {
+  chk('自动汇流：多台上游并线时**真的摆出汇流器**（赫铜块@120）', (() => {
     if (!mergeCase) return false;
     const mg = A.LO.objs.filter(o => o.planRole === 'merge');
     return mg.length >= 4 && mg.every(o => o.id === 'log_converger') && mergeCase.route.stats.merge === mg.length;
@@ -2228,7 +2260,7 @@ A.LawRun('item_iron_cmpt', 10);
 chk('一键生成：机器 + 管线都落到画布上', (() => {
   const m = A.LO.objs.filter(o => o.planRole === 'machine').length;
   const l = A.LO.objs.filter(o => o.planRole === 'link').length;
-  return m === 4 && l > 0;
+  return m === 2 && l > 0;
 })(), JSON.stringify(A.LO.objs.map(o => o.planRole)));
 chk('一键生成：每台机器都写好了配方与产出物品名',
     A.LO.objs.filter(o => o.planRole === 'machine').every(o => !!o.r && !!o.prod));
@@ -2247,7 +2279,7 @@ chk('格子上标出了产出物品（lo-prod）', (outEl.innerHTML || '').index
 A.LawClear();
 chk('「清掉产线」只清排布器生成的件', A.LO.objs.filter(o => o.planRole).length === 0);
 A.Lundo();
-chk('清掉可撤销', A.LO.objs.filter(o => o.planRole === 'machine').length === 4);
+chk('清掉可撤销', A.LO.objs.filter(o => o.planRole === 'machine').length === 2);
 
 // ⑦ 规模闸门：超过上限不生成（免得堆一坨垃圾）
 chk('规模闸门：台数超限时拒绝生成并说明原因', (() => {
@@ -3490,7 +3522,7 @@ function splitRun(targetName, rate, size) {
   A.LawRun(t ? t.id : targetName, rate);
   return A.LO.plan;
 }
-const Psp5 = splitRun('工业爆炸物', 5, 50);
+const Psp5 = splitRun('工业爆炸物', 20, 50);
 chk('⑤-2：工业爆炸物@5 真的走进「自动摆分流器」分支', !!(Psp5 && Psp5.route.stats && Psp5.route.stats.split >= 1 &&
   Psp5.route.warns.some(w => w.indexOf('自动摆') >= 0 && w.indexOf('分流器') >= 0)),
   Psp5 ? JSON.stringify(Psp5.route.stats) : 'none');
@@ -3507,12 +3539,12 @@ chk('⑤-2：提示口径 = ceil(outNeed/3) 个分流器（1 进 3 出），不�
   (Psp5 ? Psp5.route.warns.filter(w => w.indexOf('分流器**') >= 0)[0] : ''));
 
 // 全连通正例：5 台下游全部由分流器接上、零手动连
-const PspY = splitRun('息壤玉葫芦', 5, 50);
+const PspY = splitRun('息壤玉葫芦', 20, 50);
 chk('⑤-2 全连通正例：息壤玉葫芦@5 —— 分流器 2 个、5 台下游全接上、零手动连', (() => {
   if (!PspY) return false;
   const viaSplit = PspY.route.links.filter(k => k.viaSplit).length;
   const manual = PspY.route.warns.filter(w => w.indexOf('手动连') >= 0).length;
-  return PspY.route.stats.split === 2 && viaSplit === 5 && manual === 0 && PspY.route.stats.dropped === 0;
+  return PspY.route.stats.split === 2 && viaSplit === 4 && manual === 0 && PspY.route.stats.dropped === 0;
 })(), PspY ? (JSON.stringify(PspY.route.stats) + ' viaSplit=' + PspY.route.links.filter(k => k.viaSplit).length) : 'none');
 chk('⑤-2：分流器不压机器、非桥实体零**同介质**重叠（分流链也要给出合法布局）', (() => {
   if (!PspY) return false;
@@ -3521,8 +3553,8 @@ chk('⑤-2：分流器不压机器、非桥实体零**同介质**重叠（分流
 
 // 大产线：10 台下游，分流器摆不下就如实报数，不假装连上（heavy：80 画布 @10 大链 ~1.5s）
 if (HEAVY) {
-  const Psp10 = splitRun('工业爆炸物', 10, 80);
-  chk('⑤-2 大产线：工业爆炸物@10 —— 摆了分流器但仍不够时，逐条点名（不静默丢）', (() => {
+  const Psp10 = splitRun('工业爆炸物', 30, 80);
+  chk('⑤-2 大产线：工业爆炸物@30 —— 摆了分流器但仍不够时，逐条点名（不静默丢）', (() => {
     if (!Psp10) return false;
     const st = Psp10.route.stats;
     const named = Psp10.route.warns.some(w => w.indexOf('没连上') >= 0);
@@ -3553,10 +3585,13 @@ chk('⑤-3 高产能：赤铜耐压罐@30 手动连清零，且 30 台全摆（�
     P.route.warns.filter(w => w.indexOf('手动连') >= 0).length === 0 &&
     P.route.loads.every(l => l.state !== 'none' && l.state !== 'jam');
 })(), (A.LO.msg || '').replace(/\s+/g, ' ').slice(0, 130));
-/* ⚡ v94 提速：扩搜标记断言与上一条共享同一次 copper_jar@30 求解（输入状态一字不差，
-   中间无任何 mutate），不再单独重解一遍 —— 省一次 3.4s 级的大链求解。 */
-chk('⑤-3 难例确实触发了扩搜：赤铜耐压罐@30 的消息里写明「含宽间距扩搜 N 组」',
-    /宽间距扩搜 \d+ 组/.test(A.LO.msg || ''), A.LO.msg);
+/* ⭐v176：台数大幅下降后 copper_jar@30 只剩 5 台、不再需要扩搜 —— 换成确实触发扩搜的
+   中容武陵电池@10（参数搜索 12 组，含宽间距扩搜 4 组），单独求解一次。 */
+chk('⑤-3 难例确实触发了扩搜：中容武陵电池@10 的消息里写明「含宽间距扩搜 N 组」', (() => {
+  loReset(80); A.LO.size = 80;
+  A.LawRun('item_proc_battery_5', 10);
+  return /宽间距扩搜 \d+ 组/.test(A.LO.msg || '');
+})(), A.LO.msg);
 } else {
   skipHeavy += 2;
 }
@@ -3666,8 +3701,8 @@ chk('④ 报告给出水驱矿机的**供水配比**（泵台数 / 分管 / 管�
 chk('④ 报告给出**供电**提示（水泵要通电、水驱矿机不耗电）',
     raw4.indexOf('水泵要通电') >= 0 && raw4.indexOf('水驱矿机靠清水自供能、不耗电') >= 0);
 // ⚠️ 只有 1 台泵时，分管文案曾写成「前 0 台各带 3 台」（真机跑出来过）—— 守一下措辞
-chk('④ 分管文案在「只有 1 台泵」时不出现「前 0 台」这种怪话',
-    raw4.indexOf('前 0 台') < 0 && raw4.indexOf('这 1 台泵带 1 台') >= 0,
+chk('④ 分管文案在不出现「前 0 台」这种怪话（v176 起台数下降，小链已不需要水泵 → 分管为空）',
+    raw4.indexOf('前 0 台') < 0 && raw4.indexOf('水驱矿机每台耗水') >= 0,
     (raw4.match(/分管：[^<]{0,60}/) || [''])[0]);
 chk('④ 明确写出「野外摆放与走线不做」+ 两条原因（不是漏了）', (() => {
   return raw4.indexOf('野外段的实际摆放与走线，本工具不做') >= 0 &&
@@ -3787,12 +3822,12 @@ chk('⑥-1 反推口径：每批数量 = 传输总值 ÷ 单位物品价值；�
       return v.value === 20 && v.perBatch === 150 && v.perHour === 150 && v.perMin === 2.5 &&
              w.value === 1 && w.perBatch === 3000 && w.perHour === 1500 && w.perMin === 25;
     })(), JSON.stringify(A.RshipVal('item_copper_enr', 3000, 1)));
-chk('⑥-1 供货低于需求时红字警告真的会亮，且按每小时口径说（tv=600 → 赤铜矿每小时 600 个 < 需求 1200 个/小时）',
+chk('⑥-1 供货低于需求时红字警告真的会亮，且按每小时口径说（tv=600 → 赤铜矿每小时 600 个 < 需求 3600 个/小时）',
     (() => {
       A.LO.shipIn = true; A.LO.tv = 600; A.LawRun('item_copper_jar', 10);
       const h = outEl.innerHTML;
       A.LO.tv = 0; A.render();
-      return h.indexOf('按每小时折算 600 个 &lt; 需求 1200 个') >= 0 && h.indexOf('收货喂不饱这条链') >= 0;
+      return h.indexOf('按每小时折算 600 个 &lt; 需求 3600 个') >= 0 && h.indexOf('收货喂不饱这条链') >= 0;
     })(), (() => {
       A.LO.shipIn = true; A.LO.tv = 600; A.LawRun('item_copper_jar', 10);
       const h = outEl.innerHTML;
@@ -3953,7 +3988,7 @@ chk('⑥-1 v81 需求口径稳定：换选前后 shipDmap 一致（都是收货�
       A.LawRun('item_proc_battery_2', 1);
       const d1 = JSON.stringify(A.LO.shipDmap);
       A.LO.shipPick = 'item_iron_cmpt'; A.LawRun('item_proc_battery_2', 1);
-      return JSON.stringify(A.LO.shipDmap) === d1 && A.LO.shipDmap.item_originium_ore === 15; })(),
+      return JSON.stringify(A.LO.shipDmap) === d1 && A.LO.shipDmap.item_originium_ore === 90; })(),
     'dmap 恒为「不收货时的完整链需求」');
 chk('⑥-1 v81 布局试摆里直接能选（作者：「我要在布局试摆里选怎么还是看不到啊」）：没有产线时开开关，选货条立刻出现在面板（轻量展开，不摆机器不动画布）',
     (() => { A.Linit(); A.LO.shipIn = false; A.LO.shipCands = []; A.LO.shipPick = '';
@@ -4263,12 +4298,12 @@ chk('⑥-2×⑥-1 多目标下收货照常生效：只有赤铜矿被识别为�
     !!combo2 && combo2.shipIn.length === 1 && combo2.shipIn[0].itemId === 'item_copper_ore' &&
     combo2.raw.map(A.RwItemName).indexOf('赤铜矿') >= 0,
     'shipIn=' + (combo2 ? combo2.shipIn.map(n => n.itemId).join(',') : 'null'));
-chk('⑥-2×⑥-1 收货需求 = 合并后的需求 40/分（不是单目标的 20）',
-    !!combo2 && Math.abs((combo2.shipIn[0].demand || 0) - 40) < 1e-6,
+chk('⑥-2×⑥-1 收货需求 = 合并后的需求 120/分（不是单目标的 60）',
+    !!combo2 && Math.abs((combo2.shipIn[0].demand || 0) - 120) < 1e-6,
     'demand=' + (combo2 && combo2.shipIn[0] ? combo2.shipIn[0].demand : '?'));
-chk('⑥-2×⑥-1 共用段不受收货影响：赤铜块本地冶炼照建（8 台）',
+chk('⑥-2×⑥-1 共用段不受收货影响：赤铜块本地冶炼照建（4 台）',
     !!combo2 && !!combo2.shared &&
-    combo2.shared.some(s => s.itemId === 'item_copper_nugget' && s.machines === 8),
+    combo2.shared.some(s => s.itemId === 'item_copper_nugget' && s.machines === 4),
     combo2 && combo2.shared ? combo2.shared.map(s => s.name + ':' + s.machines + '台').join('、') : 'null');
 chk('⑥-2×⑥-1 报告同时渲染收货段与共用段',
     (() => { const h = outEl.innerHTML; A.LO.tv = 0; A.LO.shipIn = false; A.LO.mt = []; A.render();
@@ -4394,16 +4429,16 @@ chk('⑥-3 RxlSlots：(边长-1)÷3 → 70→23 / 40→13 / 80→26 / 50→16',
   const ag = A.RxlAnalyze('item_copper_jar', 10, '四号谷地');
   const aw = A.RxlAnalyze('item_copper_jar', 10, '武陵');
   chk('⑥-3 RxlAnalyze：罐@谷地 赤铜矿需 20 / cap 0（谷地没有赤铜矿）→ 缺口收货，不硬否决',
-      ag.ok === true && ag.ores.item_copper_ore.need === 20 && ag.ores.item_copper_ore.cap === 0,
+      ag.ok === true && ag.ores.item_copper_ore.need === 60 && ag.ores.item_copper_ore.cap === 0,
       JSON.stringify(ag.ores.item_copper_ore));
   chk('⑥-3 RxlAnalyze：罐@武陵 赤铜矿 cap 510 本地够', aw.ores.item_copper_ore.cap === 510);
-  chk('⑥-3 RxlAnalyze：罐@谷地 机器 10 台 · 占地估算 339 格（机器格数×2.2，明标估算）',
-      ag.totalMachines === 10 && ag.areaEst === 339,
+  chk('⑥-3 RxlAnalyze：罐@谷地 机器 5 台 · 占地估算 169 格（机器格数×2.2，明标估算）',
+      ag.totalMachines === 5 && ag.areaEst === 169,
       'machines=' + ag.totalMachines + ' areaEst=' + ag.areaEst);
   const m1 = ag.manual.filter(x => x.itemId === 'item_liquid_xiranite_lowpoly')[0];
   const m2 = ag.manual.filter(x => x.itemId === 'item_gas_inert')[0];
-  chk('⑥-3 RxlAnalyze：罐@谷地 自筹料点名（惰性壤晶废液 80 + 惰气 10 —— 不能传、产线未建模）',
-      ag.manual.length === 2 && !!m1 && m1.demand === 80 && !!m2 && m2.demand === 10,
+  chk('⑥-3 RxlAnalyze：罐@谷地 自筹料点名（惰性壤晶废液 240 + 惰气 30 —— 不能传、产线未建模）',
+      ag.manual.length === 2 && !!m1 && m1.demand === 240 && !!m2 && m2.demand === 30,
       JSON.stringify(ag.manual.map(x => x.name + ':' + x.demand)));
 })();
 
@@ -4413,8 +4448,8 @@ chk('⑥-3 RxlSlots：(边长-1)÷3 → 70→23 / 40→13 / 80→26 / 50→16',
   const a2 = A.RxlAnalyze('item_xiranite_powder', 10, '武陵');
   chk('⑥-3 RxlAnalyze：息壤粉末@谷地 硬否决（没有机器配方）',
       a1.ok === false && a1.blocked[0].indexOf('没有机器配方') >= 0, a1.blocked[0]);
-  chk('⑥-3 RxlAnalyze：息壤粉末@武陵 可行（14 台机器）',
-      a2.ok === true && a2.totalMachines === 14, 'machines=' + a2.totalMachines);
+  chk('⑥-3 RxlAnalyze：息壤粉末@武陵 可行（7 台机器）',
+      a2.ok === true && a2.totalMachines === 7, 'machines=' + a2.totalMachines);
 })();
 
 // 8) RxlBest：穷举择优（成本口径：硬否决 > 冲突 > 喂不饱 > 重复建共享料 > 矿缺口）
@@ -4446,7 +4481,7 @@ chk('⑥-3 RxlSlots：(边长-1)÷3 → 70→23 / 40→13 / 80→26 / 50→16',
   const cf = A.RxlRegionShip([{ id: 'item_iron_cmpt', rate: 130 }, { id: 'item_quartz_glass', rate: 10 }],
     ['武陵', '武陵'], '武陵');
   chk('⑥-3 口径①：铁构件@130 + 石英玻璃@10 同放武陵 → 蓝铁+紫晶两种缺口 → 冲突 1（每方向每批只传一种）',
-      cf.conflict === 1 && cf.items.item_iron_ore === 10 && cf.items.item_quartz_sand === 10,
+      cf.conflict === 1 && cf.items.item_iron_ore === 30 && cf.items.item_quartz_sand === 30,
       'conflict=' + cf.conflict + ' items=' + JSON.stringify(cf.items));
   const ok1 = A.RxlRegionShip([{ id: 'item_copper_jar', rate: 10 }], ['武陵'], '武陵');
   chk('⑥-3 口径①：罐@10 放武陵 → 无需收货（20 ≤ 510 本地够，rows 为空）',
@@ -4484,18 +4519,18 @@ chk('⑥-4 校验函数：息壤@10 → 2 台天有洪炉，不误报', (() => {
   const w = A.RwPlaceLimitWarn(A.Rexplode('item_xiranite_powder', 10, {}));
   return w.length === 0;
 })(), JSON.stringify(A.RwPlaceLimitWarn(A.Rexplode('item_xiranite_powder', 10, {}))));
-chk('⑥-4 校验函数：息壤@70 → 14 台 > 12，点名天有洪炉超限并给建议', (() => {
-  const w = A.RwPlaceLimitWarn(A.Rexplode('item_xiranite_powder', 70, {}));
+chk('⑥-4 校验函数：息壤@400 → 14 台 > 12，点名天有洪炉超限并给建议', (() => {
+  const w = A.RwPlaceLimitWarn(A.Rexplode('item_xiranite_powder', 400, {}));
   return w.length === 1 && w[0].indexOf('天有洪炉') >= 0 && w[0].indexOf('12 台') >= 0;
-})(), JSON.stringify(A.RwPlaceLimitWarn(A.Rexplode('item_xiranite_powder', 70, {}))));
+})(), JSON.stringify(A.RwPlaceLimitWarn(A.Rexplode('item_xiranite_powder', 400, {}))));
 chk('⑥-4 端到端（轻）：息壤@10 生成后 msg 无超限字样', (() => {
   loReset(50); A.LO.size = 50;
   A.LawRun('item_xiranite_powder', 10);
   return (A.LO.msg || '').indexOf('超限') < 0 && (A.LO.msg || '').indexOf('产线已生成') >= 0;
 })(), A.LO.msg);
-chkHeavy('⑥-4 端到端（重）：膨地啪@70（56 台，天有洪炉 28）—— v99 行距修复后 80 画布能摆下（探针 4/8 组），成功 msg 仍点名「天有洪炉 超限」（报警不拦截口径）', () => {
+chkHeavy('⑥-4 端到端（重）：膨地啪@200（28 台，天有洪炉 7）—— 成功 msg 仍点名「天有洪炉 超限」（报警不拦截口径）', () => {
   loReset(80); A.LO.size = 80;   /* v99 前：折行行距复用层间 corr（最高 14），单层就吃掉大半个画布 → 必拒；v99 行距独立为 RW_ROWGAP=3 后能摆下 */
-  A.LawRun('item_muck_xiranite_1', 70);
+  A.LawRun('item_muck_xiranite_1', 200);
   const m = A.LO.msg || '';
   return m.indexOf('产线已生成') >= 0 && m.indexOf('天有洪炉') >= 0 && m.indexOf('超限') >= 0;
 }, () => (A.LO.msg || '').slice(0, 200));
@@ -4671,8 +4706,8 @@ chkHeavy('⑥-4+v99 端到端（重）：膨地啪@30（12 炉 = 游戏上限满
      "Linit(); LO.objs=[]; LO.sel=[]; LO.size=70; LawRun('item_iron_cmpt',10); var ms=LO.objs.filter(function(o){return o.planRole==='machine';}); ms[0].lock=true; Lreroll();"],
     ['⑤-3 宽间距扩搜（赤铜块@10，12 台全摆 + 手动连 ≤2）',
      "Linit(); LO.objs=[]; LO.sel=[]; LO.size=80; var _t2=RwTargets().filter(function(x){return x.name==='赤铜块';})[0]; LawRun(_t2.id,10); var _diag='机器【'+LO.plan.res.machines.map(function(m){return m.machineName+'x'+m.machines+'<'+(m.recipeId||'')+'>';}).join(' ')+'】摆放 '+LO.plan.plan.objs.length+'/'+LO.plan.res.totalMachines+' 手动连 '+LO.plan.route.warns.filter(function(w){return w.indexOf('手动连')>=0;}).length+' 条'; if(LO.plan.plan.objs.length!==LO.plan.res.totalMachines) throw new Error('丢了机器 | '+_diag); if(LO.plan.route.warns.filter(function(w){return w.indexOf('手动连')>=0;}).length>2) throw new Error('手动连超过 2 条 | '+_diag);"],
-    ['分流器分支（工业爆炸物@5，1 台上游喂 5 台下游）',
-     "Linit(); LO.objs=[]; LO.sel=[]; LO.size=50; var _t=RwTargets().filter(function(x){return x.name==='工业爆炸物';})[0]; LawRun(_t.id,5); if(!LO.plan || !LO.plan.route.stats || LO.plan.route.stats.split<1) throw new Error('分流器分支没走到');"],
+    ['分流器分支（工业爆炸物@20，上游喂多台下游）',
+     "Linit(); LO.objs=[]; LO.sel=[]; LO.size=50; var _t=RwTargets().filter(function(x){return x.name==='工业爆炸物';})[0]; LawRun(_t.id,20); if(!LO.plan || !LO.plan.route.stats || LO.plan.route.stats.split<1) throw new Error('分流器分支没走到');"],
     ['render() 走一遍（含锁定态与工具条）', "render();"],
     ['⑥-1 跨地区收货：赤铜耐压罐@10（开开关 → 赤铜块变收货、惰气照旧）',
      "Linit(); LO.objs=[]; LO.sel=[]; LO.size=70; LO.shipIn=true; var _t3=RwTargets().filter(function(x){return x.id==='item_copper_jar';})[0]; LawRun(_t3.id,10); if(!LO.plan.res.shipIn.length) throw new Error('没识别出可收货的原料'); render();"],
@@ -4692,7 +4727,7 @@ chkHeavy('⑥-4+v99 端到端（重）：膨地啪@30（12 炉 = 游戏上限满
 // 现在是**每台消费机器各拉一条边缘进管**（暗管贴画布外，画布内由排布器铺到每台机器的管口）。
 // ⚠️ 口径：feed 失败不进「手动连」计数（那是 ⑤-3 内部连通率的回归口径），进 feedFail 正式点名。
 let v151N = null;   /* 赤铜块@10 现场（LawRun 很慢，后续锁复用不重跑） */
-chk('v151 外部接入：赤铜块@10 = 8 台反应池 × 2 种外部流体，16 根边缘进管「每台一条」全有着落', (() => {
+chk('v151 外部接入：赤铜块@10 = 4 台反应池 × 2 种外部流体，8 根边缘进管「每台一条」全有着落', (() => {
   tab = 'layout'; A.Linit(); A.LO.objs = []; A.LO.sel = []; A.LO.size = 80;
   A.LawRun('item_copper_nugget', 10);
   const P = A.LO.plan, R = P.route;
@@ -4700,8 +4735,8 @@ chk('v151 外部接入：赤铜块@10 = 8 台反应池 × 2 种外部流体，16
   v151N = { feeds: R.feeds, fail: R.feedFail, pools: pools.length };
   const cover = it => v151N.feeds.filter(f => f.item === it).length
     + v151N.fail.filter(f => f.item === it).length;
-  return pools.length === 8 && cover('液化息壤') === 8 && cover('污水') === 8
-    && v151N.feeds.every(f => f.need === 5);
+  return pools.length === 4 && cover('液化息壤') === 4 && cover('污水') === 4
+    && v151N.feeds.every(f => f.need === 30);
 })(), () => JSON.stringify(v151N && { ok: v151N.feeds.length, fail: v151N.fail.length, pools: v151N.pools }));
 
 chk('v151 外部接入：直连接入点全在画布边缘、两两不同格；暗管对的入/出口也两两不同（v154）', (() => {
@@ -4718,7 +4753,7 @@ chk('v151 外部接入：直连接入点全在画布边缘、两两不同格；�
   : ('D' + f.edge.x + ',' + f.edge.y))));
 
 chk('v151 外部接入：铺不出的进管全部点名进 feedFail（不静默丢；why/to/坐标齐全）', (() => {
-  return v151N.feeds.length + v151N.fail.length === 16 && v151N.fail.length <= 2
+  return v151N.feeds.length + v151N.fail.length === 8 && v151N.fail.length <= 2
     && v151N.fail.every(f => f.item && f.why && f.to);
 })(), () => JSON.stringify(v151N.fail));
 
@@ -4727,7 +4762,7 @@ chk('v151 外部接入：内部连通率不被外部接入挤坏（赤铜块@10 
   return n <= 2;
 })(), () => String(A.LO.plan.route.warns.filter(w => w.indexOf('手动连') >= 0).length));
 
-chk('v151 外部接入：赤铜耐压罐@10（含惰气外部输入）6 根进管全铺成、零失败、接入点唯一', (() => {
+chk('v151 外部接入：赤铜耐压罐@10（含惰气外部输入）3 根进管全铺成、零失败、接入点唯一', (() => {
   tab = 'layout'; A.Linit(); A.LO.objs = []; A.LO.sel = []; A.LO.size = 70;
   A.LawRun('item_copper_jar', 10);
   const R = A.LO.plan.route, size = 70;
@@ -4735,7 +4770,7 @@ chk('v151 外部接入：赤铜耐压罐@10（含惰气外部输入）6 根进�
   const es = dir.map(f => f.edge.x + ',' + f.edge.y);
   const ud = R.feeds.filter(f => f.mode === 'udpipe');
   const us = ud.map(f => f.entry.x + ',' + f.entry.y + '/' + f.exit.x + ',' + f.exit.y);
-  return R.feeds.length === 6 && R.feedFail.length === 0
+  return R.feeds.length === 3 && R.feedFail.length === 0
     && new Set(es).size === es.length && new Set(us).size === us.length
     && dir.every(f => f.edge.x === 0 || f.edge.y === 0 || f.edge.x === size - 1 || f.edge.y === size - 1);
 })(), () => JSON.stringify(A.LO.plan.route.feeds.map(f => f.mode === 'udpipe'
@@ -4763,7 +4798,7 @@ chk('v151 末端朝向：赤铜耐压罐@10 全部连线的终点格箭头都指
     const d = DL[r];
     if (last[0] + d[0] === prev[0] && last[1] + d[1] === prev[1]) bad.push(ps[ps.length - 1] + ' rot=' + r);
   });
-  return n >= 10 && bad.length === 0;
+  return n >= 5 && bad.length === 0;
 })(), () => 'links=' + A.LO.plan.route.links.length + ' bad=' + JSON.stringify(
   (() => { const DL = { 0: [1, 0], 90: [0, 1], 180: [-1, 0], 270: [0, -1] }; const rotAt = {};
     A.LO.objs.forEach(o => { const b = A.byBp(o.id); if (b && b.isLogi) rotAt[o.x + ',' + o.y] = o.rot; });
@@ -4893,7 +4928,7 @@ chk('v151 出口弯头：连线起点（机器口/汇流器出格/暗管接入�
     if (!flowIn(e0[0], e0[1], !!l.isPipe)) bad.push('终 ' + ps[ps.length - 1] + ' ' + l.item);
     n++;
   });
-  return n >= 10 && bad.length === 0;
+  return n >= 5 && bad.length === 0;
 })(), () => JSON.stringify((() => {
   const bad = [];
   A.LO.plan.route.links.forEach(l => {
@@ -4907,6 +4942,9 @@ chk('v151 出口弯头：连线起点（机器口/汇流器出格/暗管接入�
 //      交叉天然合法；只有**同介质**交叉才需要物流桥/管道桥立体跨线）----
 // 断言①：每座桥的同格其他物流件必须同介质（不许管桥压在带上 / 带桥压在管上）。
 chk('v152 交叉落件：桥的同格无异介质件（管×带交叉直接叠加、不放桥）', (() => {
+  /* ⭐v176：台数下降后小链不再产生桥，改用确实有桥的场景（罐@90 → 12 座桥） */
+  loReset(80); A.LO.size = 80;
+  A.LawRun('item_copper_jar', 90);
   const byCell = {};
   A.LO.objs.forEach(o => { const b = A.byBp(o.id); if (b && b.isLogi)
     (byCell[o.x + ',' + o.y] = byCell[o.x + ',' + o.y] || []).push(b); });
@@ -4930,10 +4968,10 @@ chk('v152 交叉落件：桥的同格无异介质件（管×带交叉直接叠�
   return out; })()));
 
 // 断言②：场景里确实出现管×带叠加格（正样本，防「永远不交叉」的空锁）。
-// ⭐v154 场景改罐@30：v154 暗管对把 @10 场景的长管改走地下后叠加格归零，罐@30 仍有 11 个。
-chk('v152 交叉落件：罐@30 存在管×带叠加格（渲染两层齐全，管上带下）', (() => {
+// ⭐v154 场景改罐@30；⭐v176 再改罐@90 —— 台数大幅下降后 @30 的叠加格也归零，@90 仍有 2 个。
+chk('v152 交叉落件：罐@90 存在管×带叠加格（渲染两层齐全，管上带下）', (() => {
   loReset(80); A.LO.size = 80;
-  A.LawRun('item_copper_jar', 30);
+  A.LawRun('item_copper_jar', 90);
   const byCell = {};
   A.LO.objs.forEach(o => { const b = A.byBp(o.id); if (b && b.isLogi)
     (byCell[o.x + ',' + o.y] = byCell[o.x + ',' + o.y] || []).push(b); });
@@ -4957,7 +4995,7 @@ chk('v153 报告层：外部暗管接入清单进报告（条数=route.feeds，�
   A.LawRun('item_copper_jar', 10);
   setTab('layout'); A.render();
   const F = (A.LO.plan && A.LO.plan.route.feeds) || [];
-  if (F.length < 6) return false;
+  if (F.length < 3) return false;
   const html = A.document.querySelector('#out').innerHTML;
   return html.indexOf('外部暗管接入') >= 0
     && F.every(f => f.mode === 'udpipe'
@@ -4988,12 +5026,13 @@ chk('v154 暗管对：赤铜块@10 触发暗管对，入口/出口成对落盘�
 })(), () => 'udpipe objs=' + ((A.LO.objs || []).filter(o => o.planRole === 'udpipe')).length
   + ' feeds=' + JSON.stringify(((A.LO.plan && A.LO.plan.route.feeds) || []).map(f => f.mode || 'direct')));
 
-chk('v154 择优：暗管对只在更省时采用（罐@10 全部 saved>0），短 feed 保持直连', (() => {
+chk('v154 择优：暗管对只在更省时采用（罐@60 全部 saved>0），短 feed 保持直连', (() => {
+  /* ⭐v176：台数下降后 @10 已无暗管对（全直连），改用 @60（udpipe 2 条、saved=[4,4]） */
   loReset(70); A.LO.size = 70;
-  A.LawRun('item_copper_jar', 10);
+  A.LawRun('item_copper_jar', 60);
   setTab('layout'); A.render();
   const F = (A.LO.plan && A.LO.plan.route.feeds) || [];
-  if (F.length < 6) return false;
+  if (F.length < 3) return false;
   const ud = F.filter(f => f.mode === 'udpipe');
   const dir = F.filter(f => f.mode !== 'udpipe');
   const html = A.document.querySelector('#out').innerHTML;
@@ -5017,11 +5056,11 @@ chk('C6 体检：函数已在页面作用域导出（RflowAudit 判定 / RflowAu
     typeof A.RflowAudit === 'function' && typeof A.RflowAuditHtml === 'function',
     typeof A.RflowAudit + ' / ' + typeof A.RflowAuditHtml);
 
-chk('C6 体检：赤铜块链检出「壤晶废液 50/分」必爆项（配方副产物 + 零下游 → 产线图里根本看不见）',
+chk('C6 体检：赤铜块链检出「壤晶废液 150/分」必爆项（配方副产物 + 零下游 → 产线图里根本看不见）',
     (() => {
       const au = A.RflowAudit(A.Rexplode('item_copper_nugget', 10, {}));
       const hit = au.items.filter(x => x.id === 'item_liquid_xiranite_poly')[0];
-      return !!hit && hit.over === 50 && hit.used === 0 && hit.fromByproduct === true;
+      return !!hit && hit.over === 150 && hit.used === 0 && hit.fromByproduct === true;
     })(),
     JSON.stringify(A.RflowAudit(A.Rexplode('item_copper_nugget', 10, {})).items.map(x => x.name + ' over=' + x.over + ' used=' + x.used + ' byp=' + x.fromByproduct)));
 
@@ -5057,14 +5096,14 @@ chk('C6 报告区块：渲染出体检标题 + 必爆项名 + 去路建议 + 「
 // ---- C6-b 阶段 1：副产物入图（2026-09-25 作者拍板，方案见 docs/C6-b实施方案-草案.md）----
 // 主张：`Rexplode` 的 `res.byproducts` 列出每台机器所选配方的**非主产物**（按台数与比例折算速率）。
 // 关键约束：**纯数据层** —— 不进 nodes / machines，所以布局 / 走线 / 评分一字不动（835 项回归零红）。
-chk('C6-b 副产物入图：赤铜瓶@10 的 res.byproducts 有 2 条（污水 20/分 + 壤晶废液 20/分），来源机器点名',
+chk('C6-b 副产物入图：赤铜瓶@10 的 res.byproducts 有 2 条（污水 60/分 + 壤晶废液 60/分），来源机器点名',
     (() => {
       const r = A.Rexplode('item_copper_jar', 10, {});
       const bp = r.byproducts || [];
       const sw = bp.filter(x => x.itemId === 'item_liquid_sewage')[0];
       const xp = bp.filter(x => x.itemId === 'item_liquid_xiranite_poly')[0];
-      return bp.length === 2 && !!sw && sw.perMin === 20 && !!sw.fromMachine &&
-             !!xp && xp.perMin === 20;
+      return bp.length === 2 && !!sw && sw.perMin === 60 && !!sw.fromMachine &&
+             !!xp && xp.perMin === 60;
     })(),
     JSON.stringify((A.Rexplode('item_copper_jar', 10, {}).byproducts || []).map(x => x.name + ' ' + x.perMin + '/分 ←' + x.fromMachine)));
 
@@ -5101,7 +5140,7 @@ chk('C6-b 与 C6-a 口径交叉验证：入图的副产物速率 == 体检报的
       const bpSum = bp.reduce((s, x) => s + x.perMin, 0);
       /* 体检报的「实际产出」= 所有产该物品的机器合计 —— 与入图 side 求和口径一致 */
       const auditOut = (au.items.filter(x => x.id === 'item_liquid_xiranite_poly')[0] || {}).out;
-      return Math.abs(bpSum - (auditOut || 0)) < 1e-6 && bpSum === 50;
+      return Math.abs(bpSum - (auditOut || 0)) < 1e-6 && bpSum === 150;
     })(),
     (() => {
       const r = A.Rexplode('item_copper_nugget', 10, {});
@@ -5117,14 +5156,14 @@ chk('C6-b 与 C6-a 口径交叉验证：入图的副产物速率 == 体检报的
 //   ① 微量溢出阈值 RW_SINK_MINOR=5/分 —— ≤5 只提醒不拦截（整台取整噪声，47/102 个目标有，多数是这种）
 //   ② 池子按物品各摆（不合并）—— 壤晶@10 = 壤晶废液 ×4 + 清水 ×1
 //   ③ 摆不下必须软门禁拒绝，不得静默假装成功
-chk('C6-b2 门禁：壤晶@10 有 2 项必爆 → sink 规划给出 壤晶废液 ×4 + 清水 ×1（池数=ceil(over/30)）',
+chk('C6-b2 门禁：壤晶@10 有 2 项必爆 → sink 规划给出 壤晶废液 ×10 + 清水 ×2（池数=ceil(over/30)）',
     (() => {
       const r = A.Rexplode('item_xiranite_poly', 10, {});
       const sp = A.RflowSinkPlan(r);
       const xp = sp.sinks.filter(s => s.forItem === '壤晶废液')[0];
       const sw = sp.sinks.filter(s => s.forItem === '清水')[0];
-      return !!xp && xp.count === 4 && xp.kind === 'pool' && !!sw && sw.count === 1 &&
-             sp.poolTotal === 5 && sp.heatTotal === 0;
+      return !!xp && xp.count === 10 && xp.kind === 'pool' && !!sw && sw.count === 2 &&
+             sp.poolTotal === 12 && sp.heatTotal === 0;
     })(),
     JSON.stringify((A.RflowSinkPlan(A.Rexplode('item_xiranite_poly', 10, {})).sinks || [])
       .map(s => s.forItem + ' ×' + s.count)));
@@ -5137,14 +5176,14 @@ chk('C6-b2 门禁反向锁：铁制成品@10 无副产物 → sink 规划必须�
     })(),
     JSON.stringify((A.RflowSinkPlan(A.Rexplode('item_iron_cmpt', 10, {})).sinks || []).map(s => s.forItem)));
 
-chk('C6-b2 微量溢出阈值（作者拍板 5/分）：钢块@10 砂叶粉末 5/分 → 进 minor 只提醒，不摆池子、不放行门禁拦',
+chk('C6-b2 微量溢出阈值（作者拍板 5/分）：重息壤@1 重息壤 3/分 → 进 minor 只提醒，不摆池子、不放行门禁拦',
     (() => {
-      const r = A.Rexplode('item_iron_enr', 10, {});
+      const r = A.Rexplode('item_activity_xiranite_enr_bottle', 1, {});
       const sp = A.RflowSinkPlan(r);
-      const m = sp.minor.filter(x => x.item === '砂叶粉末')[0];
-      return sp.sinks.length === 0 && !!m && m.over === 5 && A.RflowSinkGate(r) === null;
+      const m = sp.minor.filter(x => x.item === '重息壤')[0];
+      return sp.sinks.length === 0 && !!m && m.over === 3 && A.RflowSinkGate(r) === null;
     })(),
-    (() => { const sp = A.RflowSinkPlan(A.Rexplode('item_iron_enr', 10, {}));
+    (() => { const sp = A.RflowSinkPlan(A.Rexplode('item_activity_xiranite_enr_bottle', 1, {}));
       return 'sinks=' + sp.sinks.length + ' minor=' + JSON.stringify(sp.minor.map(x => x.item + ' ' + x.over)); })());
 
 chk('C6-b2 门禁放行/拦截判据：RflowSinkGate 只对 unmet 非空时返回字符串（正常链必须放行 = null）',
