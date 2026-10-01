@@ -5637,18 +5637,33 @@ function RxlOreCap(itemId, regionName){
 }
 /* 单片基地单边取货口路数上限：bases.json slotRule 公式 = (边长-1)÷3 向下取整。
    谷地 70→23 / 40→13 是社区实测，武陵 80→26 / 50→16 由同一条公式推算（页面按「推算」标注）。 */
-/* ⭐v177 调研结论（作者截图「武陵电池为什么变成四号谷地了」）——**暂不启用，留档**：
+/* ⭐v177 调研结论（作者截图「武陵电池为什么变成四号谷地了」）：
    现象：成本打平时按地区枚举顺序取第一个，而顺序是 [出发地,到达地]=[四号谷地,武陵] → 平局永远落谷地。
    深层：电池链在 RW_MAX_DEPTH=3 截断，「惰性壤晶废液」成 external；它在**两地都有配方**（反应池），
        所以「本地可产性」判不出差别 —— 但谷地的上游（息壤靠天有洪炉 / 息壤气靠气泵）都是武陵限定。
-   已确认事实（作者实机）：**息壤气也是武陵限定**（item_gas_xiranite）。
-   为什么没做成 blocked 判定：做了一版 RlocalFeasible 递归（矿脉/野外采集/本地配方），
-       实测**误伤严重** —— 「蓝铁粉末」「砂叶」被判成两地都造不出来。根因是**采集物清单不完整**：
-       mining_power.gather 只有 7 台（矿机/泵/气泵），漏了采种机（种子）、伐木等，
-       且配置表里没有「物品 → 野外可得」的完整映射。硬做只会把好链一起否掉。
-   → 本次只落**平局优先当前地区**（直接成因）；地区可行性判定待采集物数据补全后再做。
-   ⚠️ 息壤气地区限定这条事实先记在这里，将来补判定时直接用。 */
-const RW_GATHER_DOMAINS_KNOWN={'item_gas_xiranite':['武陵']};
+   → v177 已落**平局优先当前地区**（直接成因）。
+   ⭐v178（2026-10-01）把「数据底账」补上了：调研发现 `raw/ItemTable.json` 每个物品都带
+       **`obtainWayIds`**（官方逐物品标注的获取途径，2829 件全带）—— 之前以为「配置表没有
+       「物品 → 野外可得」的映射」，其实一直有，只是没人翻到。已构建期烧进
+       `mining_power.gatherDomains`（38 件有野外关卡来源：谷地 16 / 武陵 23 / 砂叶两地都有；
+       另有 50 件可种植）。调研全文见 `_archive/采集物映射缺口报告-2026-10-01.md`。
+   🔴 **但 obtainWayIds 的关卡条目「非穷举」** —— 反例：源矿两地都有矿点（谷地 28 / 武陵 32），
+       它却**只列了 map01_lv001**。→ **只能当「正面证据」（证明某地区采得到），
+       绝不能反推「某地区采不到」**。所以 v177 那版 RlocalFeasible「判 blocked」的思路**不采用**；
+       v178 改为**只提示、不阻断**（见下 RwLocalGather + RxlAnalyze 的 localRisk）。
+   ⚠️ 另一条已确认事实（作者实机）：**息壤气是武陵限定**（item_gas_xiranite，已在 gatherDomains 里）。 */
+function RwGatherDomains(itemId){
+  const b=(((DB.mining_power||{}).gatherDomains||{}).byItem)||{};
+  return b[itemId]||null;      /* null = 无记录（**未验证**，不等于「采不到」） */
+}
+/* 某地区的「本地野外可得」判定：'yes' 本地有来源记录 / 'no' 有记录但不含本地 / 'unknown' 无记录。
+   ⚠️ 'no' 也只表示「记录里没有本地」，不等于「本地真的没有」（数据非穷举）→ 下游必须只提示不阻断。 */
+function RwLocalGather(itemId, regionName){
+  const d=RwGatherDomains(itemId);
+  if(!d||!d.length) return 'unknown';
+  if(!regionName) return 'yes';                 /* 不限地区 = 全图任意 */
+  return (d.indexOf(regionName)>=0)?'yes':'no';
+}
 function RxlSlots(side){ return Math.floor(((side||0)-1)/3); }
 /* 单目标 × 地区 适配分析（收货前展开；regionName='' = 不限地区）。带缓存。 */
 function RxlAnalyze(iid, perMin, regionName){
@@ -5659,7 +5674,7 @@ function RxlAnalyze(iid, perMin, regionName){
   const res=Rexplode(iid, perMin, {region:regionName});
   const out={id:iid, name:RwItemName(iid), rate:perMin, region:(regionName||''),
     totalMachines:res.totalMachines||0, blocked:[], ores:{}, recvNeed:{}, other:[],
-    manual:[], area:0, areaEst:0, nodeSet:{}, ok:true};
+    manual:[], localRisk:[], area:0, areaEst:0, nodeSet:{}, ok:true};
   (res.machines||[]).forEach(n=>{
     out.nodeSet[n.itemId]=1;
     const b=bmap[n.machineId];
@@ -5681,6 +5696,11 @@ function RxlAnalyze(iid, perMin, regionName){
       const ex=out.manual.filter(x=>x.itemId===n.itemId)[0];
       if(ex) ex.demand+=(n.demand||0);
       else out.manual.push({itemId:n.itemId, name:RwItemName(n.itemId), demand:(n.demand||0)});
+      /* ⭐v178：这类「传不过来」的料里，有些还叠加了「本地根本采不到」—— 一并进 localRisk。
+         实例：分离芯@四号谷地 要的**惰气**，采集点记录只在武陵（map02_lv007）。 */
+      if(RwLocalGather(n.itemId, regionName)==='no')
+        out.localRisk.push({itemId:n.itemId, name:RwItemName(n.itemId),
+          demand:Math.round((n.demand||0)*10)/10, domains:RwGatherDomains(n.itemId)});
       return;
     }
     const oc=RxlOreCap(n.itemId, regionName);
@@ -5688,6 +5708,13 @@ function RxlAnalyze(iid, perMin, regionName){
       const o=out.ores[n.itemId]||(out.ores[n.itemId]={name:oc.name, need:0, cap:oc.cap});
       o.need+=(n.demand||0);
     }else{
+      /* ⭐v178：非矿原料的「本地野外可得性」——obtainWayIds 有记录、但不含当前地区 → **只提示不阻断**。
+         （矿脉那半走上面的 ores{}，数据是完整的、不重复报；这里只兜非矿：植物 / 液气。）
+         ⚠️ 'unknown'（无记录）**故意不报**：obtainWayIds 非穷举（清水这类就有记录缺失），
+            报了会把人人能采的料刷成满屏假警报 —— 宁可少报，不可误伤（v177 的教训）。 */
+      if(RwLocalGather(n.itemId, regionName)==='no')
+        out.localRisk.push({itemId:n.itemId, name:RwItemName(n.itemId),
+          demand:Math.round((n.demand||0)*10)/10, domains:RwGatherDomains(n.itemId)});
       /* 非矿原料叶：另一地区能产且可传 → 收货候选（如谷地建的链要息壤）；
          谁都产不了（清水这类野外交付）→ other，选点不管 */
       let other=false;
@@ -7235,6 +7262,13 @@ function RxlRowHtml(t, r, picked){
     const recv=Object.keys(a.recvNeed).map(k=>'<span>· '+esc(RwItemName(k))+' 需 '+Math.round(a.recvNeed[k]*10)/10+'/分：当地不能产 → 走收货</span>').join('');
     const manual=(a.manual||[]).map(m=>'<span>· '+esc(m.name)+' 需 '+Math.round(m.demand*10)/10+'/分：<b style="color:'+RW_COL.warn+'">不能跨地区传输</b> —— 产线未建模（聚合池/拆解自筹），要放这里就得本地想办法</span>').join('');
     const other=(a.other||[]).length?'<span>· 野外交付：'+esc(a.other.map(RwItemName).join('、'))+'</span>':'';
+    /* ⭐v178：本地野外来源提示 —— **只提示、不阻断**（源数据 obtainWayIds 是单边证据、非穷举，
+       所以措辞是「记录里不含本地」而不是「本地没有」，并请作者游戏内核对）。 */
+    const lrisk=(a.localRisk||[]).length
+      ? '<span><b style="color:'+RW_COL.bad+'">⚠ 本地无野外来源记录</b>：'
+        +a.localRisk.map(x=>esc(x.name)+' 需 '+x.demand+'/分（采集点记录只在 '+esc((x.domains||[]).join('/'))+'）').join('；')
+        +'　<span class="c-id">提示、非阻断 —— 源数据非穷举，可能有遗漏，请游戏内核对</span></span>'
+      : '';
     /* 落位档位：占地估算 vs 该地区各基地可用格（数据：bases.json maxBases[].area.usableCells） */
     const bases=(DB.bases.maxBases||[]).filter(x=>x.domainName===r&&(x.area&&x.area.usableCells));
     bases.sort((x,y)=>x.area.usableCells-y.area.usableCells);
@@ -7246,6 +7280,7 @@ function RxlRowHtml(t, r, picked){
       +(recv?'<div class="c-sub" style="margin-top:1px"><span>'+recv+'</span></div>':'')
       +(manual?'<div class="c-sub" style="margin-top:1px"><span>'+manual+'</span></div>':'')
       +(other?'<div class="c-sub" style="margin-top:1px"><span>'+other+'</span></div>':'')
+      +(lrisk?'<div class="c-sub" style="margin-top:1px">'+lrisk+'</div>':'')
       +'<div class="c-sub" style="margin-top:1px"><span>· 机器 <b>'+a.totalMachines+'</b> 台 · 占地约 <b>'+a.areaEst+'</b> 格（机器格数×2.2 估算，非实测）→ '+tier+'</span></div>';
   }
   return '<div class="c-sub" style="margin-top:3px"><span><b>'+esc(a.name)+'</b> @'+t.rate+'/分 放<b>'+esc(r)+'</b> '+mark+'</span></div>'+body;

@@ -5251,4 +5251,92 @@ chk('v156 协议容量标签：标题须定位为「野外设备参考」，不�
     '协议容量标签改为「野外设备参考」=' + (/协议容量（野外设备参考）/.test(rawCode)
       && !/📶 协议容量上限/.test(rawCode)));
 
+/* ═══ ⭐v178（2026-10-01）采集物 → 地区映射 ═══
+   补 v177 遗留的「地区可行性」数据底账。背景：v177 试做 RlocalFeasible 递归时误伤
+   「蓝铁粉末」「砂叶」，整版回滚；只读调研后发现权威源一直是 `raw/ItemTable.json` 的
+   **obtainWayIds**（构建期烧进 `mining_power.gatherDomains`），只是没人翻到。
+   🔴 红线：obtainWayIds 的关卡条目**非穷举**（反例：源矿两地都有矿点，却只列 map01_lv001）
+   → 只能当「正面证据」，**绝不能反推「某地区采不到」** → 故 v178 语义是**提示、不阻断**。
+   调研全文：`_archive/采集物映射缺口报告-2026-10-01.md`。 */
+
+// ---- 数据层 ----
+chk('v178 数据：gatherDomains.byItem 收录野外关卡来源物品（≥30 条，谷地与武陵两侧都有）',
+    (() => {
+      const gd = (((A.DB.mining_power || {}).gatherDomains || {}).byItem) || {};
+      const ks = Object.keys(gd);
+      return ks.length >= 30
+        && ks.some(k => gd[k].indexOf('四号谷地') >= 0)
+        && ks.some(k => gd[k].indexOf('武陵') >= 0);
+    })(),
+    '条数=' + Object.keys((((A.DB.mining_power || {}).gatherDomains || {}).byItem) || {}).length);
+
+chk('v178 数据：砂叶两地都能采（推翻旧直觉「砂叶=四号谷地限定」——v177 误伤案例 1）',
+    (() => {
+      const gd = (((A.DB.mining_power || {}).gatherDomains || {}).byItem) || {};
+      const d = gd['item_plant_moss_3'] || [];
+      return d.indexOf('四号谷地') >= 0 && d.indexOf('武陵') >= 0;
+    })(),
+    JSON.stringify(((((A.DB.mining_power || {}).gatherDomains || {}).byItem) || {})['item_plant_moss_3']));
+
+chk('v178 数据：清水进抑制名单（obtainWayIds 只记 map02_lv001，照收会满屏误报「谷地没水」）',
+    (() => {
+      const g = ((A.DB.mining_power || {}).gatherDomains || {});
+      const byItem = g.byItem || {}, sup = g.suppressed || {};
+      return !byItem['item_liquid_water'] && !!sup['item_liquid_water'];
+    })(),
+    'byItem 含清水=' + !!((((A.DB.mining_power || {}).gatherDomains || {}).byItem) || {})['item_liquid_water']);
+
+chk('v178 数据：gather 可采物带 domains，且与矿点表自洽（紫晶只谷地 / 赤铜只武陵）',
+    (() => {
+      const G = (A.DB.mining_power || {}).gather || [];
+      const pick = nm => {
+        for (const g of G) for (const m of (g.mineable || [])) if (m.name === nm) return m;
+        return null;
+      };
+      const q = pick('紫晶矿'), c = pick('赤铜矿');
+      if (!q || !c) return false;
+      return (q.domains || []).indexOf('武陵') < 0 && (q.domains || []).indexOf('四号谷地') >= 0
+        && (c.domains || []).indexOf('四号谷地') < 0 && (c.domains || []).indexOf('武陵') >= 0;
+    })(),
+    '（见 gather[].mineable[].domains，来源标在 domainsFrom）');
+
+// ---- 算法层 ----
+chk('v178 RwLocalGather：本地有记录=yes / 有记录但不含本地=no / 无记录=unknown（不限定地区=yes）',
+    (() => A.RwLocalGather('item_gas_inert', '武陵') === 'yes'
+      && A.RwLocalGather('item_gas_inert', '四号谷地') === 'no'
+      && A.RwLocalGather('item_zzz_not_exist', '四号谷地') === 'unknown'
+      && A.RwLocalGather('item_gas_inert', '') === 'yes')(),
+    [A.RwLocalGather('item_gas_inert', '武陵'), A.RwLocalGather('item_gas_inert', '四号谷地'),
+     A.RwLocalGather('item_zzz_not_exist', '四号谷地')].join(' / '));
+
+chk('v178 RxlAnalyze.localRisk：分离芯@谷地报「惰气」、不报清水；@武陵为空（不误伤）',
+    (() => {
+      const a = A.RxlAnalyze('item_filter_core', 10, '四号谷地');
+      const b = A.RxlAnalyze('item_filter_core', 10, '武陵');
+      const ids = (a.localRisk || []).map(x => x.itemId);
+      return ids.indexOf('item_gas_inert') >= 0 && ids.indexOf('item_liquid_water') < 0
+        && (b.localRisk || []).length === 0;
+    })(),
+    '谷地=' + JSON.stringify((A.RxlAnalyze('item_filter_core', 10, '四号谷地').localRisk || []).map(x => x.itemId)));
+
+// ---- 红线：只提示、不阻断 ----
+chk('v178 红线：localRisk 不影响 ok / blocked（提示而非阻断 —— 源数据是单边证据，v177 教训）',
+    (() => {
+      const a = A.RxlAnalyze('item_filter_core', 10, '四号谷地');
+      return a.ok === true && (a.blocked || []).length === 0 && (a.localRisk || []).length > 0;
+    })(),
+    'ok=' + A.RxlAnalyze('item_filter_core', 10, '四号谷地').ok
+      + ' blocked=' + (A.RxlAnalyze('item_filter_core', 10, '四号谷地').blocked || []).length);
+
+// ---- 渲染层 ----
+chk('v178 渲染：报告区出「本地无野外来源记录」且措辞含「非阻断」；武陵侧不出现',
+    (() => {
+      const g = A.RxlRowHtml({ id: 'item_filter_core', rate: 10, name: '分离芯' }, '四号谷地', false);
+      const w = A.RxlRowHtml({ id: 'item_filter_core', rate: 10, name: '分离芯' }, '武陵', false);
+      return g.indexOf('本地无野外来源记录') >= 0 && g.indexOf('非阻断') >= 0
+        && w.indexOf('本地无野外来源记录') < 0;
+    })(),
+    '谷地含提示=' + (A.RxlRowHtml({ id: 'item_filter_core', rate: 10, name: '分离芯' }, '四号谷地', false)
+      .indexOf('本地无野外来源记录') >= 0));
+
 report();

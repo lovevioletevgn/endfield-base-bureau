@@ -1355,12 +1355,123 @@ def main():
     power["fuelRule"] = ("2026-09-21 定：**谷地用谷地电池、武陵用武陵电池**（源矿作为通用兜底）。"
                          "一台热能池的发电功率 = 它烧的那种燃料的功率值（前提是燃料供给跟得上），"
                          "所以需要的热能池台数 = ceil(缺口 / 电池功率值)。")
+    # ================= ⭐v178：采集物 → 地区（补全「地区可行性」的数据底账）=================
+    # 背景：v177 试做地区可行性判定（RlocalFeasible 递归）时**误伤「蓝铁粉末」「砂叶」**，整版回滚。
+    #       当时判定根因是「采集物清单不完整」。2026-10-01 只读调研（见
+    #       `_archive/采集物映射缺口报告-2026-10-01.md`）找到了**权威数据源** ——
+    #       `raw/ItemTable.json` 每个物品的 **`obtainWayIds`** 字段（2829 个物品全带），形如：
+    #         `item_obtain_gather_map01_lv007_1` → 在 map01_lv007 可采（**map01=四号谷地 / map02=武陵**）
+    #         `item_obtain_plant`               → 可种植（种植机）
+    #         `item_obtain_gather`              → 通用采集（不绑关卡，所以判不出地区）
+    # 🔴 **必须写进注释的关键坑**：`obtainWayIds` 的**关卡条目非穷举** —— 反例：源矿两地都有矿点
+    #       （谷地 28 点 / 武陵 32 点，见 ores.beds.byMap），但它的 obtainWayIds **只列了 map01_lv001**。
+    #    → 所以它**只能当「正面证据」**（证明某地区采得到），**绝不能反推「某地区采不到」**。
+    #      下游用它的地方一律按「提示」而非「阻断」处理（见 build_html.py 的 RxlAnalyze.localRisk）。
+    _item_raw = load("ItemTable")
+    _REGION_OF_MAP = {"map01": "四号谷地", "map02": "武陵"}
+    _gd = {}          # itemId -> [地区]（去重、按谷地优先排序）
+    _gd_levels = {}   # itemId -> [具体关卡 id]（留档，便于人工复核）
+    _plantable = []   # 可种植物品（item_obtain_plant 类）
+    import re as _re
+    _pat_lv = _re.compile(r"^item_obtain_gather_(map\d\d_lv\d+)(?:_\d+)?$")
+    for _iid, _rec in (_item_raw.items() if isinstance(_item_raw, dict) else []):
+        if not isinstance(_rec, dict):
+            continue
+        for _w in (_rec.get("obtainWayIds") or []):
+            _m = _pat_lv.match(_w)
+            if _m:
+                _rg = _REGION_OF_MAP.get(_m.group(1)[:5])
+                if _rg:
+                    _gd.setdefault(_iid, [])
+                    if _rg not in _gd[_iid]:
+                        _gd[_iid].append(_rg)
+                    _gd_levels.setdefault(_iid, [])
+                    if _m.group(1) not in _gd_levels[_iid]:
+                        _gd_levels[_iid].append(_m.group(1))
+            # ⚠️ 两种写法都要收：`item_obtain_plant`（普通种植）与
+            #    `item_obtain_spaceship_plant_<key>`（太空舱/种植舱，**不以 item_obtain_plant 开头**，漏了会少 36 条）
+            elif _w == "item_obtain_plant" or "spaceship_plant" in str(_w):
+                if _iid not in _plantable:
+                    _plantable.append(_iid)
+    for _k in _gd:
+        _gd[_k] = sorted(_gd[_k], key=lambda x: (x != "四号谷地"))
+    # ⚠️ **抑制名单**：obtainWayIds 有关卡记录、但**确定不完整**、标了必然误报的物品 —— 从 byItem 剔除。
+    #    理由逐条写明（原则：**宁可少报，不可误伤** —— 这就是 v177 的教训）。原始记录仍留在 levels 里可查。
+    _GD_SUPPRESS = {
+        "item_liquid_water": ("清水：obtainWayIds 只列了 map02_lv001，但**四号谷地显然也有水源**"
+                              "（游戏里每片基地都能就近抽水）。标了它 → 几乎每条链都会误报「谷地没水」。"),
+    }
+    for _k in list(_gd.keys()):
+        if _k in _GD_SUPPRESS:
+            _gd.pop(_k)
+    print("  ℹ️ 采集物地区映射：%d 个物品有野外关卡来源（%s），%d 个可种植；抑制 %d 条（%s）"
+          % (len(_gd), "/".join("%s %d" % (_r, sum(1 for v in _gd.values() if _r in v))
+                                for _r in ("四号谷地", "武陵")), len(_plantable),
+             len(_GD_SUPPRESS), "/".join(_GD_SUPPRESS.keys())))
+
+    # 矿物的地区**直接复用矿点表**（ores.beds.mapMax 是完整的两地数据，比 obtainWayIds 权威）
+    _ore_dom = {}
+    for _b in ores["beds"]:
+        _mmx = _b.get("mapMax") or {}
+        _ore_dom[_b["itemId"]] = sorted([k for k, v in _mmx.items() if (v or 0) > 0],
+                                        key=lambda x: (x != "四号谷地"))
+    # 液体 / 气体：配置表没有关卡字段，只能靠 obtainWayIds（**单边证据**）+ 作者实机确认
+    _fluid_dom = {
+        "item_gas_xiranite": (["武陵"], "obtainWayIds map02_lv008 + 作者实机确认「息壤气也是武陵限定」"),
+        "item_gas_inert":    (["武陵"], "obtainWayIds map02_lv007（单边证据）"),
+        "item_liquid_acid":  (["武陵"], "obtainWayIds map02_lv004（单边证据）"),
+        # ⚠️ 清水**故意留空**：obtainWayIds 只列了 map02_lv001，但四号谷地显然也有水源 ——
+        #    这正是「obtainWayIds 非穷举」最直观的受害者。标了它 → 几乎每条链都误报「谷地没水」。
+        #    留空 = 「未验证」，下游不报警（见 RxlAnalyze 的 localRisk 分级）。
+    }
+    for _g in gather:
+        for _mm in (_g.get("mineable") or []):
+            _iid = _mm.get("itemId")
+            if _iid in _ore_dom:
+                _mm["domains"] = _ore_dom[_iid]
+                _mm["domainsFrom"] = "矿点表 OresBeds.mapMax（完整）"
+            elif _iid in _fluid_dom:
+                _mm["domains"] = _fluid_dom[_iid][0]
+                _mm["domainsFrom"] = _fluid_dom[_iid][1]
+            elif _iid in _gd:
+                _mm["domains"] = _gd[_iid]
+                _mm["domainsFrom"] = "obtainWayIds"
+            else:
+                _mm["domains"] = []
+                _mm["domainsFrom"] = "无记录"
+
+    # 采集物地区映射（独立成段：算法按 itemId 查它，不依赖 gather 的 7 台设备）
+    gather_domains = {
+        "madeFrom": ("raw/ItemTable.json 的 obtainWayIds 字段（官方**逐物品**标注的获取途径）；"
+                     "关卡 id 前缀 map01=四号谷地 / map02=武陵（与 DomainDataTable 的 levelGroup 同源）"),
+        "caveat": ("🔴 **obtainWayIds 的关卡条目非穷举** —— 反例：源矿两地都有矿点（谷地 28 / 武陵 32），"
+                   "它却只列了 map01_lv001。→ **只能当「正面证据」（证明某地区采得到），"
+                   "绝不能反推「某地区采不到」。** 下游一律按「提示」用，不做阻断。"),
+        "byItem": _gd,          # itemId -> [地区]（**已剔除抑制名单**）
+        "suppressed": _GD_SUPPRESS,   # 有关卡记录、但判定不完整故**故意不用**的（理由见值）
+        "levels": _gd_levels,   # itemId -> [具体关卡 id]
+        "plantable": _plantable,
+        # 植物写环：矿物走矿脉、植物走「种植机 ⇄ 采种机」自持闭环 —— v177 误伤砂叶就是因为递归断在环里
+        "plantChain": {
+            "note": "植物类素材**不是矿点**，走「种植机 ⇄ 采种机」自持闭环。这是 v177 误伤砂叶的直接原因（递归断在环里）。",
+            "planter": {"id": "planter_1", "name": "种植机", "power": 20, "role": "种子 → 植物",
+                        "example": "砂叶种子 ×1 → 砂叶 ×1（machine_recipes.json）"},
+            "seedcollector": {"id": "seedcollector_1", "name": "采种机", "power": 10, "role": "植物 → 种子",
+                              "example": "砂叶 ×1 → 砂叶种子 ×2（machine_recipes.json）"},
+            "loop": ("砂叶种子 →(种植机)→ 砂叶 →(采种机)→ 砂叶种子×2。"
+                     "**首份砂叶必须来自野外采集（或初始库存）**，之后可自持 —— "
+                     "砂叶的 obtainWayIds = [map01_lv007（供能高地）, map02_lv001（景玉谷）, item_obtain_plant]，"
+                     "**四号谷地与武陵都能采**（旧直觉「砂叶=谷地限定」是错的）。"),
+        },
+    }
+
     mining_power = {
         "madeFrom": "FactoryBuildingTable（按 quickBarType=资源开采 列全 7 座）+ FactoryMinerTable + FactoryFluidPumpInTable + 社区实测（发电数值 / 三台采集设备的速率与可采物 / 矿点与纯度）",
         "rateSources": WEB_SOURCES,
         "ores": ores,
         "gather": gather, "miners": miners, "pumps": pumps,
         "power": power,
+        "gatherDomains": gather_domains,   # ⭐v178 新增
     }
     dump("mining_power.json", mining_power)
     dump("manual_recipes.json", manual_list)
