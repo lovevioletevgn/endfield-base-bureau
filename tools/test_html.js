@@ -1227,6 +1227,57 @@ chk('v174 源码级：LapplyAssignAll 结尾护住 origTgt/origRate（防御性�
   return /origTgt/.test(seg) && /L\.tgt\s*=\s*origTgt/.test(seg);
 })());
 
+/* ═══ v175（2026-10-01，作者拍板「① 切目标重置速率」）═══
+   病灶：速率是「每分钟产量」，但不同目标台的台数差一个数量级（电池@10=174 台、谷地电池@10=50 台）。
+   作者在 A 目标上把速率调到 400，切到电池 → 400/分 ≈ 7000 台 → 超 180 台闸门 → 生成失败（= v173 那条 bug 的触发条件）。
+   数据依据（_probe175 扫全 200 目标）：**所有目标在 10/分 下台数都 ≤180**，最吃的中容武陵电池 = 174 → 10 = 出厂缺省值（Linit rate:10）
+   也是全目标通吃的安全值。
+   修法：`Ltgt(v)` 在 `L.tgt=v` 之后、调 `LretargetAll` 之前，**目标真的变了**时 `L.rate=10`。
+   ⚠️ 只在目标变化时重置（重复选同一目标不能冲掉手调速率）；`prevRate` 记重置前的值 → 全失败回滚退回原速率。 */
+chk('v175 切目标重置速率为 10（旧速率 400 → 选电池后 L.rate===10）', (() => {
+  /* ⚠️ 必须清空**整个地区**的画布：Ltgt 的 anyPlan 探测扫的是同地区全部基地，
+     只清当前基地会漏掉副基地残留的 planRole 件 → 误走重排路径。 */
+  loReset(70);
+  A.Lbases().filter(r => r.domainName === '四号谷地').forEach(r => {
+    if (A.LO.bases[r.levelId]) { A.LO.bases[r.levelId].objs = []; A.LO.bases[r.levelId].plan = null; }
+  });
+  A.LbaseSet('map01_lv001');
+  A.LO.tgt = 'item_iron_cmpt'; A.LO.rate = 400; A.LO.mt = [];
+  A.Ltgt('item_proc_battery_5');
+  return A.LO.tgt === 'item_proc_battery_5' && A.LO.rate === 10;
+})());
+chk('v175 重复选同一目标不重置速率（手调的速率不被打掉）', (() => {
+  loReset(70); A.LbaseSet('map01_lv001');
+  A.LO.tgt = 'item_proc_battery_5'; A.LO.rate = 7; A.LO.mt = [];
+  A.Ltgt('item_proc_battery_5');
+  return A.LO.rate === 7;
+})());
+chk('v175 切到不同目标且画布有产线时，重排也按 10 跑（LretargetAll 读到的是新速率）', (() => {
+  /* 谷地主 70×70 + 低容谷地电池@10 = 50 台 → 重排能成功（不同于武陵电池@10 会失败回滚）。
+     起点「铁制零件@10」建一条产线：切到谷地电池后，若 LretargetAll 读到的还是旧速率就会失败回滚；
+     读到的若是重置后的 10 才能成功切过去 → 成功即证明「先重置、后重排」的次序对。 */
+  loReset(70);
+  A.Lbases().filter(r => r.domainName === '四号谷地').forEach(r => {
+    if (A.LO.bases[r.levelId]) { A.LO.bases[r.levelId].objs = []; A.LO.bases[r.levelId].plan = null; }
+  });
+  A.LbaseSet('map01_lv001');
+  A.LO.tgt = 'item_iron_cmpt'; A.LO.rate = 10; A.LO.mt = []; A.LO.autoGen = false;
+  A.LawRun('item_iron_cmpt', 10);
+  if (!A.LO.objs.some(o => o.planRole)) return false;   /* 前置：真建出了产线 */
+  A.LO.rate = 400;
+  A.Ltgt('item_proc_battery_1');
+  return A.LO.tgt === 'item_proc_battery_1' && A.LO.rate === 10
+    && A.LO.objs.some(o => o.planRole);
+})());
+chk('v175 源码级：Ltgt 内含速率重置且仅在目标变化时触发', (() => {
+  const i = rawCode.indexOf('function Ltgt(');
+  if (i < 0) return false;
+  const j = rawCode.indexOf('\nfunction ', i + 10);
+  const seg = rawCode.slice(i, j < 0 ? i + 3000 : j);
+  const noCmt = seg.replace(/\/\*[\s\S]*?\*\//g, '');
+  return /L\.rate\s*=\s*10/.test(noCmt) && /v!==prevTgt/.test(noCmt);
+})());
+
 /* ═══ 第 3 期（v166，作者选「跨地区全自动一键」）：目标先分地区、再分基地 ═══
    判据见 docs/最优排布-设计规格.md 第八节：D1 地区可行 / D2 沿用第 2 期真试摆 / D3 收货一致。
    与第 2 期的关系：RxlAll 是 RxlBest 的泛化（地区来源换成「有可用基地的地区」，成本公式同源）；
@@ -1500,6 +1551,10 @@ A.render();
 chk('v170 失败清场：先成功 @5、再失败 @10 → L.plan 置空（不再挂上一条产线）', (() => {
   loReset(80);
   A.LbaseSet('map02_lv002');   /* 武陵主 80×80：中容武陵电池 @5 可放、@10 越界 */
+  if (A.LO.base !== 'map02_lv002') return false;   /* 前置：真切到武陵主了 */
+  /* ⚠️ 基地画布边长存在**该基地自己的槽位**里（首次访问按 r.side 固化，之后 loReset 改的是全局 slot、
+     影响不到它）→ 必须直接写 bases[levelId].size，否则画布可能停在别处留下的尺寸。 */
+  if (A.LO.bases['map02_lv002']) A.LO.bases['map02_lv002'].size = 80;
   A.LO.autoGen = false; A.LO.objs = []; A.LO.mt = []; A.LO.shipIn = false; A.LO.selfLoop = false;
   A.LawRun('item_proc_battery_5', 5);
   const ok1 = !!A.LO.plan;
