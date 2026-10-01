@@ -5278,13 +5278,18 @@ chk('v178 数据：砂叶两地都能采（推翻旧直觉「砂叶=四号谷地
     })(),
     JSON.stringify(((((A.DB.mining_power || {}).gatherDomains || {}).byItem) || {})['item_plant_moss_3']));
 
-chk('v178 数据：清水进抑制名单（obtainWayIds 只记 map02_lv001，照收会满屏误报「谷地没水」）',
+chk('v178.1 数据：清水与惰气都在 byItem 且**只指向武陵**，且抑制名单为空（博士实机确认谷地两者都产不出）',
     (() => {
       const g = ((A.DB.mining_power || {}).gatherDomains || {});
       const byItem = g.byItem || {}, sup = g.suppressed || {};
-      return !byItem['item_liquid_water'] && !!sup['item_liquid_water'];
+      const w = byItem['item_liquid_water'] || [], gn = byItem['item_gas_inert'] || [];
+      return w.length === 1 && w[0] === '武陵'
+        && gn.length === 1 && gn[0] === '武陵'
+        && Object.keys(sup).length === 0;
     })(),
-    'byItem 含清水=' + !!((((A.DB.mining_power || {}).gatherDomains || {}).byItem) || {})['item_liquid_water']);
+    '清水=' + JSON.stringify(((((A.DB.mining_power || {}).gatherDomains || {}).byItem) || {})['item_liquid_water'])
+      + ' 惰气=' + JSON.stringify(((((A.DB.mining_power || {}).gatherDomains || {}).byItem) || {})['item_gas_inert'])
+      + ' 抑制=' + Object.keys((((A.DB.mining_power || {}).gatherDomains || {}).suppressed) || {}).length);
 
 chk('v178 数据：gather 可采物带 domains，且与矿点表自洽（紫晶只谷地 / 赤铜只武陵）',
     (() => {
@@ -5309,12 +5314,12 @@ chk('v178 RwLocalGather：本地有记录=yes / 有记录但不含本地=no / �
     [A.RwLocalGather('item_gas_inert', '武陵'), A.RwLocalGather('item_gas_inert', '四号谷地'),
      A.RwLocalGather('item_zzz_not_exist', '四号谷地')].join(' / '));
 
-chk('v178 RxlAnalyze.localRisk：分离芯@谷地报「惰气」、不报清水；@武陵为空（不误伤）',
+chk('v178.1 RxlAnalyze.localRisk：分离芯@谷地**同时报清水与惰气**（谷地两者都产不出）；@武陵为空',
     (() => {
       const a = A.RxlAnalyze('item_filter_core', 10, '四号谷地');
       const b = A.RxlAnalyze('item_filter_core', 10, '武陵');
       const ids = (a.localRisk || []).map(x => x.itemId);
-      return ids.indexOf('item_gas_inert') >= 0 && ids.indexOf('item_liquid_water') < 0
+      return ids.indexOf('item_gas_inert') >= 0 && ids.indexOf('item_liquid_water') >= 0
         && (b.localRisk || []).length === 0;
     })(),
     '谷地=' + JSON.stringify((A.RxlAnalyze('item_filter_core', 10, '四号谷地').localRisk || []).map(x => x.itemId)));

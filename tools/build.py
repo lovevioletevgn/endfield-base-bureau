@@ -1395,19 +1395,21 @@ def main():
                     _plantable.append(_iid)
     for _k in _gd:
         _gd[_k] = sorted(_gd[_k], key=lambda x: (x != "四号谷地"))
-    # ⚠️ **抑制名单**：obtainWayIds 有关卡记录、但**确定不完整**、标了必然误报的物品 —— 从 byItem 剔除。
-    #    理由逐条写明（原则：**宁可少报，不可误伤** —— 这就是 v177 的教训）。原始记录仍留在 levels 里可查。
-    _GD_SUPPRESS = {
-        "item_liquid_water": ("清水：obtainWayIds 只列了 map02_lv001，但**四号谷地显然也有水源**"
-                              "（游戏里每片基地都能就近抽水）。标了它 → 几乎每条链都会误报「谷地没水」。"),
-    }
+    # ⚠️ **抑制名单（当前为空）**：机制留着 —— 将来若某物品的 obtainWayIds 记录**确定不完整**、
+    #    标了必然误报，可在这里逐条剔除并写明理由。
+    #    ⭐ 2026-10-01 修订：原本把 **清水** 剔了出去，理由是「obtainWayIds 只列 map02_lv001，
+    #    但四号谷地显然也有水源」—— **这个假设是我凭空想的，没查证**。
+    #    博士实机确认：**四号谷地既没有清水/惰气的采集点，也产不出这两样**
+    #    （水泵/气体收集泵本身 `isUniversal=True` 无地域限定，卡的是「有没有水源/气源节点」—— 谷地没有）。
+    #    → 撤销抑制，让提示如实报出。原则修正为：**宁可多报真话，不要少报假安。**
+    _GD_SUPPRESS = {}
     for _k in list(_gd.keys()):
         if _k in _GD_SUPPRESS:
             _gd.pop(_k)
-    print("  ℹ️ 采集物地区映射：%d 个物品有野外关卡来源（%s），%d 个可种植；抑制 %d 条（%s）"
+    print("  ℹ️ 采集物地区映射：%d 个物品有野外关卡来源（%s），%d 个可种植；抑制 %d 条"
           % (len(_gd), "/".join("%s %d" % (_r, sum(1 for v in _gd.values() if _r in v))
                                 for _r in ("四号谷地", "武陵")), len(_plantable),
-             len(_GD_SUPPRESS), "/".join(_GD_SUPPRESS.keys())))
+             len(_GD_SUPPRESS)))
 
     # 矿物的地区**直接复用矿点表**（ores.beds.mapMax 是完整的两地数据，比 obtainWayIds 权威）
     _ore_dom = {}
@@ -1418,12 +1420,12 @@ def main():
     # 液体 / 气体：配置表没有关卡字段，只能靠 obtainWayIds（**单边证据**）+ 作者实机确认
     _fluid_dom = {
         "item_gas_xiranite": (["武陵"], "obtainWayIds map02_lv008 + 作者实机确认「息壤气也是武陵限定」"),
-        "item_gas_inert":    (["武陵"], "obtainWayIds map02_lv007（单边证据）"),
+        "item_gas_inert":    (["武陵"], "obtainWayIds map02_lv007 + 作者实机确认：四号谷地没有气源"),
         "item_liquid_acid":  (["武陵"], "obtainWayIds map02_lv004（单边证据）"),
-        # ⚠️ 清水**故意留空**：obtainWayIds 只列了 map02_lv001，但四号谷地显然也有水源 ——
-        #    这正是「obtainWayIds 非穷举」最直观的受害者。标了它 → 几乎每条链都误报「谷地没水」。
-        #    留空 = 「未验证」，下游不报警（见 RxlAnalyze 的 localRisk 分级）。
+        "item_liquid_water": (["武陵"], "obtainWayIds map02_lv001 + 作者实机确认：四号谷地没有水源/采集点"),
     }
+    # ⚠️ 清水虽在此表，但 `pump_1`（水泵）的 `mineable` 是空的（配置表没填它抽什么）→ 不会作用到 gather；
+    #    清水的地域信息实际走 `_gd`（obtainWayIds → byItem = ['武陵']）。这里留一份只为将来补齐 pump 表用。
     for _g in gather:
         for _mm in (_g.get("mineable") or []):
             _iid = _mm.get("itemId")
@@ -1447,6 +1449,19 @@ def main():
         "caveat": ("🔴 **obtainWayIds 的关卡条目非穷举** —— 反例：源矿两地都有矿点（谷地 28 / 武陵 32），"
                    "它却只列了 map01_lv001。→ **只能当「正面证据」（证明某地区采得到），"
                    "绝不能反推「某地区采不到」。** 下游一律按「提示」用，不做阻断。"),
+        # ⭐ 博士实机确认的地区事实（2026-10-01）—— 排布器「本地可得性」判据的最终依据
+        "facts": {
+            "四号谷地": {
+                "液气": "**清水、惰气都产不出**（既没有采集点，也没有水源/气源节点）—— 博士 2026-10-01 实机确认",
+                "矿": "源矿 560/分 · 紫晶 240/分 · 蓝铁 1080/分 · **赤铜 0**",
+            },
+            "武陵": {
+                "液气": "清水 · 沉积酸 · 惰气 · 息壤气的采集点**全部只在此**",
+                "矿": "源矿 540/分 · 紫晶 0 · 蓝铁 120/分 · **赤铜 510/分**",
+            },
+            "note": ("水泵 / 气体收集泵 / 各类矿机本身 `isUniversal=True`、**无地域限定**，两地都能建 ——"
+                     "卡住产能的是「当地有没有水源/气源/矿脉节点」，不是设备能不能放。"),
+        },
         "byItem": _gd,          # itemId -> [地区]（**已剔除抑制名单**）
         "suppressed": _GD_SUPPRESS,   # 有关卡记录、但判定不完整故**故意不用**的（理由见值）
         "levels": _gd_levels,   # itemId -> [具体关卡 id]
