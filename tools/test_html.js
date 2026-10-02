@@ -5500,6 +5500,269 @@ chk('v183 源码门禁：pickScore 的线长权重是 RW_LINE_WEIGHT（=5），�
   return i < 0 ? '没找到常量' : rawCode.slice(i, i + 120).split('\n')[0];
 })());
 
+/* ═══ v184（2026-10-03）销毁支线「摆位 + 连线」 ═══
+   起因：作者 2026-10-02 截图 —— 7 个「扩容反应池（销毁）」一字贴在画布左下角边缘、
+     **一根带子都没连**。根因在 LawRun 落盘段只 `L.objs.push(obj)`，从不走线。
+   🔴 这是实质缺口：销毁机制 =「扩容反应池堵塞清空」，要 ≥2 条配方同时堵塞才触发 ——
+      料送不进去就永远不堵 → 池子等于白摆，C6「每个物品都有去路」在画布上是假的。 */
+
+/* ① 主锁：赤铜块@10（5 个池子 / 壤晶废液 150 分）—— 池子必须贴源机器摆下 **且一根线都不少** */
+let v184n = null;
+chk('v184 销毁池接线：赤铜块@10 的 5 个池子全部贴源机器摆下并接线（不再出现「一字贴边、一根线没有」）',
+  (() => {
+    loReset(50); A.LawRun('item_copper_nugget', 10);
+    const P = A.LO.plan;
+    if (!P || !P.sinkPlaced) return false;
+    const pl = P.sinkPlaced;
+    /* 守恒律：一个池子一根线 —— 池子数 == 接线成功的池子数（unplaced 一条都不该有） */
+    if (pl.unplaced.length) return false;
+    if (pl.objs.length !== 5) return false;
+    /* 每条都要记「接自哪台机器的哪个口」—— 这是玩家核对 game 内接线的唯一依据 */
+    if (pl.objs.some(o => !o.from)) return false;
+    if (!(pl.links || []).length) return false;
+    /* 池子必须**贴近**产它的机器（老口径把它们丢在 y=44 那一排，全是「离产线极远」） */
+    const srcs = (P.plan.objs || []).filter(o => o.node &&
+      (A.RbyId(o.node.recipeId) || { outcomes: [] }).outcomes.some(x => x.id === 'item_liquid_xiranite_poly'));
+    if (!srcs.length) return false;
+    const near = pl.objs.every(p => srcs.some(m => Math.abs(m.x - p.x) + Math.abs(m.y - p.y) <= 20));
+    if (!near) return false;
+    v184n = '池 ' + pl.objs.length + ' 个 @' + pl.objs.map(o => o.x + ',' + o.y).join(' ')
+      + ' · 线 ' + pl.links.length + ' 格 · 接自 ' + pl.objs.map(o => o.from).join(' / ')
+      + ' · 未接 ' + pl.unplaced.length;
+    return true;
+  })(), () => v184n || ('objs=' + (((A.LO.plan || {}).sinkPlaced) || {}).objs.length));
+
+/* ② 走线材质对：液态副产物必须走**管道**（不能摆成传送带 —— 介质不对，game 里接不上） */
+chk('v184 销毁线材质：壤晶废液是液态 → 销毁线必须落 log_pipe_01（管道），不是传送带',
+  (() => {
+    loReset(50); A.LawRun('item_copper_nugget', 10);
+    const P = A.LO.plan;
+    if (!P || !P.sinkPlaced) return false;
+    const links = (P.sinkPlaced.objs || []).map(o => o.isPipe);
+    if (!links.length || links.some(v => v !== true)) return false;
+    /* 落盘那一层也必须是管道：按材质回查 L.objs */
+    const objs = A.LO.objs.filter(o => o.planRole === 'sinklink');
+    if (!objs.length) return false;
+    return objs.every(o => o.id === 'log_pipe_01');
+  })(), (() => {
+    const os = A.LO.objs.filter(o => o.planRole === 'sinklink');
+    return 'sinklink ' + os.length + ' 格，材质=' + [...new Set(os.map(o => o.id))].join(',');
+  })());
+
+/* ③ 独立 planRole：销毁线不得混进产线内部走线（连通率统计 / 「产线走线一律向上」约束） */
+chk('v184 销毁线用独立 planRole=sinklink（不进产线连通率统计）', (() => {
+  const n = A.LO.objs.filter(o => o.planRole === 'sinklink').length;
+  if (!n) return false;
+  if (!rawCode.includes("obj.planRole='sinklink'")) return false;
+  /* 产线内部走线仍是 'link'，两者不混 */
+  return A.LO.objs.filter(o => o.planRole === 'link').length > 0;
+})());
+
+/* ④ ⭐ 线角色白名单：新增走线角色必须登记，否则被当成**建筑硬障碍**，下游走线要多绕十几格。
+   v184 实测踩中：'sinklink' 漏在 RplaceStores / RplaceFeeders / RplaceBus 三处
+   → 下游取货口多绕 13 格、基段多绕 39 格。这条锁防同类漏登记。 */
+chk('v184 RW_LINE_ROLES 白名单含全部六个走线角色（漏一个 → 那段线变硬障碍）',
+  (() => {
+    const i = rawCode.indexOf('const RW_LINE_ROLES');
+    if (i < 0) return false;
+    const seg = rawCode.slice(i, i + 200);
+    return ['link', 'storelink', 'merge', 'split', 'feedlink', 'sinklink']
+      .every(k => new RegExp('(^|[{,\\s])' + k + '\\s*:').test(seg));
+  })(), (() => {
+    const i = rawCode.indexOf('const RW_LINE_ROLES');
+    return i < 0 ? '没找到白名单' : rawCode.slice(i, rawCode.indexOf('\n', i));
+  })());
+
+/* ⑤ 四个摆位函数必须走白名单（不能各写一遍字面量 —— v184 就是这么漏的）。
+   ⚠️ 窗口边界用「下一个 function 声明」而不是 `return {objs:out` ——
+      函数开头就有提前 return（`if(!sinkPlan...) return {objs:out,...}`），
+      按 return 切会只截到 130 字、把真正的判定行切掉（v184 实测踩中：锁本身写错了）。 */
+chk('v184 下游四个摆位函数都改走 RW_LINE_ROLES（不再各写一遍线角色字面量）', (() => {
+  const need = ['function RplaceStores', 'function RplaceFeeders', 'function RplaceBus', 'function RplaceSinksLinked'];
+  for (const fn of need) {
+    const i = rawCode.indexOf(fn);
+    if (i < 0) return false;
+    const j = rawCode.indexOf('\nfunction ', i + 10);
+    const seg = rawCode.slice(i, j > 0 ? j : i + 12000);
+    if (!/RW_LINE_ROLES\[o\.planRole\]/.test(seg)) return false;
+    /* 残留旧字面量判定 = 漏改 */
+    if (/planRole==='link'\|\|/.test(seg)) return false;
+  }
+  return true;
+})(), (() => {
+  const need = ['function RplaceStores', 'function RplaceFeeders', 'function RplaceBus', 'function RplaceSinksLinked'];
+  return need.map(fn => {
+    const i = rawCode.indexOf(fn);
+    const j = rawCode.indexOf('\nfunction ', i + 10);
+    const seg = rawCode.slice(i, j > 0 ? j : i + 12000);
+    return fn.replace('function ', '') + '=' + (/RW_LINE_ROLES\[o\.planRole\]/.test(seg) ? 'OK' : 'MISS');
+  }).join(' ');
+})());
+
+/* ⑥ 边缘守卫：走线不许贴到 x 两边（x=0 是画外边框格）。
+   ⚠️ y=0 **故意豁免** —— 那是 v180 预留的「末端出货通道」，锁了会把出货端打死。 */
+chk('v184 边缘守卫 Rwedge：锁 x 两边、不锁 y（y=0 是 v180 预留通道）', (() => {
+  const i = rawCode.indexOf('function Rwedge');
+  if (i < 0) return false;
+  const seg = rawCode.slice(i, i + 320);
+  if (!/x<RW_MARGIN\s*\|\|\s*x>=size-RW_MARGIN/.test(seg)) return false;
+  if (/y<RW_MARGIN/.test(seg)) return false;
+  /* 四个走线调用点都得用它（RW_NOBLOCK 是「什么都不挡」，会让线爬到 x=0） */
+  return (rawCode.match(/RwPath\([^)]*Rwedge\(size\)/g) || []).length === 4;
+})(), () => 'Rwedge 调用点 ' + (rawCode.match(/RwPath\([^)]*Rwedge\(size\)/g) || []).length + ' 处');
+
+/* ⑦ 真越界为 0：新增的三类走线（storelink / feedlink / sinklink）不得停在 x=0。
+   v183 基线里 storelink 已有 14 格越界、v184 一度扩到 feedlink 13 + sinklink 7 —— 本版清零。 */
+chk('v184 真越界清零：新增走线不得停在 x=0（y=0 通道合法）', (() => {
+  loReset(70); A.LawRun('item_bottled_rec_hp_5', 30);
+  const s = 70;
+  const bad = A.LO.objs.filter(o =>
+    ['storelink', 'feedlink', 'sinklink'].indexOf(o.planRole) >= 0 &&
+    !(o.x >= 1 && o.x + o.w <= s - 1 && (o.y === 0 || (o.y >= 1 && o.y + o.d <= s - 1))));
+  return bad.length === 0;
+})(), () => {
+  loReset(70); A.LawRun('item_bottled_rec_hp_5', 30);
+  const s = 70;
+  const bad = A.LO.objs.filter(o =>
+    ['storelink', 'feedlink', 'sinklink'].indexOf(o.planRole) >= 0 &&
+    !(o.x >= 1 && o.x + o.w <= s - 1 && (o.y === 0 || (o.y >= 1 && o.y + o.d <= s - 1))));
+  return 'x=0 越界 ' + bad.length + ' 格' + (bad.length ? ' 例:' + bad.slice(0, 3).map(o => o.planRole + '@' + o.x + ',' + o.y).join(' ') : '');
+});
+
+/* ⑧ 池子不叠产线：销毁池 footprint 不得与任何机器重叠（守恒律：画布真能出件） */
+chk('v184 销毁池与产线零重叠（池子压机器 = 画布根本摆不下）', (() => {
+  loReset(50); A.LawRun('item_copper_nugget', 10);
+  const P = A.LO.plan;
+  if (!P || !P.sinkPlaced) return false;
+  const machineCells = {};
+  (P.plan.objs || []).forEach(o => {
+    for (let j = 0; j < o.d; j++) for (let i = 0; i < o.w; i++) machineCells[(o.x + i) + ',' + (o.y + j)] = 1;
+  });
+  return (P.sinkPlaced.objs || []).every(p => {
+    for (let j = 0; j < p.d; j++) for (let i = 0; i < p.w; i++) if (machineCells[(p.x + i) + ',' + (p.y + j)]) return false;
+    return true;
+  });
+})());
+
+/* ⑨ unplaced 不重复计数：同一物品的多个池子若都接不上，每座记一条（不能一台机器记一条） */
+chk('v184 unplaced 不重复计数（同一池子被 N 台源机器记 N 条 = 报告夸大严重程度）', (() => {
+  loReset(50); A.LawRun('item_bottled_rec_hp_5', 10);
+  const P = A.LO.plan;
+  if (!P || !P.sinkPlaced) return true;
+  const pl = P.sinkPlaced;
+  const want = P.sinkPlan.sinks.reduce((a, b) => a + b.count, 0);
+  /* unplaced 条数必须 == 「应摆 − 实摆」，不多不少 */
+  return pl.unplaced.length === want - pl.objs.length;
+})(), () => {
+  loReset(50); A.LawRun('item_bottled_rec_hp_5', 10);
+  const P = A.LO.plan || {}; const pl = P.sinkPlaced || {};
+  const want = ((P.sinkPlan || {}).sinks || []).reduce((a, b) => a + b.count, 0);
+  return '应摆 ' + want + '／实摆 ' + (pl.objs || []).length + '／unplaced ' + (pl.unplaced || []).length;
+});
+
+/* ⑩ 广谱：跨目标扫描，接线率必须 ≥90%（防「只修了示例那一条」）。
+   实测 44 目标 × 2 工况 = 34 个触发销毁支线的用例：应摆 137 座 / 接上 129 座 = 94.2%；
+   拉满到 44×4 工况（155 用例、614 座）实测 604/614 = 98.4%。
+   未接的 8 座全是**布局层限制**：同种机器并排太紧、管道出料口朝内被下一台封死
+   （如「污水」@50×50：4 台精炼炉，中间两台的出料口四邻全占）→ 报告已逐条点名，
+   由玩家手动拉一根管道或调大间距 —— **不得**因此拒绝生成（见锁 ⑬）。 */
+chk('v184 广谱接线率 ≥90% + unplaced 计数守恒（实测 129/137 = 94.2%）', (() => {
+  const targets = A.RwTargets();
+  let want = 0, got = 0, n = 0, badCount = 0;
+  targets.slice(0, 44).forEach(t => {
+    [[10, 50], [10, 70]].forEach(pair => {
+      loReset(pair[1]);
+      try { A.LawRun(t.id, pair[0]); } catch (e) { return; }
+      const P = A.LO.plan;
+      if (!P || !P.sinkPlan || !P.sinkPlan.sinks.length) return;
+      const pl = P.sinkPlaced;
+      if (!pl) return;
+      n++;
+      const w = P.sinkPlan.sinks.reduce((a, b) => a + b.count, 0);
+      want += w;
+      got += (pl.objs || []).filter(o => o.from).length;
+      /* ⭐ 计数守恒：一个池子最多记一条 unplaced（v184 实测踩中重复计数：
+         5 台源机器试不下 → 同一池子被记 5 条，报告里显示「5 座接不上」而实际只缺 1 座）。
+         判据用**总数对账**而不是「同物品只能有一条」—— 同物品的多个池子本来就该各记一条。 */
+      if ((pl.unplaced || []).length !== w - (pl.objs || []).length) badCount++;
+    });
+  });
+  v184n = '广谱 ' + n + ' 用例：应摆 ' + want + '／接上 ' + got + ' = '
+    + (want ? (got / want * 100).toFixed(1) : 0) + '% · 计数不守恒 ' + badCount + ' 例';
+  if (!want) return true;   /* 这批目标没触发销毁支线，跳过 */
+  return got / want >= 0.90 && badCount === 0;
+})(), () => v184n);
+
+/* ⑪ 报告必须如实说「接上了几座」。⭐ 锁只认**与实际状态一致**，不强制要求出现「接不上」——
+   成功场景（0 未接）本来就不该有那两个字；强求会让「全部接上」被误判成失败（v184 实测踩中）。
+   另有一个反向锁在下一条：接不上时**必须**说出来。 */
+chk('v184 报告如实显示接线明细（已接 N 座 + 逐条列源机器 + 口径不确定要写出来）', (() => {
+  loReset(50); A.LawRun('item_copper_nugget', 10);
+  const P = A.LO.plan;
+  if (!P) return false;
+  const pl = P.sinkPlaced;
+  const nLinked = (pl.objs || []).filter(o => o.from).length;
+  const h = A.RflowAuditHtml(P);
+  /* 「已接线 N 座」里的 N 必须等于实际接上的座数 —— 报告数字与画布对账 */
+  if (h.indexOf('已接线 ' + nLinked + ' 座') < 0) return false;
+  return h.indexOf('扩容反应池') >= 0 && h.indexOf('管道出料口') >= 0
+    && h.indexOf('按序推断') >= 0;   /* 口径不确定必须写出来，不装作确定 */
+})(), (() => {
+  loReset(50); A.LawRun('item_copper_nugget', 10);
+  const P = A.LO.plan || { res: A.Rexplode('item_iron_cmpt', 10, {}) };
+  const pl = (P.sinkPlaced) || { objs: [] };
+  const nLinked = (pl.objs || []).filter(o => o.from).length;
+  const h = A.RflowAuditHtml(P);
+  return '实际接上 ' + nLinked + ' 座 · 缺=' + ['已接线 ' + nLinked + ' 座', '扩容反应池', '管道出料口', '按序推断']
+    .filter(k => h.indexOf(k) < 0).join(',');
+})());
+
+/* ⑪b 反向锁：真的接不上时，报告**必须**点名（不许静默只报「已标出」）——假成功的老毛病 */
+chk('v184 反向锁：有池子没接上时报告必须点名（不许只写「已在画布上标出」）', (() => {
+  loReset(50); A.LawRun('item_bottled_rec_hp_5', 10);
+  const P = A.LO.plan;
+  if (!P || !P.sinkPlaced) return true;
+  const pl = P.sinkPlaced;
+  if (!pl.unplaced.length) return true;      /* 这批全接上了，交给正向锁守 */
+  const h = A.RflowAuditHtml(P);
+  if (h.indexOf('接不上') < 0) return false;
+  if (h.indexOf('等于白摆') < 0) return false;   /* 必须说清后果 */
+  return pl.unplaced.every(u => h.indexOf(u.why.slice(0, 18)) >= 0);   /* 逐条点名 */
+})(), (() => {
+  loReset(50); A.LawRun('item_bottled_rec_hp_5', 10);
+  const pl = (A.LO.plan || {}).sinkPlaced || { objs: [], unplaced: [] };
+  const h = A.RflowAuditHtml(A.LO.plan || { res: A.Rexplode('item_iron_cmpt', 10, {}) });
+  return '未接 ' + pl.unplaced.length + ' · 报告缺=' +
+    ['接不上', '等于白摆'].concat(pl.unplaced.map(u => u.why.slice(0, 18)))
+      .filter(k => h.indexOf(k) < 0).join(',');
+})());
+
+/* ⑫ Lreroll 同步：重排其余也必须重摆 + 重接线（否则重排一次就回到「一堆池子没线」） */
+chk('v184 Lreroll 走 RplaceSinksLinked（重排后销毁线不能丢）', (() => {
+  const i = rawCode.indexOf('function Lreroll');
+  if (i < 0) return false;
+  const seg = rawCode.slice(i, i + 9000);
+  return /RplaceSinksLinked/.test(seg) && /planRole='sinklink'/.test(seg)
+    && !/RplaceSinks\(rerollSink/.test(seg);   /* 老调用必须已换掉 */
+})(), (() => {
+  const i = rawCode.indexOf('function Lreroll');
+  const seg = rawCode.slice(i, i + 9000);
+  return 'Linked=' + /RplaceSinksLinked/.test(seg) + ' 老调用残留=' + /RplaceSinks\(rerollSink/.test(seg);
+})());
+
+/* ⑬ 预检仍走 RplaceSinks（宽松下界）：接不上**不得**升级成拒绝生成的门禁。
+   为什么：1.6% 的边角 case（出料口被封死）若硬拒 → 整条产线生成不出来，
+   比「如实报告 1 座没接上、请手动拉一根」糟糕得多。 */
+chk('v184 预检保留 RplaceSinks（空间门禁与接线门禁分离，不因接不上而拒绝生成）', (() => {
+  const i = rawCode.indexOf('function LawRun');
+  const seg = rawCode.slice(i, i + 20000);
+  /* 预检段（sinkPlaced 落盘之前）必须还在调 RplaceSinks */
+  const preAt = seg.indexOf('preSink=RplaceSinks(');
+  if (preAt < 0) return false;
+  const realAt = seg.indexOf('RplaceSinksLinked(plan, rt, res');
+  return realAt > preAt;   /* 预检在前、落盘在后，两者都在 */
+})());
+
 loReset(50); A.render();
 
 report();

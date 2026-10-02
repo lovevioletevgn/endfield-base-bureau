@@ -4107,6 +4107,209 @@ function RplaceSinks(sinkPlan, size, busyFn, margin){
   });
   return {objs:out, unplaced:unplaced};
 }
+/* ⭐⭐v184（2026-10-02）：销毁支线「摆位 **+ 连线**」 —— 补上池子最要命的那一环。
+   【背景：作者 2026-10-02 截图】扩容反应池一字排在画布左下角边缘，**一根带子都没连**。
+     根因在 `LawRun` 落盘段：`sinkPlaced.objs.forEach(s=>{ ... L.objs.push(obj); })`
+     —— **只落盘本体，从不做走线**（热能池同款，注释原文「只摆本体、不连燃料线」）。
+   🔴 **为什么这是实质缺口而不是设计取舍**：销毁的官方机制是「**扩容反应池堵塞清空**」，
+     而触发条件是 **≥2 条不同配方同时堵塞**（`RW_SINK_PAD_RULE`）。料送不进去就永远不堵，
+     池子等于纯摆件 —— C6「每个物品都有去路」在画布上是假的。
+   【与 RplaceSinks 的分工（两者都保留，各司其职）】
+     · `RplaceSinks`（v155）：**只管摆**（右下角扫空位）。它同时是 C6 **摆位预检的门禁依据**
+       （`LawRun` 在 `Lpush` 之前拿它判「放不放得下」）→ **一行都不改**，既有回归锁全绿。
+     · `RplaceSinksLinked`（本函数）：**摆 + 连**。池子不再丢在画布角落，而是**贴着「产它的机器」**
+       找位，再用 `RwPath` 试连 —— 走不通就换位、换朝向、换口，全试遍才记 unplaced。
+   【料从哪台机器来：一个必须讲清的口径】
+     一台机器可能同时产多种液体（提纯机：壤晶废液 + 清水），而它的**多个同相态出料口按序对应
+     同相态的产出**（实测：提纯机 2 个液态产出 ↔ 2 个管道出料口；反应池 2 个液态产出 ↔ 2 个管道口）。
+     → 首选「该产出在同相态产出里的序号」所对应的那个口（数据无 port↔outcome 显式映射，
+       这是**按序推断**）；那个口被占了才退到同相态的其它口。
+     ⚠️ 报告里会逐条写清「哪台机器的哪个口 → 哪个池子」，玩家可在游戏里核对一眼。
+   【找位策略：收集空位 → 按到起点的曼哈顿距离升序 → 逐个试连】
+     ⭐ 抄 `RplaceStores`（v180）的老教训：**不要**照抄销毁池「固定扫右下角」——
+       离产线太远，中间横着整条产线，走线根本穿不过去（实测连线 0 格）。
+     ⭐ 性能：候选位置只试最近的 `RW_SINK_CAND_MAX` 个；每个候选**先按「池子输入口外侧格
+       到起点的距离」给朝向（rot）排序**，通常第一个 rot 就通（实测三场景分别试 1 / 5 / 1 次命中）。
+       ⚠️ 试连期间要把**池子自己的 footprint 临时塞进 busyB**，否则走线会从「池子将要占的格子」
+         里穿过去，落盘后池子直接压在线上。
+   返回 {objs, links, unplaced}；unplaced 每条都带**为什么不连**（如实上报，不静默丢）。 */
+const RW_SINK_CAND_MAX=8;    /* 每个池子最多试几个候选摆位（性能护栏，见函数头） */
+const RW_SINK_ROTS=[0,90,270,180];   /* 试朝向的优先序（0 最常见：口朝左/朝下） */
+function RplaceSinksLinked(plan, rt, res, size, occObjs, sinkPlan){
+  const out=[], links=[], unplaced=[];
+  if(!sinkPlan||!sinkPlan.sinks||!sinkPlan.sinks.length) return {objs:out, links:links, unplaced:unplaced};
+  const K=(x,y)=>x+','+y;
+  const busyAll={}, busyB={}, axis={};
+  const markA=(x,y,w,d)=>{ for(let j=0;j<d;j++) for(let i=0;i<w;i++) busyAll[K(x+i,y+j)]=1; };
+  const markB=(x,y,w,d)=>{ for(let j=0;j<d;j++) for(let i=0;i<w;i++) busyB[K(x+i,y+j)]=1; };
+  /* ⚠️ 两张占用图，用途不同（与 RplaceStores 同款，2026-10-02 踩过）：
+     busyAll 含带子（找空位用）；busyB 只含建筑（给 RwPath 当硬障碍）。
+     带子绝不能进 busyB —— RwPath 靠 axis 判断能否正交搭桥穿过，
+     把线当硬障碍会让走线在大产线里完全走不通。 */
+  (occObjs||[]).forEach(o=>{
+    if(o.x==null||!o.w||!o.d) return;
+    markA(o.x,o.y,o.w,o.d);
+    if(RW_LINE_ROLES[o.planRole]){
+      const r=(((o.rot||0)%360)+360)%360;
+      axis[K(o.x,o.y)]=(r===0||r===180)?'h':'v';
+    }else markB(o.x,o.y,o.w,o.d);
+  });
+  (plan.objs||[]).forEach(o=>{ markA(o.x,o.y,o.w,o.d); markB(o.x,o.y,o.w,o.d); });
+  ((rt&&rt.belts)||[]).forEach(b=>{ busyAll[K(b.x,b.y)]=1;
+    const r=(((b.rot||0)%360)+360)%360; axis[K(b.x,b.y)]=(r===0||r===180)?'h':'v'; });
+  ((rt&&rt.bldgs)||[]).forEach(b=>{ const bb=byBp(b.id), f=bb?Lfp(bb):[1,1];
+    markA(b.x,b.y,f[0],f[1]); markB(b.x,b.y,f[0],f[1]); });
+  /* ---- 源机器登记表：itemId → [{m, port, outer, isP}]，首选口排在前面 ---- */
+  const srcOf={};
+  (res.machines||[]).forEach(n=>{
+    const r=RbyId(n.recipeId); if(!r||!(n.actualOut>0)) return;
+    (r.outcomes||[]).forEach((o,oi)=>{
+      if(!o.id) return;
+      const isP=RwFluid(o.phase);
+      /* 该产出在「同相态产出」里的序号 → 首选第几个同相态出料口 */
+      let k=0; for(let qi=0;qi<=oi;qi++) if(RwFluid((r.outcomes[qi]||{}).phase)===isP) k++;
+      k--;
+      (plan.objs||[]).forEach(m=>{
+        if(m.node!==n) return;
+        const outs=(m.b.ports||[]).filter(p=>p.kind==='output' && (!!p.isPipe)===isP);
+        if(!outs.length) return;
+        const arr=srcOf[o.id]=srcOf[o.id]||[];
+        const push=p=>{
+          if(!p) return;
+          const q=LportXY(p, m.rot||0, m.w, m.d);
+          const dr=LportDirRot(p, m.rot||0, m.w, m.d);
+          const outer={x:m.x+q.x+(dr==='l'?-1:dr==='r'?1:0), y:m.y+q.z+(dr==='u'?-1:dr==='d'?1:0)};
+          if(outer.x<0||outer.y<0||outer.x>=size||outer.y>=size) return;
+          if(arr.some(e=>e.m===m && e.port.index===p.index)) return;
+          arr.push({m:m, port:p, outer:outer, isP:isP, used:false});
+        };
+        push(outs[k]); outs.forEach(push);
+      });
+    });
+  });
+  /* ---- 逐个池子：找位 + 试连 ---- */
+  const items=[];
+  sinkPlan.sinks.forEach(s=>{ (new Array(s.count)).fill(0).forEach(()=>items.push(s)); });
+  const areaOf=s=>{ const b=byBp(s.buildingId), f=b?Lfp(b):[1,1]; return (f[0]||1)*(f[1]||1); };
+  items.sort((a,b)=>areaOf(b)-areaOf(a));   /* 大件优先，减少碎片 */
+  items.forEach(s=>{
+    const b=byBp(s.buildingId);
+    if(!b){ unplaced.push({sink:s, why:'建筑表缺 '+s.buildingId}); return; }
+    const feeders=srcOf[s.itemId]||[];
+    if(!feeders.length){
+      unplaced.push({sink:s, why:'画布里没有产「'+s.forItem+'」的机器 —— 无处接线'});
+      return;
+    }
+    let done=false, noFeed=false;
+    for(let ci=0; ci<feeders.length && !done; ci++){
+      const fd=feeders[ci];
+      if(fd.used) continue;
+      const ins=(b.ports||[]).filter(p=>p.kind==='input' && (!!p.isPipe)===fd.isP);
+      /* ⚠️ 两类「这台机器用不上」必须分开记账，否则报告会把根因说错：
+         · 口型不匹配（池子没有对应相态的输入口）→ 换个 feeder 也没用，跳过即可；
+         · 出料口四邻全被占（**并排太紧、口朝内被封死**）→ 这才是玩家要动手处理的那一类。 */
+      if(!ins.length) continue;
+      /* 起点四邻全被占 → 这台机器的出料口根本出不来（否则白扫全画布空位）。
+         ⚠️ 还要排掉**边缘**：Rwedge 锁了 x 两边，那两列算「出不来」——
+            判据用同一个边界口径，免得白扫一遍最后 RwPath 全 null。 */
+      const nb=[[0,-1],[0,1],[-1,0],[1,0]];
+      let anyOut=false;
+      for(let k2=0;k2<4;k2++){
+        const nx=fd.outer.x+nb[k2][0], ny=fd.outer.y+nb[k2][1];
+        if(nx<RW_MARGIN||nx>=size-RW_MARGIN||ny<0||ny>=size) continue;
+        if(!busyB[K(nx,ny)]){ anyOut=true; break; }
+      }
+      if(!anyOut){ noFeed=true; continue; }
+      const cands=[];
+      for(let y=RW_MARGIN; y<size-RW_MARGIN; y++)
+        for(let x=RW_MARGIN; x<size-RW_MARGIN; x++){
+          cands.push({x:x, y:y, d:Math.abs(x-fd.m.x)+Math.abs(y-fd.m.y)});
+        }
+      cands.sort((a,c)=>a.d-c.d);
+      const freeAt=(cx,cy,w,d)=>{
+        for(let j=0;j<d;j++) for(let i=0;i<w;i++){
+          const xx=cx+i, yy=cy+j;
+          if(xx<RW_MARGIN||yy<RW_MARGIN||xx>=size-RW_MARGIN||yy>=size-RW_MARGIN) return false;
+          if(busyAll[K(xx,yy)]) return false;
+        }
+        return true;
+      };
+      let pick=null, budget=RW_SINK_CAND_MAX;
+      for(let k2=0; k2<cands.length && budget>0 && !pick; k2++){
+        const cd=cands[k2];
+        /* 朝向按「输入口外侧格离起点多近」排序 —— 通常第一个 rot 就通（实测三场景试 1/5/1 次命中） */
+        const rots=RW_SINK_ROTS.slice().sort((r1,r2)=>{
+          const dmin=rot=>{
+            let dm=Ldims(b,rot), best=Infinity;
+            for(const p of ins){
+              const q=LportXY(p,rot,dm.w,dm.d), dr=LportDirRot(p,rot,dm.w,dm.d);
+              const tx=cd.x+q.x+(dr==='l'?-1:dr==='r'?1:0), ty=cd.y+q.z+(dr==='u'?-1:dr==='d'?1:0);
+              const v=Math.abs(tx-fd.outer.x)+Math.abs(ty-fd.outer.y);
+              if(v<best) best=v;
+            }
+            return best;
+          };
+          return dmin(r1)-dmin(r2);
+        });
+        /* ⚠️ 预算只被「真的要试连」的候选消耗 —— 被占的候选不算，
+           否则「最近 8 格恰好全被产线占满」会误判成接不上（实测踩中：谷地 50×50 池子周边全是机器）。 */
+        let dirty=false;
+        for(let ri=0; ri<rots.length && !pick; ri++){
+          const rot=rots[ri], dm=Ldims(b,rot);
+          if(!freeAt(cd.x,cd.y,dm.w,dm.d)) continue;
+          budget--; dirty=true;
+          markB(cd.x,cd.y,dm.w,dm.d);   /* ⚠️ 池子自己的格子也要挡路，否则走线会穿过去 */
+          for(const p of ins){
+            const q=LportXY(p, rot, dm.w, dm.d);
+            const dr=LportDirRot(p, rot, dm.w, dm.d);
+            const t={x:cd.x+q.x+(dr==='l'?-1:dr==='r'?1:0), y:cd.y+q.z+(dr==='u'?-1:dr==='d'?1:0)};
+            const path=RwPath(fd.outer, t, busyB, size, Rwedge(size), axis);
+            if(path){ pick={cd:cd, rot:rot, dm:dm, path:path}; break; }
+          }
+          for(let j=0;j<dm.d;j++) for(let i=0;i<dm.w;i++) delete busyB[K(cd.x+i,cd.y+j)];
+          if(pick){ for(let j=0;j<dm.d;j++) for(let i=0;i<dm.w;i++) busyB[K(cd.x+i,cd.y+j)]=1; }
+        }
+        if(!dirty) continue;
+      }
+      if(!pick){
+        noFeed=true;
+        continue;
+      }
+      const dm=pick.dm;
+      markA(pick.cd.x,pick.cd.y,dm.w,dm.d); markB(pick.cd.x,pick.cd.y,dm.w,dm.d);
+      out.push({b:b, x:pick.cd.x, y:pick.cd.y, w:dm.w, d:dm.d, rot:pick.rot,
+                sink:s, kind:s.kind, forItem:s.forItem, isPipe:fd.isP,
+                from:fd.m.node.machineName+' '+(fd.isP?'管道':'传送带')+'出料口'+(fd.port.index+1)});
+      for(let i=0;i<pick.path.length;i++){
+        const c=pick.path[i], kk=K(c.x,c.y);
+        if(busyB[kk]) continue;                 /* 建筑格：不落线 */
+        const r=(i>0?LrotFrom([pick.path[i-1].x,pick.path[i-1].y],[c.x,c.y]):0);
+        if(!busyAll[kk]){
+          busyAll[kk]=1;
+          axis[kk]=((r%360)===0||(r%360)===180)?'h':'v';
+          links.push({x:c.x, y:c.y, rot:r, isPipe:fd.isP});
+        }else if(!axis[kk]) axis[kk]=((r%360)===0||(r%360)===180)?'h':'v';
+      }
+      fd.used=true; done=true;
+    }
+    /* ⚠️ 一个池子**只记一条** unplaced —— 不能在 feeder 循环里每台机器记一次
+       （实测踩中：5 台源机器试不下 → 同一个池子被记 5 条，报告里显示「5 座接不上」，
+        实际只摆了 1 个池子。数量对不上会让人以为池子摆了但线没接，误判严重程度）。 */
+    if(!done) unplaced.push({sink:s, why:noFeed
+      ? '产它的机器的管道出料口**四邻全被建筑占住**（同种机器并排太紧、出料口朝内被封死 —— 属布局层限制）'
+        +' → 需手动从该机器拉一条管道到池子，或把产线间距调大（LawRun 报「间 N」调大一档）'
+      : '试遍最近的 '+RW_SINK_CAND_MAX+' 个能放下的空位都接不上（路径被产线截断）'});
+  });
+  return {objs:out, links:links, unplaced:unplaced};
+}
+/* ⭐⭐ 排布器自动走的「线」的 planRole 白名单（v184 抽出）。
+   【为什么必须集中一张表】这些角色在各摆位函数里要做**同一件事**：
+   栅格化时**只进 busyAll + axis，不进 busyB**（busyB 是 RwPath 的硬障碍）。
+   漏掉一个角色 → 那段线被当成建筑 → 后续走线要多绕十几格、甚至直接走不通。
+   v184 实测踩中：'sinklink' 漏在 RplaceFeeders / RplaceBus 两处
+   → 下游取货口走线多绕 13 格、基段多绕 39 格。
+   ⭐ 维护约定：**新增任何走线 planRole，必须同时加进这张表**（有回归锁守着）。 */
+const RW_LINE_ROLES={link:1,storelink:1,merge:1,split:1,feedlink:1,sinklink:1};
 /* ⭐⭐v180（2026-10-02）：产线末端接「协议储存箱」—— 让成品真的能进仓库。
    背景：v166/v167 报告区写过「仓库 → 取货口 → 产线不在画布里」，于是自动生成的产线
      **机器连得漂亮、成品却出不去**。本版只补**出货端**；进货端（仓库取货口 + 存取线）留待下一步。
@@ -4140,8 +4343,11 @@ function RplaceStores(plan, rt, res, size, occObjs){
   (occObjs||[]).forEach(o=>{
     if(o.x==null||!o.w||!o.d) return;
     markA(o.x,o.y,o.w,o.d);
-    /* 只有**建筑**进 busyB；线（link / storelink / merge / split）只进 busyAll + axis */
-    if(o.planRole==='link'||o.planRole==='storelink'||o.planRole==='merge'||o.planRole==='split'){
+    /* 只有**建筑**进 busyB；线只进 busyAll + axis。
+       ⚠️ v184：线角色表抽成共用 `RW_LINE_ROLES` —— 原来三处各写一遍字面量，
+          v184 加的 'sinklink' 就漏了两处（RplaceFeeders / RplaceBus），
+          后果 = 销毁线被当成**建筑硬障碍**，下游取货口/基铺线要多绕 13~39 格。 */
+    if(RW_LINE_ROLES[o.planRole]){
       const r=(((o.rot||0)%360)+360)%360;
       axis[K(o.x,o.y)]=(r===0||r===180)?'h':'v';
     }else markB(o.x,o.y,o.w,o.d);
@@ -4226,7 +4432,7 @@ function RplaceStores(plan, rt, res, size, occObjs){
             const q2=LportXY(sp[pi], 0, sw, sd);
             const dr2=LportDirRot(sp[pi], 0, sw, sd);
             const t={x:cd.x+q2.x+(dr2==='l'?-1:dr2==='r'?1:0), y:cd.y+q2.z+(dr2==='u'?-1:dr2==='d'?1:0)};
-            if(RwPath(s, t, busyB, size, RW_NOBLOCK, axis)) hit={s:s, t:t};
+            if(RwPath(s, t, busyB, size, Rwedge(size), axis)) hit={s:s, t:t};
           }
           if(!hit) ok=false; else trial.push(hit);
         }
@@ -4242,7 +4448,7 @@ function RplaceStores(plan, rt, res, size, occObjs){
       markA(at.x, at.y, sw, sd); markB(at.x, at.y, sw, sd);
       out.push({b:sb, x:at.x, y:at.y, w:sw, d:sd, forItem:tid, rot:0});
       pick.trial.forEach(h=>{
-        const path=RwPath(h.s, h.t, busyB, size, RW_NOBLOCK, axis);
+        const path=RwPath(h.s, h.t, busyB, size, Rwedge(size), axis);
         if(!path) return;
         for(let i=0;i<path.length;i++){
           const c=path[i], kk=K(c.x,c.y);
@@ -4291,10 +4497,9 @@ function RplaceFeeders(plan, rt, res, size, occObjs, regionName){
   (occObjs||[]).forEach(o=>{
     if(o.x==null||!o.w||!o.d) return;
     markA(o.x,o.y,o.w,o.d);
-    if(o.planRole==='link'||o.planRole==='storelink'||o.planRole==='merge'||o.planRole==='split'){
-      const r=(((o.rot||0)%360)+360)%360;
-      axis[K(o.x,o.y)]=(r===0||r===180)?'h':'v';
-    }else if(o.planRole==='feedlink'){
+    /* ⭐v184：'feedlink' 与 'sinklink' 原来各写一个分支、值完全相同（纯冗余），
+       统一走 RW_LINE_ROLES。真正要防的是**漏**新角色 → 落进 else 变硬障碍。 */
+    if(RW_LINE_ROLES[o.planRole]){
       const r=(((o.rot||0)%360)+360)%360;
       axis[K(o.x,o.y)]=(r===0||r===180)?'h':'v';
     }else markB(o.x,o.y,o.w,o.d);   /* feeder（取货口）和其它建筑一律进 busyB */
@@ -4376,7 +4581,7 @@ function RplaceFeeders(plan, rt, res, size, occObjs, regionName){
             :'存取线基段旁没有能贴下取货口的位置（或基段左侧被占）')});
           return;
         }
-        const path=RwPath(placed.s, t, busyB, size, RW_NOBLOCK, axis);
+        const path=RwPath(placed.s, t, busyB, size, Rwedge(size), axis);
         if(!path){
           unplaced.push({forItem:L.itemId, why:'仓库取货口 → 机器 的走线过不去'});
           return;
@@ -4429,7 +4634,7 @@ function RplaceBus(plan, rt, res, size, occObjs, regionName){
   (occObjs||[]).forEach(o=>{
     if(o.x==null||!o.w||!o.d) return;
     markA(o.x,o.y,o.w,o.d);
-    if(o.planRole==='link'||o.planRole==='storelink'||o.planRole==='feedlink'){
+    if(RW_LINE_ROLES[o.planRole]){
       const r=(((o.rot||0)%360)+360)%360;
       axis[K(o.x,o.y)]=(r===0||r===180)?'h':'v';
     }else markB(o.x,o.y,o.w,o.d);
@@ -5201,6 +5406,17 @@ function RwProbe(s, t, busy, size, reserved){
 /* ⚠️ RwPath 的 block 参数**不能传 null** —— 它在搭桥分支里直接调 `block(nx,ny)`（没做 null 检查），
    传 null 会 `TypeError: block is not a function`（2026-09-19 v180 实测）。传这个恒 false 的函数。 */
 function RW_NOBLOCK(){ return false; }
+/* ⭐v184（2026-10-03）：边缘守卫 —— 走线不许贴到 x 两边。
+   【为什么需要】`RwPath` 的 `ok()` 只判 `x>=0 && x<size`，**不判 RW_MARGIN**。
+     于是走线会一路爬到 x=0 —— 那是**画布外的边框格**，游戏里放不下带子。
+     实测（2026-10-03）：v183 的产物里已有 14 格 storelink 停在 x=0（v180 出货线引入），
+       v184 加了销毁线后同一缺陷扩到 feedlink 13 格 + sinklink 7 格。
+   【口径刻意不对称：只锁 x，不锁 y】
+     · y=0 是 v180 **故意预留**的「末端出货通道」—— `RwRoute` 开头把整行标成占用来腾出它，
+       `storelink` / `feedlink` / `sinklink` 都合法地走那一行，锁了会把出货端打死。
+     · y 下界 0 与 x 两边不同：x 方向没有任何预留通道，越界就是错。
+   返回闭包是因为 `block` 回调只收 (x,y)，拿不到 size。 */
+function Rwedge(size){ return function(x,y){ return x<RW_MARGIN || x>=size-RW_MARGIN; }; }
 /* 【一句话】★ 全项目最硬的一段 —— **带转向代价与桥接的手写 Dijkstra 最短路**（非调库）。
    状态 = (x, y, 方向, 是否在桥上)：带方向因为转向有代价（TURN=2），带桥因为踩桥有代价（BRIDGE=4）；
    代价 直行 1 / 转向 +2 / 踩桥 +4，末尾 +0.0001 做稳定排序防同代价抖动。
@@ -5546,21 +5762,27 @@ function LawRun(targetId, perMin){
     obj.planRole='udpipe'; obj.pairId=b.pairId;
     L.objs.push(obj);
   });
-  /* ⭐⭐ C6-b 阶段 2：销毁支线落盘（池子 / 热能池）。
+  /* ⭐⭐ C6-b 阶段 2：销毁支线落盘（池子 / 热能池）**并连线**（v184 改）。
      摆位在**产线 + 走线 + 暗管全部定形之后** → 只捡剩余空位，不挤产线。
-     （放不下已在 Lpush 之前预检拦掉，这里必然能摆下。）
+     ⚠️ 摆位口径 v184 变了：`RplaceSinks`（右下角扫空位）**只用于 Lpush 之前的空间预检**，
+        真正落盘改走 `RplaceSinksLinked` —— 池子必须**贴着产它的机器**放并用 RwPath 接线。
+        原因：作者 2026-10-02 截图里 7 个池子一字排在画布左下角、**一根带子都没连**；
+        而销毁的机制是「扩容反应池堵塞清空」，料送不进去就永远不堵 → 池子等于白摆。
      开销：无必爆项时 sinkPlan.sinks 为空 → 一行都不多跑（老路径零影响）。 */
-  const sinkPlaced=RplaceSinks(sinkPlan, L.size, function(x,y){
-    for(let i=0;i<L.objs.length;i++){ const o=L.objs[i];
-      if(x>=o.x&&x<o.x+o.w&&y>=o.y&&y<o.y+o.d) return true; }
-    for(let i=0;i<rt.belts.length;i++){ const bl=rt.belts[i];
-      if(bl.x===x&&bl.y===y) return true; }
-    return false;
+  const sinkPlaced=RplaceSinksLinked(plan, rt, res, L.size, L.objs, sinkPlan);
+  (sinkPlaced.links||[]).forEach(l=>{
+    const pb=byBp(l.isPipe?'log_pipe_01':'grid_belt_01'); if(!pb) return;
+    const obj=Lmk(pb, l.x, l.y, l.rot);
+    /* ⚠️ 独立 planRole（不是 'link'）—— 销毁线不该混进产线内部的连通率统计，
+       也不受「产线内部走线一律向上」那条约束管（与 storelink 同理）。 */
+    obj.planRole='sinklink';
+    L.objs.push(obj);
   });
   sinkPlaced.objs.forEach(s=>{
-    const obj=Lmk(s.b, s.x, s.y, 0);
+    const obj=Lmk(s.b, s.x, s.y, s.rot||0);
     obj.planRole='sink'; obj.prod=s.kind==='heat'?'热能池（烧电池）':'扩容反应池（销毁）';
     obj.sinkFor=s.forItem;
+    if(s.from) obj.sinkFrom=s.from;
     L.objs.push(obj);
   });
   /* ⭐v169 自动配发电（作者 2026-09-29：「要自动落热能池」）：
@@ -5646,8 +5868,10 @@ function LawRun(targetId, perMin){
   L.plan={res:res, plan:plan, route:rt, rawNeed:rawNeedOf(res), sinkPlan:sinkPlan, sinkPlaced:sinkPlaced,
           genPlan:genPlan, genPlaced:genPlaced, storePlace:storePlace, feedPlace:feedPlace, busPlace:busPlace};
   const limWarns=RwPlaceLimitWarn(res);   /* ⑥-4：建筑专属限摆（天有洪炉 ≤12 台）—— 报警不拦截 */
+  /* ⭐v184：销毁支线通报补「接线」口径 —— 池子摆上不算完，接上线才算有去路 */
   const sinkNote=sinkPlan.sinks.length?('；♻️ 销毁支线：'+sinkPlan.reasons.join('；')
-    +(sinkPlaced.unplaced.length?('；⚠ '+sinkPlaced.unplaced.length+' 个销毁建筑没找到空位（见报告）'):'')):'';
+    +(sinkPlaced.links&&sinkPlaced.links.length?('；已接线 '+sinkPlaced.links.length+' 格'):'')
+    +(sinkPlaced.unplaced.length?('；⚠ '+sinkPlaced.unplaced.length+' 个销毁建筑没接上（见报告）'):'')):'';
   /* ⭐v169 自动配发电通报（摆了几台 / 还差几台）；⭐v172 补燃料供给口径（喂多少 / 几条带） */
   const genNote=(genPlan&&genPlan.need)?('；⚡ 自动配发电：本次摆上热能池 '+genPlaced.objs.length+' 台（需 '+genPlan.need+' 台'
     +(genPlan.fuel?('，按'+genPlan.fuel+' '+genPlan.perF+'/台'):'')+'）'
@@ -5794,20 +6018,24 @@ function Lreroll(){
   L.objs=loose.concat(keep);
   /* ⭐ C6-b 阶段 2：重排会重置 L.objs（best.all 只含机器）→ **销毁支线必须重摆**，
      否则「重排其余」一次就把池子悄悄弄丢了，而报告还写着「已在画布上标出」（假成功）。
-     重排不改变 res（依赖与台数不变）→ sinkPlan 可原样复用，只需在新布局上重新找位。 */
+     重排不改变 res（依赖与台数不变）→ sinkPlan 可原样复用，只需在新布局上重新找位。
+     ⚠️ v184：改走 `RplaceSinksLinked` —— 重排后池子必须**重新贴源机器接线**，
+        用老 `RplaceSinks`（右下角扫空位、不连线）会把 v184 的成果一次重排掉。 */
   const rerollSink=(P.sinkPlan||RflowSinkPlan(P.res));
+  let rerollSinkPlaced=null;
   if(rerollSink.sinks.length){
-    const rs=RplaceSinks(rerollSink, L.size, function(x,y){
-      for(let i=0;i<L.objs.length;i++){ const o=L.objs[i];
-        if(x>=o.x&&x<o.x+o.w&&y>=o.y&&y<o.y+o.d) return true; }
-      for(let i=0;i<best.route.belts.length;i++){ const bl=best.route.belts[i];
-        if(bl.x===x&&bl.y===y) return true; }
-      return false;
+    rerollSinkPlaced=RplaceSinksLinked(best.plan, best.route, P.res, L.size, L.objs, rerollSink);
+    (rerollSinkPlaced.links||[]).forEach(l=>{
+      const pb=byBp(l.isPipe?'log_pipe_01':'grid_belt_01'); if(!pb) return;
+      const obj=Lmk(pb, l.x, l.y, l.rot);
+      obj.planRole='sinklink';
+      L.objs.push(obj);
     });
-    rs.objs.forEach(s=>{
-      const obj=Lmk(s.b, s.x, s.y, 0);
+    rerollSinkPlaced.objs.forEach(s=>{
+      const obj=Lmk(s.b, s.x, s.y, s.rot||0);
       obj.planRole='sink'; obj.prod=s.kind==='heat'?'热能池（烧电池）':'扩容反应池（销毁）';
       obj.sinkFor=s.forItem;
+      if(s.from) obj.sinkFrom=s.from;
       L.objs.push(obj);
     });
   }
@@ -5835,7 +6063,7 @@ function Lreroll(){
   L.sel=locks.map(o=>o.uid);
   /* 评价函数看的是「整套布局」→ 把锁定件 + 新摆件合并后的那份交给它 */
   L.plan={res:P.res, plan:{objs:best.all, bands:best.plan.bands, height:best.plan.height, over:[], order:{}},
-          route:best.route, rawNeed:P.rawNeed, sinkPlan:rerollSink,
+          route:best.route, rawNeed:P.rawNeed, sinkPlan:rerollSink, sinkPlaced:rerollSinkPlaced,
           genPlan:rerollGen, genPlaced:rerollGenPlaced};
   const stR=best.route.stats;
   L.msg='重排完成：锁定 '+locks.length+' 台（位置不动）· 重摆 '+newM+' 台 · 管线 '+best.route.belts.length+' 格 —— '
@@ -8523,8 +8751,31 @@ function RflowAuditHtml(P){
   h+='</span></div>';
   /* ⭐ 阶段 2 新增：销毁支线方案（摆了什么、为什么、⚠️ 池子会无声卡死） */
   if(SP.sinks.length){
+    const SPL=(P&&P.sinkPlaced)||null;
+    const nLinked=SPL?((SPL.objs||[]).filter(o=>o.from).length):0;
+    const nMiss=SPL?((SPL.unplaced||[]).length):0;
     h+='<div class="c-sub" style="margin-top:4px"><span><b style="color:'+okc+'">♻️ 销毁支线已自动补上</b>'
       +'（'+SP.sinks.reduce((s,x)=>s+x.count,0)+' 座建筑，已在画布上标出）</span></div>';
+    /* ⭐v184：池子「摆上」不等于「有去路」—— 销毁机制是「扩容反应池堵塞清空」，
+       料送不进去就永远不堵 → 必须逐条报「从哪台机器接到哪个池子」。 */
+    if(SPL){
+      h+='<div class="c-sub" style="margin-top:2px"><span>'
+        +(nLinked?('<b style="color:'+okc+'">✓ 已接线 '+nLinked+' 座</b>（销毁线走线 '
+            +(SPL.links||[]).length+' 格）：'):'<b style="color:'+bad+'">✗ 一座都没接上</b>')
+        +(nMiss?('　<b style="color:'+bad+'">'+nMiss+' 座接不上</b>（料送不进去就堵不了 → 池子等于白摆）'):'')
+        +'</span></div>';
+      (SPL.objs||[]).filter(o=>o.from).forEach(o=>{
+        h+='<div class="c-sub" style="margin-top:2px"><span class="c-id">· '
+          +esc(o.forItem)+' → '+esc(o.kind==='heat'?'热能池':'扩容反应池')
+          +' @('+o.x+','+o.y+')　接自 '+esc(o.from)+'</span></div>'; });
+      (SPL.unplaced||[]).forEach(u=>{
+        h+='<div class="c-sub" style="margin-top:2px"><span style="color:'+bad+'">· ⚠ '
+          +esc((u.sink&&u.sink.forItem)||'?')+'（'+esc((u.sink&&u.sink.name)||'')+' ×'+(u.sink&&u.sink.count)
+          +'）没接上：'+esc(u.why)+' —— 需手动从产它的机器拉一条'+(u.sink&&u.sink.kind==='heat'?'带子':'管道/带子')+'过去</span></div>'; });
+      if(!nMiss) h+='<div class="c-sub" style="margin-top:2px"><span class="c-id">'
+        +'⚠️ 口与产物的对应是<b>按序推断</b>（数据里没有 port↔outcome 的显式映射）—— '
+        +'每条都写清了「哪台机器的哪个口」，进游戏核对一眼即可。</span></div>';
+    }
     SP.reasons.forEach(r=>{
       h+='<div class="c-sub" style="margin-top:2px"><span>· '+esc(r)+'</span></div>'; });
     h+='<div class="c-sub" style="margin-top:2px"><span class="c-id">垫子配方：'+esc(SP.padRule)
