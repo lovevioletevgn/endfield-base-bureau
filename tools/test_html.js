@@ -5763,6 +5763,97 @@ chk('v184 预检保留 RplaceSinks（空间门禁与接线门禁分离，不因�
   return realAt > preAt;   /* 预检在前、落盘在后，两者都在 */
 })());
 
+/* ═══ v185（2026-10-03）RplaceStores 补 rot 维度 —— 修「进出口都选了最远的」 ═══
+   作者截图（中容武陵电池 @10 @武陵城 80×80）：顶排一条长带绕到箱子**下方**才进去，
+   而机器出料口就在顶排 —— 「这里的连线不是应该这样连更短吗」。根因不是权重、不是候选排序：
+   `RplaceStores` **完全没有枚举朝向**（`LportXY(sp[pi], 0, sw, sd)` 硬编码 rot=0、落盘也 `rot:0`），
+   于是 3 个输入口永远在「z=D-1 边」（箱体**下方**），出线必须绕 180° 回箱底。
+   ⭐这与 v183 修的「线长权重形同虚设」不同类：那次是**打分口径**问题（权重被别的项盖过），
+     这次是**枚举维度缺失** —— 权重再大也没用，因为最优解根本不在搜索空间里。 */
+
+/* ① 主锁：同场景下必须挑到 rot180（出料口正对上方通道），且出线显著短于 rot0 */
+chk('v185 出货线朝向：中容武陵电池@10@80×80 的储存箱必须挑 rot180（不是恒 rot0）',
+  (() => {
+    loReset(80); A.LawRun('item_proc_battery_5', 10);
+    const P = A.LO.plan;
+    if (!P || !P.storePlace) return false;
+    const o = (P.storePlace.objs || [])[0];
+    if (!o) return false;
+    if (o.rot === 0) return false;
+    v185n = '箱@' + o.x + ',' + o.y + ' rot' + o.rot + ' · 出线 ' + (P.storePlace.links || []).length + ' 格';
+    return true;
+  })(), () => v185n || '没拿到 storePlace');
+
+/* ② ⭐ 落盘必须带 rot：枚举出 rot180 却按 rot0 渲染 = 输入口位置与实际连线对不上
+   （v185 第一版就踩中：RplaceStores 内部修好了，LawRun 落盘那侧写着 `Lmk(s.b,s.x,s.y,0)`） */
+chk('v185 落盘保留朝向：L.objs 里的 store 件 rot 必须等于 storePlace 算出的 rot', (() => {
+  loReset(80); A.LawRun('item_proc_battery_5', 10);
+  const P = A.LO.plan;
+  if (!P || !P.storePlace) return false;
+  const want = (P.storePlace.objs || [])[0];
+  const got = A.LO.objs.filter(o => o.planRole === 'store')[0];
+  if (!want || !got) return false;
+  return ((got.rot || 0) % 360) === ((want.rot || 0) % 360);
+})(), () => {
+  loReset(80); A.LawRun('item_proc_battery_5', 10);
+  const P = A.LO.plan || {}; const want = (P.storePlace || {}).objs;
+  const got = A.LO.objs.filter(o => o.planRole === 'store');
+  return '算出 rot=' + ((want || [])[0] || {}).rot + ' ／落盘 rot=' + ((got[0] || {}).rot);
+});
+
+/* ③ 源码门禁：RplaceStores 里不得再有 rot 硬编码 0（这是 v180~v184 一直漏掉的维度）。
+   ⚠️ 判据必须**先剥注释** —— v185 的修复说明里就写着「原来 rot 硬编码 0（`LportXY(sp[pi], 0, ...)`）」，
+   裸正则会把注释里那句历史当成残留代码（v185 实测踩中：锁本身误报）。 */
+chk('v185 源码门禁：RplaceStores 不再硬编码 rot=0（枚举朝向 + 落盘用 s.rot）', (() => {
+  const i = rawCode.indexOf('function RplaceStores');
+  const j = rawCode.indexOf('\nfunction ', i + 10);
+  const seg = rawCode.slice(i, j > 0 ? j : i + 12000);
+  // ⭐ 剥掉块注释与行注释后再判残留
+  // ⚠️ v185 实测踩中：判据里的注释**不能内嵌块注释定界符**（`/*` 出现在注释里会提前闭合整段注释，
+  //    报 `ReferenceError: 与 is not defined` —— 报错信息完全指不到真正的位置，极难定位）
+  const code = seg.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+  if (!/RW_STORE_ROTS/.test(code)) return false;
+  if (/LportXY\(\s*sp\[\w+\]\s*,\s*0\s*,/.test(code)) return false;
+  /* 出货落盘那侧必须用 s.rot */
+  const k = rawCode.indexOf('obj.planRole=\'store\'');
+  const kSeg = rawCode.slice(Math.max(0, k - 400), k + 40);
+  return /Lmk\(s\.b,\s*s\.x,\s*s\.y,\s*s\.rot/.test(kSeg);
+})(), (() => {
+  const i = rawCode.indexOf('function RplaceStores');
+  const j = rawCode.indexOf('\nfunction ', i + 10);
+  const seg = rawCode.slice(i, j > 0 ? j : i + 12000);
+  const code = seg.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+  const k = rawCode.indexOf('obj.planRole=\'store\'');
+  return 'ROTS=' + /RW_STORE_ROTS/.test(code)
+    + ' rot0残留(剥注释后)=' + /LportXY\(\s*sp\[\w+\]\s*,\s*0\s*,/.test(code)
+    + ' 落盘s.rot=' + /Lmk\(s\.b,\s*s\.x,\s*s\.y,\s*s\.rot/.test(rawCode.slice(Math.max(0, k - 400), k + 40));
+})());
+
+/* ④ ⭐ 广谱对照：改前 135 个用例 rot **全**是 0、出线合计 2130 格；
+   改后 120/135 挑到非 0 朝向、出线合计 1236 格（**-42%**），且未接上的用例一个不多。 */
+chk('v185 广谱：出线总长应显著低于 v184 基线 2130 格（实测 1236，-42%）且未接上不增加', (() => {
+  const targets = A.RwTargets();
+  let tot = 0, n = 0, nz = 0, miss = 0, nStore = 0;
+  targets.slice(0, 60).forEach(t => {
+    [[10, 50], [10, 70], [10, 80]].forEach(pr => {
+      loReset(pr[1]);
+      try { A.LawRun(t.id, pr[0]); } catch (e) { return; }
+      const P = A.LO.plan;
+      if (!P || !P.storePlace) return;
+      const sp = P.storePlace;
+      if (!(sp.objs || []).length && !(sp.unplaced || []).length) return;
+      nStore++;
+      tot += (sp.links || []).length;
+      n++;
+      (sp.objs || []).forEach(o => { if ((o.rot || 0) !== 0) nz++; });
+      if ((sp.unplaced || []).length) miss++;
+    });
+  });
+  v185n = nStore + ' 用例：出线 ' + tot + ' 格（v184 基线 2130）· 非0朝向 ' + nz + ' 座 · 未接 ' + miss;
+  /* 门槛按实测留余量：出线必须明显下降、朝向必须真的变了、未接上不得增加 */
+  return nStore > 0 && tot < 2130 * 0.7 && nz > 0 && miss <= 15;
+})(), () => v185n);
+
 loReset(50); A.render();
 
 report();

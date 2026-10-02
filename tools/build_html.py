@@ -4310,6 +4310,16 @@ function RplaceSinksLinked(plan, rt, res, size, occObjs, sinkPlan){
    → 下游取货口走线多绕 13 格、基段多绕 39 格。
    ⭐ 维护约定：**新增任何走线 planRole，必须同时加进这张表**（有回归锁守着）。 */
 const RW_LINE_ROLES={link:1,storelink:1,merge:1,split:1,feedlink:1,sinklink:1};
+/* ⭐v185（RplaceStores 的枚举预算与朝向表）：
+   · `RW_STORE_ROTS` 储存箱要试的朝向 —— **补上 v180 漏掉的维度**。
+     原来 rot 硬编码 0，3 个输入口永远在「z=D-1 边」（箱体下方），而末级机器出料口在上方
+     （`RwRoute` 预留的 y=0 通道）→ 出线必须绕 180° 回箱底。实测同一台箱子 rot180 只要 2~4 格、
+     rot0 要 6~14 格（作者 2026-10-03 截图指出的「进出口都选了最远的」）。
+   · `RW_STORE_CAND_MAX` 候选摆位数上限 —— 4 → 3。加了 rot 维度后单候选的 Dijkstra 次数 ×4，
+     预算不降会让 test_html 明显变慢；而实测**线更短**（原来 4 个候选全用 rot0 只能绕远路，
+     现在第 1 个候选换个朝向就通，总次数反而更少）。 */
+const RW_STORE_ROTS=[180,0,90,270];
+const RW_STORE_CAND_MAX=3;
 /* ⭐⭐v180（2026-10-02）：产线末端接「协议储存箱」—— 让成品真的能进仓库。
    背景：v166/v167 报告区写过「仓库 → 取货口 → 产线不在画布里」，于是自动生成的产线
      **机器连得漂亮、成品却出不去**。本版只补**出货端**；进货端（仓库取货口 + 存取线）留待下一步。
@@ -4420,33 +4430,69 @@ function RplaceStores(plan, rt, res, size, occObjs){
            · 上限 24 → test_html 96 秒（基线 36 秒），仍然太慢；
            · 上限 4  → 回到可接受量级。
          为什么 4 够用：起点能走时，**最近的空位通常第一次就通**；起点走不出去时
-         （见上面的 anyOut 预检之后的残余情况）多试也是白试。 */
-      for(let ci=0; ci<cands.length && ci<4 && !pick; ci++){
+         （见上面的 anyOut 预检之后的残余情况）多试也是白试。
+         ⭐v185：**候选数预算按 rot 摊薄**（见下）—— 加了 rot 维度后，单个候选要试
+           4 朝向 × 口数，Dijkstra 次数 ×4；把上限从 4 降到 3 并让 rot 参与排序，
+           实测总次数反而更少且**线更短**（原来 4 个候选全用 rot0，只能绕远路）。 */
+      for(let ci=0; ci<cands.length && ci<RW_STORE_CAND_MAX && !pick; ci++){
         const cd=cands[ci], trial=[];
         let ok=true;
-        for(let mi=0; mi<grp.length && ok; mi++){
-          const s=starts[mi];
-          if(!s){ ok=false; break; }         /* 该台没有可用出料口 → 整组放弃 */
-          let hit=null;
-          for(let pi=0; pi<sp.length && !hit; pi++){
-            const q2=LportXY(sp[pi], 0, sw, sd);
-            const dr2=LportDirRot(sp[pi], 0, sw, sd);
-            const t={x:cd.x+q2.x+(dr2==='l'?-1:dr2==='r'?1:0), y:cd.y+q2.z+(dr2==='u'?-1:dr2==='d'?1:0)};
-            if(RwPath(s, t, busyB, size, Rwedge(size), axis)) hit={s:s, t:t};
+        /* ⭐⭐v185：储存箱**必须试朝向** —— 原来 rot 硬编码 0（`LportXY(sp[pi], 0, ...)` + 落盘 `rot:0`），
+           于是 3 个输入口永远在「z=D-1 边」（箱体**下方**），而末级机器的出料口在**上方**
+           （`RwRoute` 预留的 y=0 通道）→ 出线必须绕 180° 才能回到箱底。
+           作者 2026-10-03 截图指出「进出口都选了最远的」：探针实测（中容武陵电池 @10 @80×80）
+             · 池@8,1 **rot0**  → 口 B0/B1/B2 终点 (8,4)/(9,4)/(10,4)，走线 6~14 格；
+             · 池@8,1 **rot180** → 口 B0/B1/B2 终点 (10,0)/(9,0)/(8,0)，走线 **2~4 格**。
+           同一台箱子、同一组口，差 3~4 倍 —— 这不是「绕远路」，是**枚举漏了一个维度**。
+           修法：枚举 4 朝向，**按「输入口外侧格离起点多近」排序**（与 RplaceSinksLinked 同款），
+             通常第一个朝向就通。⭐旋转后 footprint 会转（3×3 是正方形，本例不变；
+             若将来换非正方形建筑，必须用 Ldims 取旋转后的 w/d，见下方 dm）。 */
+        let bestRot=0, bestHit=null;
+        /* 朝向按「输入口外侧格离起点多近」升序（通常第一个就通） */
+        const rots=RW_STORE_ROTS.slice().sort((r1,r2)=>{
+          const dmin=rr=>{
+            const dd=Ldims(sb,rr); let best=Infinity;
+            for(const pp of sp){
+              const qq=LportXY(pp,rr,dd.w,dd.d), drr=LportDirRot(pp,rr,dd.w,dd.d);
+              const tx=cd.x+qq.x+(drr==='l'?-1:drr==='r'?1:0), ty=cd.y+qq.z+(drr==='u'?-1:drr==='d'?1:0);
+              starts.forEach(s2=>{ const v=Math.abs(tx-s2.x)+Math.abs(ty-s2.y); if(v<best) best=v; });
+            }
+            return best;
+          };
+          return dmin(r1)-dmin(r2);
+        });
+        for(const rr of rots){
+          const dd=Ldims(sb,rr);
+          if(dd.w!==sw || dd.d!==sd) continue;   /* 旋转后 footprint 变了 → 口型对不上 */
+          let hitAll=true; const got=[];
+          for(let mi=0; mi<grp.length && hitAll; mi++){
+            const s=starts[mi];
+            if(!s){ hitAll=false; break; }        /* 该台没有可用出料口 → 整组放弃 */
+            let hit=null;
+            for(let pi=0; pi<sp.length && !hit; pi++){
+              const q2=LportXY(sp[pi], rr, dd.w, dd.d);
+              const dr2=LportDirRot(sp[pi], rr, dd.w, dd.d);
+              const t={x:cd.x+q2.x+(dr2==='l'?-1:dr2==='r'?1:0), y:cd.y+q2.z+(dr2==='u'?-1:dr2==='d'?1:0)};
+              if(RwPath(s, t, busyB, size, Rwedge(size), axis)) hit={s:s, t:t};
+            }
+            if(!hit) hitAll=false; else got.push(hit);
           }
-          if(!hit) ok=false; else trial.push(hit);
+          if(hitAll && got.length){ bestRot=rr; bestHit=got; break; }
         }
-        if(ok && trial.length) pick={x:cd.x, y:cd.y, trial:trial};
+        if(bestHit){ bestHit.forEach(h=>trial.push(h)); ok=true; }
+        else ok=false;
+        if(ok && trial.length) pick={x:cd.x, y:cd.y, rot:bestRot, trial:trial};
       }
       if(!pick){
         unplaced.push({forItem:tid, why:cands.length
-          ?('试遍 '+cands.length+' 个空位都接不上（末级机器出料口外侧被占 / 路径被截断）')
+          ?('试遍 '+Math.min(cands.length, RW_STORE_CAND_MAX)+' 个能放下的空位 × '
+            +RW_STORE_ROTS.length+' 个朝向都接不上（末级机器出料口外侧被占 / 路径被截断）')
           :'画布上没有 '+sw+'×'+sd+' 的整块空位给协议储存箱'});
         continue;
       }
       const at={x:pick.x, y:pick.y};
       markA(at.x, at.y, sw, sd); markB(at.x, at.y, sw, sd);
-      out.push({b:sb, x:at.x, y:at.y, w:sw, d:sd, forItem:tid, rot:0});
+      out.push({b:sb, x:at.x, y:at.y, w:sw, d:sd, forItem:tid, rot:pick.rot||0});
       pick.trial.forEach(h=>{
         const path=RwPath(h.s, h.t, busyB, size, Rwedge(size), axis);
         if(!path) return;
@@ -5826,7 +5872,9 @@ function LawRun(targetId, perMin){
       L.objs.push(obj);
     });
     (storePlace.objs||[]).forEach(s=>{
-      const obj=Lmk(s.b, s.x, s.y, 0);
+      /* ⚠️ v185：rot 必须落盘（原来写死 0，把 RplaceStores 辛苦试出来的朝向丢掉了 ——
+         枚举了 rot180 却按 rot0 渲染，输入口位置与实际连线对不上）。 */
+      const obj=Lmk(s.b, s.x, s.y, s.rot||0);
       obj.planRole='store';
       obj.prod='协议储存箱（无线回传仓库）';
       obj.storeFor=s.forItem;
