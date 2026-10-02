@@ -5366,13 +5366,24 @@ function LawRun(targetId, perMin){
      还有 2 条手动连的紧凑方案（线 454 格）—— 因为 2×100 的罚分盖不过 300 格线长差。
      这是口径反了：**少一条线是玩家得动手补的功能缺陷，多铺些格子只是效率问题**。
      改权重后"能全连通"压过"线短"，线长只在同等连通度之间做区分。 */
+  /* ⭐⭐v183（作者 2026-10-02：「传送带走线是不是太长了，感觉可以更紧凑啊」）：
+     **线长权重 1 → RW_LINE_WEIGHT（5）**。
+     实测中容武陵电池 @10 @武陵城 的 12 组参数网格：
+       间4：线 1919 / 手动连 2 / 包围盒 5624 → 旧口径分数 −719（**胜出**）
+       间2：线 1598 / 手动连 4 / 包围盒 4484 → 旧口径分数 −1198
+     紧凑方案能**省 321 格线 + 1140 格面积**，却因为「手动连贵 400/条」（多 2 条 ⇒ −800）
+     压过了线长优势（+321）而输掉 —— 也就是线长权重 1 太小、形同虚设。
+     让紧凑方案胜出的条件：`321×W > 400×2` ⇒ `W > 2.49`，取 **5** 留余量。
+     ⚠️ 不等于放弃 v173 版定下的优先级（**能用 > 省料**）—— 手连仍是 400/条，
+        只是「每格线」从几乎不计变成有分量。 */
+  const RW_LINE_WEIGHT=5;
   const pickScore=(pl,rt)=>{
     const loads=rt.loads||[];
     const ok=loads.filter(x=>x.state!=='none'&&x.state!=='jam').length;
     const manual=rt.warns.filter(w=>w.indexOf('手动连')>=0).length;
     const jam=loads.filter(x=>x.state==='jam').length;
     return {ok:ok, manual:manual, jam:jam, belts:rt.belts.length,
-      v:ok*1000 - jam*500 - manual*400 - rt.belts.length};
+      v:ok*1000 - jam*500 - manual*400 - rt.belts.length*RW_LINE_WEIGHT};
   };
   const small=res.totalMachines<=15;
   /* ── [5] 参数网格候选（含 wide 换行档）──────────────── */

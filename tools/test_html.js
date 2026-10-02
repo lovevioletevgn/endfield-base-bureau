@@ -5482,6 +5482,24 @@ chk('v182 武陵取货口贴基段：口是竖着贴（1×3、rot270）且与基
   return JSON.stringify(fd.slice(0, 3).map(f => ({ x: f.x, y: f.y, w: f.w, d: f.d, rot: f.rot })));
 })());
 
+/* ⭐v183（2026-10-02，作者截图「传送带走线是不是太长了，感觉可以更紧凑啊」）：
+   ④ 号待办的收口 —— **线长权重从「形同虚设的 1」提到 5**。
+   实测中容武陵电池 @10 的 16 组参数：紧凑方案（间2）线 1598 / 面积 4484，
+   比旧选中（间4/通道5）省 **321 格线 + 1140 格面积**，但旧口径下因
+   「手动连贵 400/条」（间2 多 2 条 ⇒ −800）盖过线长优势（+321）而输掉。
+   ⚠️ 作者 2026-10-02 拍板选 **C（保持 ×5）**：连通打平时线长说了算；
+      连通差时仍以连通为先（不为了短 300 格去换掉一个连通段）。 */
+chk('v183 源码门禁：pickScore 的线长权重是 RW_LINE_WEIGHT（=5），不再是 1', (() => {
+  const i = rawCode.indexOf('const RW_LINE_WEIGHT');
+  if (i < 0) return false;
+  const seg = rawCode.slice(i, i + 2200);
+  return /RW_LINE_WEIGHT\s*=\s*5/.test(seg)
+    && /belts\.length\s*\*\s*RW_LINE_WEIGHT/.test(seg);
+})(), (() => {
+  const i = rawCode.indexOf('const RW_LINE_WEIGHT');
+  return i < 0 ? '没找到常量' : rawCode.slice(i, i + 120).split('\n')[0];
+})());
+
 loReset(50); A.render();
 
 report();
