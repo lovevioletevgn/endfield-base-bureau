@@ -2182,7 +2182,7 @@ function LlogiAt(idx,x,y,isPipe){
   return !!b&&!!b.isLogi&&((!!isPipe)===(b.lgMedium==='管道'));
 }
 function Linit(){
-  if(!LO) LO={size:50,pick:null,pickRot:0,objs:[],sel:[],undo:[],redo:[],seq:0,msg:'',lastT:0,lastUid:'',showPort:true,showGas:true,showPwr:true,zone:'',viewRot:0,base:'',plan:null,plans:[],tgt:'item_iron_cmpt',rate:10,selfLoop:false,shipIn:false,autoGen:true,tv:0,tvHours:1,mt:[],shipPick:'',shipCands:[],shipDmap:null,shipRawSet:null,
+  if(!LO) LO={size:50,pick:null,pickRot:0,objs:[],sel:[],undo:[],redo:[],seq:0,msg:'',lastT:0,lastUid:'',showPort:true,showGas:true,showPwr:true,zone:'',viewRot:0,base:'',plan:null,plans:[],tgt:'item_iron_cmpt',rate:10,selfLoop:false,shipIn:false,autoGen:true,autoStore:true,tv:0,tvHours:1,mt:[],shipPick:'',shipCands:[],shipDmap:null,shipRawSet:null,
     /* ⭐⑥-3 收货方向（2026-09-22 作者：两地对称互传，现在用谷地→武陵；下拉为未来新地区留口） */
     shipFrom:'domain_1', shipTo:'domain_2', pickShow:false,
       /* ⭐v144 建筑清单默认收起（作者：那 45 项的大块一直摊在画布上方，换基建很麻烦） */
@@ -4080,6 +4080,160 @@ function RplaceSinks(sinkPlan, size, busyFn, margin){
   });
   return {objs:out, unplaced:unplaced};
 }
+/* ⭐⭐v180（2026-10-02）：产线末端接「协议储存箱」—— 让成品真的能进仓库。
+   背景：v166/v167 报告区写过「仓库 → 取货口 → 产线不在画布里」，于是自动生成的产线
+     **机器连得漂亮、成品却出不去**。本版只补**出货端**；进货端（仓库取货口 + 存取线）留待下一步。
+   机制（博士 2026-10-02 实机确认 + 截图）：协议储存箱 3×3 / **5 电** / 顶边 3 个输入口；
+     通电后**无线回传仓库**（截图实证：未通电 → 「传输已暂停」）；6 格 × 50 = 300 缓存、回传很快。
+   ⚠️ 为何不用「存货口 + 存取线」：存货口 3 格 + 存取线基段 32 格 ≈ 35 格，还得连存取线；
+     储存箱只要 9 格且**不依赖存取线** —— 博士原话「用协议储存箱更少占地」。
+   摆位口径与 RplaceSinks 一致（**从右下角往左上扫**）：只捡剩余空位、不挤产线，宁可线长一点。
+   返回 {objs, links, unplaced}；任何一步失败只记 unplaced，**不阻断生成**。 */
+function RplaceStores(plan, rt, res, size, occObjs){
+  const out=[], links=[], unplaced=[];
+  const sb=byBp('storager_1');
+  if(!sb) return {objs:out, links:links, unplaced:unplaced};
+  const fp=Lfp(sb), sw=fp[0]||3, sd=fp[1]||3;
+  /* 末级机器 = 产出「depth 0」物品的那些（配方树里只有根节点没有下游） */
+  const rootIds={};
+  (res.machines||[]).forEach(n=>{ if((n.depth||0)===0 && n.itemId) rootIds[n.itemId]=1; });
+  if(!Object.keys(rootIds).length) return {objs:out, links:links, unplaced:unplaced};
+  const K=(x,y)=>x+','+y;
+  /* ⚠️⚠️ 两张占用图，用途**不同** —— 这是本函数最容易写错的地方（2026-10-02 实测踩中）：
+     · busyAll：**含带子**，用来「找空位」（储存箱不能压在已有线上）；
+     · busyB  ：**只含建筑**，用来给 RwPath 当硬障碍。
+       ⚠️ **带子绝不能进 busyB** —— RwPath 靠 `axis`（已铺线的轴向图）判断「能不能正交搭桥穿过」，
+          若线被当成硬障碍，大产线（实测 1960 格线）下从末端到空区**完全走不通**（连线 0 格）。
+     ⚠️⚠️ **性能**：所有"已就位的东西"必须在这里**一次栅格化**，绝不能在找空位时回调遍历
+         `L.objs` —— 那是 6400 位置 × 9 格 × 2000 个对象 ≈ **1.15 亿次比较**，
+         实测把 test_html 从 36 秒拖到 **283 秒**（改成先栅格化后回到正常量级）。 */
+  const busyAll={}, busyB={}, axis={};
+  const markA=(x,y,w,d)=>{ for(let j=0;j<d;j++) for(let i=0;i<w;i++) busyAll[K(x+i,y+j)]=1; };
+  const markB=(x,y,w,d)=>{ for(let j=0;j<d;j++) for(let i=0;i<w;i++) busyB[K(x+i,y+j)]=1; };
+  (occObjs||[]).forEach(o=>{
+    if(o.x==null||!o.w||!o.d) return;
+    markA(o.x,o.y,o.w,o.d);
+    /* 只有**建筑**进 busyB；线（link / storelink / merge / split）只进 busyAll + axis */
+    if(o.planRole==='link'||o.planRole==='storelink'||o.planRole==='merge'||o.planRole==='split'){
+      const r=(((o.rot||0)%360)+360)%360;
+      axis[K(o.x,o.y)]=(r===0||r===180)?'h':'v';
+    }else markB(o.x,o.y,o.w,o.d);
+  });
+  (plan.objs||[]).forEach(o=>{ markA(o.x,o.y,o.w,o.d); markB(o.x,o.y,o.w,o.d); });
+  ((rt&&rt.belts)||[]).forEach(b=>{
+    busyAll[K(b.x,b.y)]=1;
+    const r=(((b.rot||0)%360)+360)%360;
+    axis[K(b.x,b.y)]=(r===0||r===180)?'h':'v';
+  });
+  ((rt&&rt.bldgs)||[]).forEach(b=>{ const bb=byBp(b.id), f=bb?Lfp(bb):[1,1];
+    markA(b.x,b.y,f[0],f[1]); markB(b.x,b.y,f[0],f[1]); });
+  const freeBlk=(x,y,w,d)=>{
+    for(let j=0;j<d;j++) for(let i=0;i<w;i++){
+      const xx=x+i, yy=y+j;
+      if(xx<RW_MARGIN||yy<RW_MARGIN||xx>=size-RW_MARGIN||yy>=size-RW_MARGIN) return false;
+      if(busyAll[K(xx,yy)]) return false;
+    }
+    return true;
+  };
+  Object.keys(rootIds).forEach(tid=>{
+    const mach=(plan.objs||[]).filter(o=>o.node&&o.node.itemId===tid);
+    if(!mach.length) return;
+    /* 储存箱顶边有 3 个输入口 → 每 3 台末级机器并到同一个箱子，够用又不浪费 */
+    for(let g=0; g*3<mach.length; g++){
+      const grp=mach.slice(g*3, g*3+3);
+      /* ⭐⭐ 找位策略：**收集所有空位 → 按到末级机器的距离升序 → 逐个「试连」直到通**。
+         实测教训（中容武陵电池 @武陵城 80×80，2026-10-02）：
+           · 照抄销毁池「固定扫右下角」→ 离末级机器太远，**穿不过整条产线**（连线 0 格）；
+           · 只取「最近的那一个」→ 末级机器贴着画布顶边、周围全是带子，
+             最近的空位也常常接不上（出料口外侧格被占 / 路径被横线截断）—— 连线仍 0 格。
+         试连只调 RwPath（纯读 busyB/axis，不改任何状态），所以多试几十个位置几乎不花代价。 */
+      const sp=(sb.ports||[]).filter(p=>p.kind==='input' && !p.isPipe);
+      /* ⭐⭐ 先快速判定「末端到底有没有出路」—— 大产线里末级机器常被挤在画布顶行，
+         出料口外侧格四邻全是机器/越界 ⇒ 从起点根本走不出去。
+         这种情况**直接放弃，连候选都不收集** —— 否则白扫 ~6400 个空位再逐个试连，
+         实测把 test_html 从 36 秒拖到 **348 秒**（每候选要跑 机器数×口数 次 Dijkstra）。 */
+      const starts=[];
+      let anyOut=false;
+      grp.forEach(m=>{
+        const mp=(m.b.ports||[]).filter(p=>p.kind==='output' && !p.isPipe);
+        if(!mp.length) return;
+        const q=LportXY(mp[0], m.rot||0, m.w, m.d);
+        const dr=LportDirRot(mp[0], m.rot||0, m.w, m.d);
+        const s={x:m.x+q.x+(dr==='l'?-1:dr==='r'?1:0), y:m.y+q.z+(dr==='u'?-1:dr==='d'?1:0)};
+        starts.push(s);
+        const nb=[[0,-1],[0,1],[-1,0],[1,0]];
+        for(let k=0;k<4;k++){
+          const nx=s.x+nb[k][0], ny=s.y+nb[k][1];
+          if(nx>=0&&ny>=0&&nx<size&&ny<size&&!busyB[K(nx,ny)]){ anyOut=true; break; }
+        }
+      });
+      if(!starts.length || !anyOut){
+        unplaced.push({forItem:tid, why:'末级机器出料口被挤在画布边界/被产线围死，末端走线无路可出'});
+        continue;
+      }
+      const cands=[];
+      for(let y=RW_MARGIN; y<=size-RW_MARGIN-sd; y++)
+        for(let x=RW_MARGIN; x<=size-RW_MARGIN-sw; x++){
+          if(!freeBlk(x,y,sw,sd)) continue;
+          let dmin=Infinity;
+          grp.forEach(m=>{ const d=Math.abs(x-m.x)+Math.abs(y-m.y); if(d<dmin) dmin=d; });
+          cands.push({x:x, y:y, d:dmin});
+        }
+      cands.sort((a,b)=>a.d-b.d);
+      let pick=null;
+      /* ⚠️ **只试最近的 4 个候选** —— 每个候选要跑「末级机器数 × 输入口数」次 RwPath，
+         而 RwPath 是手写 Dijkstra（很贵）。实测：
+           · 不设上限 → 80×80 有 ~6400 个空位 × 6 次 ≈ 3.8 万次 Dijkstra，**测试跑不完**（被 SIGTERM）；
+           · 上限 24 → test_html 96 秒（基线 36 秒），仍然太慢；
+           · 上限 4  → 回到可接受量级。
+         为什么 4 够用：起点能走时，**最近的空位通常第一次就通**；起点走不出去时
+         （见上面的 anyOut 预检之后的残余情况）多试也是白试。 */
+      for(let ci=0; ci<cands.length && ci<4 && !pick; ci++){
+        const cd=cands[ci], trial=[];
+        let ok=true;
+        for(let mi=0; mi<grp.length && ok; mi++){
+          const s=starts[mi];
+          if(!s){ ok=false; break; }         /* 该台没有可用出料口 → 整组放弃 */
+          let hit=null;
+          for(let pi=0; pi<sp.length && !hit; pi++){
+            const q2=LportXY(sp[pi], 0, sw, sd);
+            const dr2=LportDirRot(sp[pi], 0, sw, sd);
+            const t={x:cd.x+q2.x+(dr2==='l'?-1:dr2==='r'?1:0), y:cd.y+q2.z+(dr2==='u'?-1:dr2==='d'?1:0)};
+            if(RwPath(s, t, busyB, size, RW_NOBLOCK, axis)) hit={s:s, t:t};
+          }
+          if(!hit) ok=false; else trial.push(hit);
+        }
+        if(ok && trial.length) pick={x:cd.x, y:cd.y, trial:trial};
+      }
+      if(!pick){
+        unplaced.push({forItem:tid, why:cands.length
+          ?('试遍 '+cands.length+' 个空位都接不上（末级机器出料口外侧被占 / 路径被截断）')
+          :'画布上没有 '+sw+'×'+sd+' 的整块空位给协议储存箱'});
+        continue;
+      }
+      const at={x:pick.x, y:pick.y};
+      markA(at.x, at.y, sw, sd); markB(at.x, at.y, sw, sd);
+      out.push({b:sb, x:at.x, y:at.y, w:sw, d:sd, forItem:tid, rot:0});
+      pick.trial.forEach(h=>{
+        const path=RwPath(h.s, h.t, busyB, size, RW_NOBLOCK, axis);
+        if(!path) return;
+        for(let i=0;i<path.length;i++){
+          const c=path[i], kk=K(c.x,c.y);
+          if(busyB[kk]) continue;              /* 建筑格：不落线，也不重复占 */
+          const rot=(i>0?LrotFrom([path[i-1].x,path[i-1].y],[c.x,c.y]):0);
+          if(!busyAll[kk]){
+            busyAll[kk]=1;
+            axis[kk]=((rot%360)===0||(rot%360)===180)?'h':'v';   /* 新线也要进 axis，后续线段才能搭桥穿过它 */
+            links.push({x:c.x, y:c.y, rot:rot});
+          }else if(!axis[kk]){
+            axis[kk]=((rot%360)===0||(rot%360)===180)?'h':'v';
+          }
+        }
+      });
+    }
+  });
+  return {objs:out, links:links, unplaced:unplaced};
+}
 /* ---------- 连线：格内 L 形走线（先竖后横 或 先横后竖），全程避开已有东西 ----------
    起点 = 上游出料口朝外那格（机器上边再上一格）；终点 = 下游进料口朝外那格（机器下边再下一格）。
    只做 1 个拐弯；两条候选路径都撞就记 warn，不硬塞（v1 不做绕线寻优）。 */
@@ -4119,6 +4273,15 @@ function RwRoute(placed, res, size, corr, extraBusy){
      下方 `==========` 注释即两阶段分界，函数内已有 27 条分节注释，无需再补。 */
   const busy={};      /* 已被占的格：机器 + 已铺的线 + 汇流器 */
   placed.forEach(o=>{ for(let j=0;j<o.d;j++) for(let i=0;i<o.w;i++) busy[(o.x+i)+','+(o.y+j)]=1; });
+  /* ⭐⭐v180：**预留最顶行（y=0）作为「末端出货通道」** —— 走线一律不进这一行。
+     为什么必须留：布局把机器从 y=1 起排，**末级机器（产出目标的那台）常常就在最上一排**，
+     而加工机的**出料口朝上**（外侧格正好落在 y=0）。
+     如果产线内部走线把 y=0 占掉，末级机器的出料口就被横向封死在画布左上角 ——
+     实测（中容武陵电池 @10 @武陵城 80×80）：出料口外侧格 s=(1,0) 的四邻是
+     「上越界 / 下机器 / 左空 / 右空」，而 y=0 行 x=7~9 被走线占死
+     ⇒ **任何终点都到不了**（试遍 1592 个空位全 null），「产线末端接协议储存箱」永远失败。
+     代价：走线少一行可用（y=1..size-1 仍够；实测既有回归锁全绿）。 */
+  for(let _x=0; _x<size; _x++) busy[_x+',0']=1;
   /* ⭐ ⑤-1「重排其余」用：把**不归排布器管的散件**（手摆的机器 / 手拉的线）也算障碍，
      新线不会从它们身上压过去。不传就是老行为，一行都不多跑。 */
   if(extraBusy) extraBusy.forEach(o=>{ for(let j=0;j<o.d;j++) for(let i=0;i<o.w;i++) busy[(o.x+i)+','+(o.y+j)]=1; });
@@ -4795,6 +4958,9 @@ function RwProbe(s, t, busy, size, reserved){
   const mine=k=>k===K(s.x,s.y)||k===K(t.x,t.y);
   return RwPath(s, t, busy, size, (x,y)=>!!reserved[K(x,y)]&&!mine(K(x,y)));
 }
+/* ⚠️ RwPath 的 block 参数**不能传 null** —— 它在搭桥分支里直接调 `block(nx,ny)`（没做 null 检查），
+   传 null 会 `TypeError: block is not a function`（2026-09-19 v180 实测）。传这个恒 false 的函数。 */
+function RW_NOBLOCK(){ return false; }
 /* 【一句话】★ 全项目最硬的一段 —— **带转向代价与桥接的手写 Dijkstra 最短路**（非调库）。
    状态 = (x, y, 方向, 是否在桥上)：带方向因为转向有代价（TURN=2），带桥因为踩桥有代价（BRIDGE=4）；
    代价 直行 1 / 转向 +2 / 踩桥 +4，末尾 +0.0001 做稳定排序防同代价抖动。
@@ -5169,8 +5335,33 @@ function LawRun(targetId, perMin){
       });
     }
   }
+  /* ⭐⭐v180 产线末端接「协议储存箱」—— 让成品真的能进仓库（博士 2026-10-02 确认的机制）。
+     背景：报告区此前写「仓库 → 取货口 → 产线这一段不在画布里」→ 自动生成的产线**成品出不去**。
+     机制与摆位口径见 RplaceStores 头部注释。
+     ⚠️ 本版只做出货端；**进货端（仓库取货口 + 存取线）尚未做**，报告区会照实说明。 */
+  let storePlace=null;
+  if(L.autoStore!==false){
+    /* ⚠️ 第 5 参传的是**对象数组**（L.objs），不是回调 —— 函数内部一次栅格化，
+       避免「每个格子回调遍历 2000 个对象」把测试拖慢 8 倍（见 RplaceStores 头部的性能注释）。 */
+    storePlace=RplaceStores(plan, rt, res, L.size, L.objs);
+    (storePlace.links||[]).forEach(l=>{
+      const pb=byBp('grid_belt_01'); if(!pb) return;
+      const obj=Lmk(pb, l.x, l.y, l.rot);
+      /* ⚠️ 用**独立 planRole**（不是 'link'）—— 储存箱走线的方向不受「产线内部一律向上(270)」
+         那条约束管（它有既有的回归锁守着），也不会混进产线的连通率统计。 */
+      obj.planRole='storelink';
+      L.objs.push(obj);
+    });
+    (storePlace.objs||[]).forEach(s=>{
+      const obj=Lmk(s.b, s.x, s.y, 0);
+      obj.planRole='store';
+      obj.prod='协议储存箱（无线回传仓库）';
+      obj.storeFor=s.forItem;
+      L.objs.push(obj);
+    });
+  }
   L.plan={res:res, plan:plan, route:rt, rawNeed:rawNeedOf(res), sinkPlan:sinkPlan, sinkPlaced:sinkPlaced,
-          genPlan:genPlan, genPlaced:genPlaced};
+          genPlan:genPlan, genPlaced:genPlaced, storePlace:storePlace};
   const limWarns=RwPlaceLimitWarn(res);   /* ⑥-4：建筑专属限摆（天有洪炉 ≤12 台）—— 报警不拦截 */
   const sinkNote=sinkPlan.sinks.length?('；♻️ 销毁支线：'+sinkPlan.reasons.join('；')
     +(sinkPlaced.unplaced.length?('；⚠ '+sinkPlaced.unplaced.length+' 个销毁建筑没找到空位（见报告）'):'')):'';
@@ -5179,11 +5370,17 @@ function LawRun(targetId, perMin){
     +(genPlan.fuel?('，按'+genPlan.fuel+' '+genPlan.perF+'/台'):'')+'）'
     +(genPlan.burnPerMin>0?('；燃料要喂 '+genPlan.burnPerMin+' 个/分（单台 '+genPlan.perBankMin+' 个/分）→ '+genPlan.belts+' 条带'):'')
     +(genPlaced.unplaced.length?('；⚠ 还差 '+genPlaced.unplaced.length+' 台没空位（见报告；可关掉自动配发电自己摆）'):'')):'';
+  /* ⭐v180：末端接储存箱的通报（摆了几个 / 有没有没接上的） */
+  const storeNote=(storePlace&&storePlace.objs.length)
+    ?('；📦 产线末端已接协议储存箱 '+storePlace.objs.length+' 个（无线回传仓库，每个 5 电）'
+      +(storePlace.unplaced.length?('；⚠ '+storePlace.unplaced.length+' 条末端走线没接上（见报告）'):''))
+    :'';
   L.msg='产线已生成：'+(res.targets?res.targets.map(t=>t.name+' '+t.perMin+'/分').join(' ＋ ')
     :res.targetName+' '+perMin+'/分')+' —— 机器 '+res.totalMachines+' 台 + 管线 '+rt.belts.length+' 格'
         +(pickNote?('；'+pickNote):'')
         +sinkNote
         +genNote
+        +storeNote
         +(limWarns.length?('；⚠ '+limWarns.join('；')):'')
         +(rt.warns.length?('；'+rt.warns.length+' 条提醒见下方'):'');
   render();

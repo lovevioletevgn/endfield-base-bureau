@@ -5344,4 +5344,62 @@ chk('v178 渲染：报告区出「本地无野外来源记录」且措辞含「�
     '谷地含提示=' + (A.RxlRowHtml({ id: 'item_filter_core', rate: 10, name: '分离芯' }, '四号谷地', false)
       .indexOf('本地无野外来源记录') >= 0));
 
+/* ═══ ⭐v180（2026-10-02）产线末端接「协议储存箱」（出货端）═══
+   背景：报告区曾写「仓库 → 取货口 → 产线不在画布里」→ 自动生成的产线**成品出不去**。
+   机制（博士实机确认）：储存箱 3×3 / 5 电 / 顶边 3 输入口 / 通电后无线回传仓库。
+   ⚠️ 已知局限（如实锁住，不许悄悄变好也不许静默失败）：**大产线接不上** ——
+     末级机器被挤在画布最顶行、出料口朝上顶边界，走线无路可出（详见 RplaceStores 注释）。 */
+chk('v180 末端储存箱：小链（铁制零件@10）摆上箱子并连通末级机器', (() => {
+  loReset(80); A.LO.size = 80;
+  A.LbaseSet('map02_lv002');
+  A.LO.objs = []; A.LO.tgt = 'item_iron_cmpt'; A.LO.rate = 10; A.LO.mt = [];
+  A.render();
+  A.LawRun('item_iron_cmpt', 10);
+  const store = A.LO.objs.filter(o => o.planRole === 'store');
+  const sl = A.LO.objs.filter(o => o.planRole === 'storelink');
+  const sp = (A.LO.plan && A.LO.plan.storePlace) || {};
+  return store.length >= 1 && sl.length > 0 && (sp.unplaced || []).length === 0;
+})(), (() => {
+  const store = A.LO.objs.filter(o => o.planRole === 'store').length;
+  const sl = A.LO.objs.filter(o => o.planRole === 'storelink').length;
+  return 'store=' + store + ' storelink=' + sl;
+})());
+
+chk('v180 末端储存箱：储存箱用独立 planRole（storelink），不污染产线内部 link 的方向口径', (() => {
+  const links = A.LO.objs.filter(o => o.planRole === 'link');
+  const sl = A.LO.objs.filter(o => o.planRole === 'storelink');
+  /* 产线内部走线仍守「向上(270)或横向(0)」；储存箱连线不被这条管 */
+  return sl.length > 0 && links.every(o => o.rot === 270 || o.rot === 0);
+})(), 'link=' + A.LO.objs.filter(o => o.planRole === 'link').length
+  + ' storelink=' + A.LO.objs.filter(o => o.planRole === 'storelink').length);
+
+chk('v180 末端储存箱：摆位与走线不压任何建筑（零重叠）', (() => {
+  return ovBadCells(A.LO.objs).length === 0;
+})(), 'ovBadCells=' + ovBadCells(A.LO.objs).length);
+
+chk('v180 末端储存箱：**大产线也能连通**（预留最顶行出货通道后，不再卡在 0 格）', (() => {
+  loReset(80); A.LO.size = 80;
+  A.LbaseSet('map02_lv002');
+  A.LO.objs = []; A.LO.tgt = 'item_proc_battery_5'; A.LO.rate = 10; A.LO.mt = [];
+  A.render();
+  A.LawRun('item_proc_battery_5', 10);
+  const store = A.LO.objs.filter(o => o.planRole === 'store');
+  const sl = A.LO.objs.filter(o => o.planRole === 'storelink');
+  const sp = (A.LO.plan && A.LO.plan.storePlace) || {};
+  /* 大链必须**真的连上** —— 这正是预留最顶行的目的（改之前是 0 格 + unplaced） */
+  return store.length > 0 && sl.length > 0 && (sp.unplaced || []).length === 0;
+})(), (() => {
+  const sp = (A.LO.plan && A.LO.plan.storePlace) || {};
+  return 'store=' + A.LO.objs.filter(o => o.planRole === 'store').length
+    + ' storelink=' + A.LO.objs.filter(o => o.planRole === 'storelink').length
+    + ' unplaced=' + (sp.unplaced || []).length;
+})());
+
+chk('v180 预留最顶行：**产线内部走线（link）不得占用 y=0**（该行留给末端出货通道）', (() => {
+  /* ⚠️ 储存箱连线（storelink）**可以**走 y=0 —— 它就是来用这条通道的；只约束产线内部走线。 */
+  return A.LO.objs.filter(o => o.planRole === 'link').every(o => o.y !== 0);
+})(), 'y=0 上的 link 数 =' + A.LO.objs.filter(o => o.planRole === 'link' && o.y === 0).length);
+
+loReset(50); A.render();
+
 report();
