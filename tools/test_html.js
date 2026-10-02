@@ -4448,7 +4448,14 @@ chk('⑥-3 RxlSlots：(边长-1)÷3 → 70→23 / 40→13 / 80→26 / 50→16',
   const a2 = A.RxlAnalyze('item_xiranite_powder', 10, '武陵');
   chk('⑥-3 RxlAnalyze：息壤粉末@谷地 硬否决（没有机器配方）',
       a1.ok === false && a1.blocked[0].indexOf('没有机器配方') >= 0, a1.blocked[0]);
-  chk('⑥-3 RxlAnalyze：息壤粉末@武陵 可行（7 台机器）',
+  /* ⭐v181 定稿：**7 台**。这条链的台数这一轮被三个修复依次推动过，留档以免将来误判：
+     ① 修「不可得原料定价」→ 碳块不再走原木（台数 7→10）
+     ② 调低环惩罚 `RW_COST_CYCLE` 500→20（植物自持链不再被当成死环，碳块成本 503→23）
+     ③ ⭐**修 `cost` 漏乘 `i.count`** ← 决定性的一条：
+        「稳定碳块×2」原本被当成 ×1 算，于是**非环境版**（`..._1` 用稳定碳块×2）显得便宜；
+        乘上数量后 `_1=65` vs `_2=46`，**环境版胜出** ——
+        也就是作者要的「用气体散布机更省」：**10 台 / 249 格 → 7 台 / 149 格**。 */
+  chk('⑥-3 RxlAnalyze：息壤粉末@武陵 可行（7 台 —— 环境版省料配方胜出）',
       a2.ok === true && a2.totalMachines === 7, 'machines=' + a2.totalMachines);
 })();
 
@@ -4649,10 +4656,16 @@ chkHeavy('⑥-4+v99 端到端（重）：膨地啪@30（12 炉 = 游戏上限满
       re['gas_reactor_gas_copper_enr2_1'] === 3 &&
       re['liquid_purifier_gas_copper_enr_2'] === 1;
   })(), JSON.stringify(A.DB.recipeEnv));
+  /* ⭐v181 定稿：测试链**保持息壤粉链**（原样）。
+     中间曾因「碳块定价」连带把环境版挤成非环境版而临时换成气态赫铜；
+     但 `cost` 漏乘 `i.count` 修好后，天有洪炉回到了**环境版** `xiranite_oven_xiranite_powder_2`
+     （碳块×1 而非稳定碳块×2）→ 息壤粉链重新命中环境配方，本段恢复渲染。
+     ⚠️ 顺带加 `A.tab='layout'`：报告只在这个 tab 下渲染，探针漏了它曾误判「环境段没了」。 */
   loReset(50); A.LO.size = 50;
+  A.tab = 'layout';
   A.LawRun('item_xiranite_powder', 10);
   A.render();
-  chk('💨v104 报告：息壤粉链（洪炉气液模式）→ 报告点名「环境依赖」+ 稳定环境 + 通惰气', (() => {
+  chk('💨v104 报告：息壤粉链（洪炉气液模式）→ 报告点名「环境依赖」+ 稳定环境 + 通惰气 + 天有洪炉', (() => {
     const h = outEl.innerHTML || '';
     return h.indexOf('环境依赖') >= 0 && h.indexOf('稳定环境') >= 0 &&
       h.indexOf('通惰气') >= 0 && h.indexOf('天有洪炉') >= 0;
@@ -5399,6 +5412,75 @@ chk('v180 预留最顶行：**产线内部走线（link）不得占用 y=0**（�
   /* ⚠️ 储存箱连线（storelink）**可以**走 y=0 —— 它就是来用这条通道的；只约束产线内部走线。 */
   return A.LO.objs.filter(o => o.planRole === 'link').every(o => o.y !== 0);
 })(), 'y=0 上的 link 数 =' + A.LO.objs.filter(o => o.planRole === 'link' && o.y === 0).length);
+
+/* ═══ ⭐v181（2026-10-02）配方「不可得原料」定价 + 进货端 ═══
+   作者实机：「碳块原料不用原木，用别的，原木没法开采」。
+   根因：RwCost 对「没有配方的原料」返回 0（最便宜）→ **采不到的反而比能自己种的更便宜**，
+   实测碳块 6 条配方里选了最差的「原木×1 → 碳块×1」。 */
+
+chk('v181 不可得清单：原木被标为不可得（只有通用采集、无关卡/种植来源）', (() => {
+  const u = (((A.DB.mining_power || {}).gatherDomains || {}).unobtainable) || [];
+  return u.indexOf('item_plant_tundra_wood') >= 0;
+})(), JSON.stringify((((A.DB.mining_power || {}).gatherDomains || {}).unobtainable) || []));
+
+chk('v181 不可得原料定价：RwUnobtainable 判定 + 代价高于「绕回」惩罚', (() => {
+  return A.RwUnobtainable('item_plant_tundra_wood') === true
+    && A.RwUnobtainable('item_plant_moss_3') === false
+    && A.RW_COST_UNOBTAINABLE > A.RW_COST_CYCLE;
+})(), 'UNOBTAINABLE=' + A.RW_COST_UNOBTAINABLE + ' CYCLE=' + A.RW_COST_CYCLE);
+
+chk('v181 碳块不再走原木：改用芽针/锦草（产出 2 个，且原料可得）', (() => {
+  const res = A.Rexplode('item_carbon_mtl', 10);
+  const n = (res.machines || []).filter(m => m.itemId === 'item_carbon_mtl')[0];
+  if (!n) return false;
+  const bad = n.recipeId === 'furnance_carbon_material_4';   /* 原木那条 */
+  const ing = ((A.RbyId(n.recipeId) || {}).ingredients || []).map(i => i.id);
+  return !bad && ing.indexOf('item_plant_tundra_wood') < 0;
+})(), (() => {
+  const res = A.Rexplode('item_carbon_mtl', 10);
+  const n = (res.machines || []).filter(m => m.itemId === 'item_carbon_mtl')[0];
+  return n ? ('recipe=' + n.recipeId + ' machines=' + n.machines) : 'none';
+})());
+
+chk('v181 进货端：谷地（预设存取线）摆出仓库取货口 + 连线到产线', (() => {
+  loReset(70); A.LO.size = 70;
+  A.LbaseSet('map01_lv001');
+  A.LO.objs = []; A.LO.tgt = 'item_filter_core'; A.LO.rate = 10; A.LO.mt = [];
+  A.render();
+  A.LawRun('item_filter_core', 10);
+  const fd = A.LO.objs.filter(o => o.planRole === 'feeder');
+  const fl = A.LO.objs.filter(o => o.planRole === 'feedlink');
+  return fd.length > 0 && fl.length > 0 && fd.every(o => o.y === 0 && o.rot === 180);
+})(), (() => 'feeder=' + A.LO.objs.filter(o => o.planRole === 'feeder').length
+  + ' feedlink=' + A.LO.objs.filter(o => o.planRole === 'feedlink').length)());
+
+chk('v182 进货端：**武陵也摆上存取线本体**（源桩 + 基段）+ 取货口 + 连线', (() => {
+  loReset(80); A.LO.size = 80;
+  A.LbaseSet('map02_lv002');
+  A.LO.objs = []; A.LO.tgt = 'item_filter_core'; A.LO.rate = 10; A.LO.mt = [];
+  A.render();
+  A.LawRun('item_filter_core', 10);
+  const bus = A.LO.objs.filter(o => o.planRole === 'bus');
+  const fd = A.LO.objs.filter(o => o.planRole === 'feeder');
+  const fl = A.LO.objs.filter(o => o.planRole === 'feedlink');
+  return bus.length >= 2 && bus.some(o => (o.prod || '').indexOf('源桩') >= 0)
+    && fd.length > 0 && fl.length > 0;
+})(), (() => {
+  const bus = A.LO.objs.filter(o => o.planRole === 'bus');
+  return 'bus=' + bus.length + ' feeder=' + A.LO.objs.filter(o => o.planRole === 'feeder').length
+    + ' feedlink=' + A.LO.objs.filter(o => o.planRole === 'feedlink').length;
+})());
+
+chk('v182 武陵取货口贴基段：口是竖着贴（1×3、rot270）且与基段相邻不重叠', (() => {
+  const bus = A.LO.objs.filter(o => o.planRole === 'bus' && o.d > o.w);
+  const fd = A.LO.objs.filter(o => o.planRole === 'feeder');
+  if (!bus.length || !fd.length) return false;
+  return fd.every(f => f.d === 3 && f.rot === 270
+    && bus.some(s => f.x + 1 === s.x && f.y < s.y + s.d && f.y + f.d > s.y));
+})(), (() => {
+  const fd = A.LO.objs.filter(o => o.planRole === 'feeder');
+  return JSON.stringify(fd.slice(0, 3).map(f => ({ x: f.x, y: f.y, w: f.w, d: f.d, rot: f.rot })));
+})());
 
 loReset(50); A.render();
 

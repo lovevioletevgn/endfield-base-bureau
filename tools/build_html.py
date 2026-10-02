@@ -2182,7 +2182,7 @@ function LlogiAt(idx,x,y,isPipe){
   return !!b&&!!b.isLogi&&((!!isPipe)===(b.lgMedium==='管道'));
 }
 function Linit(){
-  if(!LO) LO={size:50,pick:null,pickRot:0,objs:[],sel:[],undo:[],redo:[],seq:0,msg:'',lastT:0,lastUid:'',showPort:true,showGas:true,showPwr:true,zone:'',viewRot:0,base:'',plan:null,plans:[],tgt:'item_iron_cmpt',rate:10,selfLoop:false,shipIn:false,autoGen:true,autoStore:true,tv:0,tvHours:1,mt:[],shipPick:'',shipCands:[],shipDmap:null,shipRawSet:null,
+  if(!LO) LO={size:50,pick:null,pickRot:0,objs:[],sel:[],undo:[],redo:[],seq:0,msg:'',lastT:0,lastUid:'',showPort:true,showGas:true,showPwr:true,zone:'',viewRot:0,base:'',plan:null,plans:[],tgt:'item_iron_cmpt',rate:10,selfLoop:false,shipIn:false,autoGen:true,autoStore:true,autoFeed:true,autoBus:true,tv:0,tvHours:1,mt:[],shipPick:'',shipCands:[],shipDmap:null,shipRawSet:null,
     /* ⭐⑥-3 收货方向（2026-09-22 作者：两地对称互传，现在用谷地→武陵；下拉为未来新地区留口） */
     shipFrom:'domain_1', shipTo:'domain_2', pickShow:false,
       /* ⭐v144 建筑清单默认收起（作者：那 45 项的大块一直摊在画布上方，换基建很麻烦） */
@@ -3484,10 +3484,32 @@ function RwPlaceLimitWarn(res){
 /* 【一句话】递归估「做这件料要绕多远」——给 Rexplode 的 pick() 排序，选子树代价最低的配方。
    —— 0 = 已经是原料；越大越难得；绕回路径给大惩罚（RW_COST_CYCLE）。
    —— 这一条是 06:0x 那版翻车的直接原因：只看"这一步有没有回头"会选到高产出但绕圈的配方。 */
-const RW_COST_CYCLE=500, RW_COST_CARRIER=2, RW_COST_DEPTH=5, RW_COST_BUDGET=4000;
+/* 【一句话】递归估「做这件料要绕多远」——给 Rexplode 的 pick() 排序，选子树代价最低的配方。
+   —— 0 = 已经是原料；越大越难得；绕回路径给惩罚（RW_COST_CYCLE）。
+   ⭐v181 调参（作者 2026-10-02「再调，用气体散布机不是更省吗」）：
+     环惩罚 500 → **20**。原值把「植物自持链」（芽针 ⇄ 芽针种子 这类正规的种植闭环）
+     当成了「绕不出去的死环」重重惩罚 —— 实测 `RwCost('item_carbon_mtl')` 因此虚高到 **503**
+     （= 500 环惩罚 + 3），而「碳块」的真实代价只是「1 份芽针/锦草」。
+     这个虚高又反过来把**环境版的息壤配方**（碳块×1）挤掉，换成「非环境版」（稳定碳块×2）——
+     正好与作者要的相反：**环境版才是省料版**（同产出用更少的料）。
+     现取值仍**高于**普通原料（1），保证「能自持的环」比「真原料」略贵，但远低于「拿不到」（40）。 */
+const RW_COST_CYCLE=20, RW_COST_CARRIER=2, RW_COST_DEPTH=5, RW_COST_BUDGET=4000;
+/* ⭐v181（2026-10-02，作者实机：「原木没法开采」）：**拿不到的原料**给一个比「绕回」还高的代价。
+   为什么必须给：RwCost 对「没有配方的原料」返回 **0**（最便宜）——
+   于是「采不到的纯原料」反而比「能自己种的东西」（要递归算种植机 + 种子子树）**更便宜**，配方直接选反。
+   实测踩中：碳块有 6 条配方，工具选了「原木×1 → 碳块×1」（原料拿不到、产出还最低），
+   而「芽针×1 → 碳块×2」「锦草×1 → 碳块×2」这两条更优的一条没选中。
+   取值比 RW_COST_CYCLE(500) 略高：**「拿不到」比「要启动料但能自持」更糟**。
+   数据来自 `mining_power.gatherDomains.unobtainable`（构建期自动生成，全世界目前只有原木一个）。 */
+const RW_COST_UNOBTAINABLE=40;
+function RwUnobtainable(iid){
+  const u=(((DB.mining_power||{}).gatherDomains||{}).unobtainable)||[];
+  return u.indexOf(iid)>=0;
+}
 function RwCost(iid, path, depth, budget){
   budget=budget||{n:0};
   if(budget.n++>RW_COST_BUDGET) return 50;
+  if(RwUnobtainable(iid)) return RW_COST_UNOBTAINABLE;
   if(path.indexOf(iid)>=0) return RW_COST_CYCLE;
   if(depth>=RW_COST_DEPTH) return 8;
   const cands=(RwMade()[iid]||[]).filter(r=>!RwIsSplit(r,iid));
@@ -3573,10 +3595,15 @@ function Rexplode(targetId, perMin, opt){
       if(!cand.length){ cand=all.slice(); }        /* ③ 最后才退回载体/拆分路线 */
     }
     /* 比子树代价（能不能便宜地做到原料），再比单台产出（台数最少） */
+    /* ⚠️⚠️ v181 修：原料成本**必须乘 `i.count`**！原来写成 `s + RwCost(...)`，
+       「稳定碳块 ×2」被当成 ×1 算 —— 实测这个漏乘让天有洪炉两条息壤配方的成本算成
+       `_1(非环境版)=44` vs `_2(环境版)=46`，**非环境版因此胜出**；
+       把数量算进去后是 `_1=65` vs `_2=46`，**环境版（省料版）正常胜出** ——
+       正是作者 2026-10-02 要的「用气体散布机不是更省吗」。 */
     const cost=r=>{
       const carriers=RwCarrierIds(r), b={n:0};
       return (r.ingredients||[]).reduce((s,i)=>s+((carriers.indexOf(i.id)>=0)
-        ? RW_COST_CARRIER : RwCost(i.id, path.concat([iid]), 1, b)), 1);
+        ? RW_COST_CARRIER*(i.count||1) : RwCost(i.id, path.concat([iid]), 1, b)*(i.count||1)), 1);
     };
     /* ⭐v136 B（对标调研：同物品多配方按「单位原料成本 + 电力」比，局部改进不引入 LP）：
        ①**单位**原料成本 = 每轮原料成本 ÷ 本轮产出该物品的数量（产出 2 个的，单个成本折半）
@@ -4232,6 +4259,219 @@ function RplaceStores(plan, rt, res, size, occObjs){
       });
     }
   });
+  return {objs:out, links:links, unplaced:unplaced};
+}
+/* ⭐⭐v181（2026-10-02）：产线**进货端** —— 把原料从「地区仓库」送进产线。
+   背景：v180 补了出货端（成品 → 储存箱 → 仓库），但**进货这一环还缺**：
+     产线要用的原料（矿 / 液气 / 原木…）在游戏里必须经「仓库取货口」从仓库取出，
+     而自动摆放此前**一个口都没摆**（报告区还写着「仓库 → 取货口 → 产线不在画布里」）。
+   机制（数据 + 博士确认）：
+     · **原料叶** = `res.nodes` 里 `raw===true` 且**没有 recipeId** 的节点（配方树的叶子）；
+     · 每个叶子都得「从仓库取」→ 只能用**仓库取货口** `unloader_1`（3×1，**只能贴靠存取线**）；
+     · ⚠️ **一个取货口只有 1 个出料口、只能接一条带子**（博士原话）→
+       「N 台机器吃同一种原料」就摆 **N 个口**（第一版不做分流器，简单可靠、不静默丢料）。
+   两地机制不同（`build_html.js` 的 LpresetBand / LO_PRESET_BUS_REGIONS）：
+     · **四号谷地**：存取线由基地升级**预设自动铺在基地外缘**（画布外、不占格）
+       → 取货口直接贴**画布最顶行 y=0**（v180 已把该行预留给末端/进货通道，正好衔接）；
+     · **武陵**：存取线要自己摆（源桩 4×4 + 基段 4×8）→ **本版不做**，如实记 unplaced。
+   返回 {objs, links, unplaced}；任何一步失败只记录、**不阻断生成**。 */
+function RplaceFeeders(plan, rt, res, size, occObjs, regionName){
+  const out=[], links=[], unplaced=[];
+  const fb=byBp('unloader_1');
+  if(!fb) return {objs:out, links:links, unplaced:unplaced};
+  const fp=Lfp(fb), fw=fp[0]||3, fd=fp[1]||1;
+  /* 原料叶：raw 且无 recipeId（有 recipeId 的是基地内机器产的，不用进货） */
+  const leaves=[];
+  (res.nodes||[]).forEach(n=>{ if(n.raw && !n.recipeId && n.itemId) leaves.push(n); });
+  if(!leaves.length) return {objs:out, links:links, unplaced:unplaced};
+  const K=(x,y)=>x+','+y;
+  const busyAll={}, busyB={}, axis={};
+  const markA=(x,y,w,d)=>{ for(let j=0;j<d;j++) for(let i=0;i<w;i++) busyAll[K(x+i,y+j)]=1; };
+  const markB=(x,y,w,d)=>{ for(let j=0;j<d;j++) for(let i=0;i<w;i++) busyB[K(x+i,y+j)]=1; };
+  (occObjs||[]).forEach(o=>{
+    if(o.x==null||!o.w||!o.d) return;
+    markA(o.x,o.y,o.w,o.d);
+    if(o.planRole==='link'||o.planRole==='storelink'||o.planRole==='merge'||o.planRole==='split'){
+      const r=(((o.rot||0)%360)+360)%360;
+      axis[K(o.x,o.y)]=(r===0||r===180)?'h':'v';
+    }else if(o.planRole==='feedlink'){
+      const r=(((o.rot||0)%360)+360)%360;
+      axis[K(o.x,o.y)]=(r===0||r===180)?'h':'v';
+    }else markB(o.x,o.y,o.w,o.d);   /* feeder（取货口）和其它建筑一律进 busyB */
+  });
+  (plan.objs||[]).forEach(o=>{ markA(o.x,o.y,o.w,o.d); markB(o.x,o.y,o.w,o.d); });
+  ((rt&&rt.belts)||[]).forEach(b=>{
+    busyAll[K(b.x,b.y)]=1;
+    const r=(((b.rot||0)%360)+360)%360;
+    axis[K(b.x,b.y)]=(r===0||r===180)?'h':'v';
+  });
+  ((rt&&rt.bldgs)||[]).forEach(b=>{ const bb=byBp(b.id), f=bb?Lfp(bb):[1,1];
+    markA(b.x,b.y,f[0],f[1]); markB(b.x,b.y,f[0],f[1]); });
+  /* 谷地才做（武陵要铺存取线，本版不做） */
+  const preset=(LO_PRESET_BUS_REGIONS||[]).indexOf(regionName)>=0;
+  const fbPorts=(fb.ports||[]).filter(p=>p.kind==='output' && !p.isPipe);
+  const byNode={};
+  (plan.objs||[]).forEach(o=>{ (byNode[o.node.itemId]=byNode[o.node.itemId]||[]).push(o); });
+  leaves.forEach(L=>{
+    /* 谁在吃这种原料：在 res.machines 的 children 里找同 itemId 的叶 */
+    const eaters=[];
+    (res.machines||[]).forEach(m=>{
+      (m.children||[]).forEach(c=>{ if(c.itemId===L.itemId) eaters.push(m.itemId); });
+    });
+    if(!eaters.length) return;
+    /* ⭐v182：武陵不再跳过 —— 存取线本体由 RplaceBus 先铺好（源桩+基段沿右侧），
+       这里把取货口贴到**基段的左侧长边**上。谷地仍是「预设线在基地外缘 → 口贴顶行 y=0」。 */
+    /* ⚠️ 一个取货口只接一条带子 → 每个「消费机器」各摆一个口 */
+    let done=0;
+    eaters.forEach(pid=>{
+      const machs=(byNode[pid]||[]);
+      machs.forEach(m=>{
+        const inp=(m.b.ports||[]).filter(p=>p.kind==='input' && !p.isPipe);
+        if(!inp.length) return;
+        const qi=LportXY(inp[0], m.rot||0, m.w, m.d);
+        const di=LportDirRot(inp[0], m.rot||0, m.w, m.d);
+        const t={x:m.x+qi.x+(di==='l'?-1:di==='r'?1:0), y:m.y+qi.z+(di==='u'?-1:di==='d'?1:0)};
+        /* 取货口贴**最顶行** y=0、**旋转 180°** —— 原文的 output 口在建筑内 (1,0) 朝上，
+           转 180° 后朝向变 'd'（朝下）→ **出料口外侧格 = (bx+1, by+1) = (x+1, 1)**，
+           正好落进画布、且 y=0 那条横向通道就在脚边。
+           ⚠️ 性能：**先扫位置、后试连**，每个候选位置最多 1 次 RwPath（不是每个 x 都试）——
+              上一版写成「每个 x 都试连」，会重演 3.8 万次 Dijkstra 的老坑。 */
+        /* 找口的位置 —— 两地区摆法不同：
+           · **谷地**：预设线在基地外缘 → 口贴**最顶行 y=0**、`rot180`（出料口朝下，外侧格 = (x+1,1)）
+           · **武陵**：线是刚铺好的基段（4 宽 × 8 深，竖向）→ 口贴其**左侧长边**、
+             `rot270`（出料口朝左，外侧格 = (x-1, y+1)），口本身旋转成 **1 宽 × 3 深** */
+        let placed=null;
+        if(preset){
+          for(let x=RW_MARGIN; x<=size-RW_MARGIN-fw; x++){
+            let free=true;
+            for(let i=0;i<fw;i++){ if(busyAll[K(x+i,0)]){ free=false; break; } }
+            if(!free) continue;
+            const s={x:x+1, y:1};
+            if(busyB[K(s.x,s.y)]||busyAll[K(s.x,s.y)]) continue;
+            if(x+1 < RW_MARGIN || x+1 >= size) continue;
+            placed={x:x, y:0, w:fw, d:fd, rot:180, s:s};
+            break;
+          }
+        }else{
+          const segs=(occObjs||[]).filter(o=>o.planRole==='bus' && o.d>o.w);   /* 竖向基段 */
+          for(let si=0; si<segs.length && !placed; si++){
+            const seg=segs[si];
+            const cx=seg.x-1;                        /* 口占 x=cx 这一列（1 宽 × 3 深） */
+            if(cx<RW_MARGIN) continue;
+            for(let cy=seg.y; cy+3<=seg.y+seg.d; cy++){
+              let free=true;
+              for(let j=0;j<3;j++) if(busyAll[K(cx,cy+j)]){ free=false; break; }
+              if(!free) continue;
+              const s={x:cx-1, y:cy+1};              /* rot270 → 出料口朝左，外侧格再往左一格 */
+              if(s.x<RW_MARGIN) continue;
+              if(busyB[K(s.x,s.y)]||busyAll[K(s.x,s.y)]) continue;
+              placed={x:cx, y:cy, w:1, d:3, rot:270, s:s};
+              break;
+            }
+          }
+        }
+        if(!placed){
+          unplaced.push({forItem:L.itemId, why:(preset
+            ?'画布最顶行没有能放下仓库取货口的连续空位'
+            :'存取线基段旁没有能贴下取货口的位置（或基段左侧被占）')});
+          return;
+        }
+        const path=RwPath(placed.s, t, busyB, size, RW_NOBLOCK, axis);
+        if(!path){
+          unplaced.push({forItem:L.itemId, why:'仓库取货口 → 机器 的走线过不去'});
+          return;
+        }
+        for(let i=0;i<placed.w;i++) for(let j=0;j<placed.d;j++){
+          markA(placed.x+i, placed.y+j, 1, 1); markB(placed.x+i, placed.y+j, 1, 1); }
+        out.push({b:fb, x:placed.x, y:placed.y, w:placed.w, d:placed.d, forItem:L.itemId, rot:placed.rot});
+        for(let i=0;i<path.length;i++){
+          const c=path[i], kk=K(c.x,c.y);
+          if(busyB[kk]) continue;
+          const rot=(i>0?LrotFrom([path[i-1].x,path[i-1].y],[c.x,c.y]):0);
+          if(!busyAll[kk]){
+            busyAll[kk]=1;
+            axis[kk]=((rot%360)===0||(rot%360)===180)?'h':'v';
+            links.push({x:c.x, y:c.y, rot:rot});
+          }else if(!axis[kk]){
+            axis[kk]=((rot%360)===0||(rot%360)===180)?'h':'v';
+          }
+        }
+        done++;
+      });
+    });
+  });
+  return {objs:out, links:links, unplaced:unplaced};
+}
+/* ⭐⭐v182（2026-10-02）：**武陵的存取线本体** —— 源桩 + 基段（谷地是预设的，不需要）。
+   作者 2026-10-02：「我做中容武陵电池画布上还是没有存取线啊」——v181 只做了取货口，
+   而武陵的线要**自己摆**，所以画布上是空的。
+   数据（`blueprint.json`）：源桩 `log_hongs_bus_source` **4×4**、基段 `log_hongs_bus` **4×8**（都是武陵限定）；
+     上限见 `DB.bases.zones[].busCap`：**源桩 2 / 基段 武陵城 25、副基地 12**。
+   摆法（数据核实过的自由度）：源桩是**起始点、可自由放置**，基段「需与源桩或其他生效基段相连」，
+   两者都能**两侧贴口**（博士 2026-10-02：「存取线两边都能放进出货口…要根据情况来判断」）。
+   → 本版策略：**沿画布右侧竖向铺一条总线**（贴边省格、不挡产线）：
+       源桩在最上，基段依次向下接龙；取货口贴基段**左侧长边**（口旋转 90° 成 1×3）。
+   ⚠️ 实测空间充足：武陵城 80×80 下右侧 4 列有 **74/80 行**整行空。
+   返回 {objs, links, unplaced}。 */
+function RplaceBus(plan, rt, res, size, occObjs, regionName){
+  const out=[], links=[], unplaced=[];
+  /* 谷地是预设线，不自己铺 */
+  if((LO_PRESET_BUS_REGIONS||[]).indexOf(regionName)>=0)
+    return {objs:out, links:links, unplaced:unplaced};
+  const bsB=byBp('log_hongs_bus_source'), bbB=byBp('log_hongs_bus'), fbB=byBp('unloader_1');
+  if(!bsB||!bbB) return {objs:out, links:links, unplaced:unplaced};
+  const fs2=Lfp(bsB), fbb=Lfp(bbB);
+  const sw=fs2[0]||4, sd=fs2[1]||4, bw=fbb[0]||4, bd=fbb[1]||8;
+  const K=(x,y)=>x+','+y;
+  const busyAll={}, busyB={}, axis={};
+  const markA=(x,y,w,d)=>{ for(let j=0;j<d;j++) for(let i=0;i<w;i++) busyAll[K(x+i,y+j)]=1; };
+  const markB=(x,y,w,d)=>{ for(let j=0;j<d;j++) for(let i=0;i<w;i++) busyB[K(x+i,y+j)]=1; };
+  (occObjs||[]).forEach(o=>{
+    if(o.x==null||!o.w||!o.d) return;
+    markA(o.x,o.y,o.w,o.d);
+    if(o.planRole==='link'||o.planRole==='storelink'||o.planRole==='feedlink'){
+      const r=(((o.rot||0)%360)+360)%360;
+      axis[K(o.x,o.y)]=(r===0||r===180)?'h':'v';
+    }else markB(o.x,o.y,o.w,o.d);
+  });
+  (plan.objs||[]).forEach(o=>{ markA(o.x,o.y,o.w,o.d); markB(o.x,o.y,o.w,o.d); });
+  (rt.belts||[]).forEach(b=>{
+    busyAll[K(b.x,b.y)]=1;
+    const r=(((b.rot||0)%360)+360)%360;
+    axis[K(b.x,b.y)]=(r===0||r===180)?'h':'v';
+  });
+  (rt.bldgs||[]).forEach(b=>{ const bb=byBp(b.id), f=bb?Lfp(bb):[1,1];
+    markA(b.x,b.y,f[0],f[1]); markB(b.x,b.y,f[0],f[1]); });
+  /* 沿右侧铺：选最靠右的一列 x（保证 x+w ≤ size-RW_MARGIN） */
+  const W=Math.max(sw,bw);
+  const X=size-RW_MARGIN-W;
+  const rowFree=y=>{ if(y<RW_MARGIN||y>=size-RW_MARGIN) return false;
+    for(let i=0;i<W;i++) if(busyAll[K(X+i,y)]) return false; return true; };
+  /* ① 源桩：找最上面一段连续 sd 行全空 */
+  let sy=null;
+  for(let y=RW_MARGIN; y+sd<=size-RW_MARGIN; y++){
+    let ok=true;
+    for(let j=0;j<sd;j++) if(!rowFree(y+j)){ ok=false; break; }
+    if(ok){ sy=y; break; }
+  }
+  if(sy==null){ unplaced.push({why:'右侧找不到连续的 '+W+'×'+sd+' 空位放「存取线源桩」'}); return {objs:out, links:links, unplaced:unplaced}; }
+  markA(X,sy,sw,sd); markB(X,sy,sw,sd);
+  out.push({b:bsB, x:X, y:sy, w:sw, d:sd, rot:0, kind:'source'});
+  /* ② 基段：从源桩下方接龙，尽量往下铺（不去满足某个数量，先铺能铺的） */
+  let by=sy+sd, segs=0;
+  const capSeg=((DB.bases||{}).zones||[]).map(z=>(z.busCap||{}).log_hongs_bus)
+    .filter(v=>v!=null)[0] || 12;      /* 保守上限：副基地 12（主基地 25） */
+  while(by+bd<=size-RW_MARGIN && segs<capSeg){
+    let ok=true;
+    for(let j=0;j<bd;j++) if(!rowFree(by+j)){ ok=false; break; }
+    if(!ok) break;
+    markA(X,by,bw,bd); markB(X,by,bw,bd);
+    out.push({b:bbB, x:X, y:by, w:bw, d:bd, rot:0, kind:'bus'});
+    by+=bd; segs++;
+  }
+  if(!segs){
+    unplaced.push({why:'源桩下方没有连续的 '+W+'×'+bd+' 空位接基段（存取线只有源桩）'});
+  }
   return {objs:out, links:links, unplaced:unplaced};
 }
 /* ---------- 连线：格内 L 形走线（先竖后横 或 先横后竖），全程避开已有东西 ----------
@@ -5360,8 +5600,40 @@ function LawRun(targetId, perMin){
       L.objs.push(obj);
     });
   }
+  /* ⭐⭐v181 进货端：仓库取货口 —— 把原料从地区仓库送进产线（详见 RplaceFeeders 头部）。
+     ⚠️ 放在储存箱**之后**：出货端的起点（末级机器出料口）位置固定，
+        而取货口可以沿线滑动 —— 让「位置灵活的」去避让「位置固定的」。 */
+  /* ⭐v182 武陵存取线本体（谷地是预设的、武陵要自己摆）—— 详见 RplaceBus 头部。
+     ⚠️ 必须在**取货口之前**跑：口要贴线。 */
+  let busPlace=null;
+  if(L.autoBus!==false){
+    busPlace=RplaceBus(plan, rt, res, L.size, L.objs, Lregion());
+    (busPlace.objs||[]).forEach(o=>{
+      const obj=Lmk(o.b, o.x, o.y, o.rot||0);
+      obj.planRole='bus';
+      obj.prod=(o.kind==='source'?'仓库存取线源桩（存取线起点）':'仓库存取线基段（可贴存货口/取货口）');
+      L.objs.push(obj);
+    });
+  }
+  let feedPlace=null;
+  if(L.autoFeed!==false){
+    feedPlace=RplaceFeeders(plan, rt, res, L.size, L.objs, Lregion());
+    (feedPlace.links||[]).forEach(l=>{
+      const pb=byBp('grid_belt_01'); if(!pb) return;
+      const obj=Lmk(pb, l.x, l.y, l.rot);
+      obj.planRole='feedlink';
+      L.objs.push(obj);
+    });
+    (feedPlace.objs||[]).forEach(f=>{
+      const obj=Lmk(f.b, f.x, f.y, f.rot||0);
+      obj.planRole='feeder';
+      obj.prod='仓库取货口（从仓库取 '+RwItemName(f.forItem)+'）';
+      obj.feedFor=f.forItem;
+      L.objs.push(obj);
+    });
+  }
   L.plan={res:res, plan:plan, route:rt, rawNeed:rawNeedOf(res), sinkPlan:sinkPlan, sinkPlaced:sinkPlaced,
-          genPlan:genPlan, genPlaced:genPlaced, storePlace:storePlace};
+          genPlan:genPlan, genPlaced:genPlaced, storePlace:storePlace, feedPlace:feedPlace, busPlace:busPlace};
   const limWarns=RwPlaceLimitWarn(res);   /* ⑥-4：建筑专属限摆（天有洪炉 ≤12 台）—— 报警不拦截 */
   const sinkNote=sinkPlan.sinks.length?('；♻️ 销毁支线：'+sinkPlan.reasons.join('；')
     +(sinkPlaced.unplaced.length?('；⚠ '+sinkPlaced.unplaced.length+' 个销毁建筑没找到空位（见报告）'):'')):'';
@@ -5375,12 +5647,24 @@ function LawRun(targetId, perMin){
     ?('；📦 产线末端已接协议储存箱 '+storePlace.objs.length+' 个（无线回传仓库，每个 5 电）'
       +(storePlace.unplaced.length?('；⚠ '+storePlace.unplaced.length+' 条末端走线没接上（见报告）'):''))
     :'';
+  /* ⭐v182：存取线本体通报（武陵要自己摆、谷地是预设） */
+  const busNote=(busPlace&&busPlace.objs.length)
+    ?(";🧱 存取线已铺 "+busPlace.objs.length+" 件（源桩+基段，武陵要自己摆）"
+      +(busPlace.unplaced.length?("；⚠ "+busPlace.unplaced.length+" 条没铺上（见报告）"):""))
+    :"";
+  /* ⭐v181：进货端通报（摆了几个取货口 / 有没有没接上的） */
+  const feedNote=(feedPlace&&feedPlace.objs.length)
+    ?('；📥 进货端已摆仓库取货口 '+feedPlace.objs.length+' 个（从地区仓库取原料）'
+      +(feedPlace.unplaced.length?('；⚠ '+feedPlace.unplaced.length+' 条原料没接上（见报告）'):''))
+    :'';
   L.msg='产线已生成：'+(res.targets?res.targets.map(t=>t.name+' '+t.perMin+'/分').join(' ＋ ')
     :res.targetName+' '+perMin+'/分')+' —— 机器 '+res.totalMachines+' 台 + 管线 '+rt.belts.length+' 格'
         +(pickNote?('；'+pickNote):'')
         +sinkNote
         +genNote
         +storeNote
+        +feedNote
+        +busNote
         +(limWarns.length?('；⚠ '+limWarns.join('；')):'')
         +(rt.warns.length?('；'+rt.warns.length+' 条提醒见下方'):'');
   render();

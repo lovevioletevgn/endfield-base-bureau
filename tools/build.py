@@ -1410,6 +1410,27 @@ def main():
           % (len(_gd), "/".join("%s %d" % (_r, sum(1 for v in _gd.values() if _r in v))
                                 for _r in ("四号谷地", "武陵")), len(_plantable),
              len(_GD_SUPPRESS)))
+    # ⚠️ **不可得清单**（2026-10-02 作者实机：「原木没法开采」）——
+    #   判据：`obtainWayIds` 里**只有** `item_obtain_gather`（通用采集），
+    #   既没有关卡来源（`item_obtain_gather_mapXX_lvXXX`）、也不是可种植 / 商店。
+    #   ⭐ 实测**全世界只有「原木 item_plant_tundra_wood」一个**。
+    #   为什么要这份清单：配方评分算的是「子树原料成本」，而**采不到的原料没有配方 → 成本恒为 1**
+    #   → 反而比「能自己种的东西」（要算种植机 + 种子的子树）更"便宜" → **配方选反**。
+    #   实测踩中：碳块有 6 条配方，工具选了「原木×1 → 碳块×1」（最低效且原料不可得），
+    #   而「芽针×1 → 碳块×2」「锦草×1 → 碳块×2」两条更好的一条没选。
+    #   → 下游给不可得原料加高惩罚，让它只在「没有替代配方」时才被用。
+    _unobtainable = []
+    for _iid, _rec in (_item_raw.items() if isinstance(_item_raw, dict) else []):
+        if not isinstance(_rec, dict):
+            continue
+        _w = _rec.get("obtainWayIds") or []
+        if "item_obtain_gather" not in _w:
+            continue
+        if any(_pat_lv.match(str(x)) or ("plant" in str(x)) or ("shop" in str(x)) for x in _w):
+            continue
+        _unobtainable.append(_iid)
+    print("  ℹ️ 不可得原料（只有通用采集、无关卡/种植来源）：%d 个 —— %s"
+          % (len(_unobtainable), "、".join(_unobtainable)))
 
     # 矿物的地区**直接复用矿点表**（ores.beds.mapMax 是完整的两地数据，比 obtainWayIds 权威）
     _ore_dom = {}
@@ -1464,6 +1485,7 @@ def main():
         },
         "byItem": _gd,          # itemId -> [地区]（**已剔除抑制名单**）
         "suppressed": _GD_SUPPRESS,   # 有关卡记录、但判定不完整故**故意不用**的（理由见值）
+        "unobtainable": _unobtainable,   # ⭐v181：只有通用采集、实际拿不到的（现为「原木」单个）
         "levels": _gd_levels,   # itemId -> [具体关卡 id]
         "plantable": _plantable,
         # 植物写环：矿物走矿脉、植物走「种植机 ⇄ 采种机」自持闭环 —— v177 误伤砂叶就是因为递归断在环里
