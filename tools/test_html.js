@@ -101,6 +101,53 @@ function chkHeavy(name, fn, extra) {
   chk(name, typeof fn === 'function' ? fn() : fn, typeof extra === 'function' ? extra() : extra);
 }
 
+/* ---- 三档扫描（v186 · 2026-10-03，为治「跑验证太慢」加）----
+   【为什么要第三档】`chkHeavy` 是**两档**：日常档整条跳过、HEAVY 全量跑。
+     但有些锁的**覆盖面**恰恰是要紧的（v184 广谱接线率 / v185 广谱出线），
+     整条跳过等于日常档完全裸奔；而全量跑日常档又太贵 —— 实测这两条锁在日常档
+     合计 **250 秒 / 全程 389 秒 = 64%**（v185 加锁后日常档从 139s 涨到 413s 的元凶）。
+   【三档口径】
+     日常档（默认）  ：跑 `fast` = 8 个目标；
+     SCAN=mid       ：跑 20 个目标（发版前跑）；
+     HEAVY=1        ：跑全量（发布前跑，与旧 chkHeavy 口径一致）。
+   【为什么不用「日常整跳」】覆盖面回退 = 守门失效。宁可少跑几个样本，也不能不跑。
+   【样本是取前 N 个目标，有偏】⚠️ 目标按 RwTargets() 顺序取前 N，不是随机抽样 ——
+     覆盖面会偏（后段目标日常档覆盖不到）。这是**有意的取舍**：随机抽样会导致
+     同一个 bug 这次抓到、下次抓不到，回归锁就不该这么设计。
+     缓解办法：v184 / v185 的关键场景（赤铜块@10、中容武陵电池@10@80）另有**定向锁**在
+     日常档站岗（v184① / v185①），广谱锁只负责「别在其它目标上退化」。 */
+const SCAN = process.env.SCAN || 'fast';
+function chkScan(name, fn, extra) {
+  const n = SCAN === 'fast' ? 8 : (SCAN === 'mid' ? 20 : 999);
+  chk(name + ' [档=' + SCAN + ' 样本=' + n + ']',
+    typeof fn === 'function' ? fn(n) : fn,
+    typeof extra === 'function' ? extra() : extra);
+}
+/* ---- 扫描样本选取：⭐**先筛「会触发该机制」的目标，再取前 N** ----
+   【为什么不能直接 `RwTargets().slice(0, N)`】实测（2026-10-03）：
+     直接取前 8 → 只跑到 6 个用例、接线率 **68.0%**（前 8 个目标恰好是「电池/罐头/针剂」
+     这批**难接的链**，出料口天然被封死）；
+     N=20 → 90.6%；N=44 → 94.2%。
+   ⇒ 直接取前 N 会让小样本的比率**系统性偏低**，门槛定多少都不对。
+   【筛法】用 `Rexplode` + `RflowSinkPlan` 预筛 —— **不跑 LawRun**，200 个目标实测 <1 秒。
+   实测筛后取前 8 → 14 个用例、接线率 **88.4%**；前 20 → 38 用例、**94.7%**
+   ⇒ 代表性与全量（N=44 → 94.2%）几乎一致，且**用例数翻了 2 倍**（覆盖率更高、耗时更低）。
+   ⚠️ 筛法依赖「该目标是否会触发销毁支线」这个**纯函数判据**，不含 LawRun 的布局因素 ——
+      若将来判据变化，这里要跟着复核（判据变了筛出来的样本就不是同一批）。 */
+function pickScanTargets(n, needSink) {
+  const all = A.RwTargets();
+  if (!needSink) return all.slice(0, n);
+  const hit = [];
+  for (const t of all) {
+    try {
+      const sp = A.RflowSinkPlan(A.Rexplode(t.id, 10, {}));
+      if (sp.sinks && sp.sinks.length) hit.push(t);
+    } catch (e) { /* 目标不可排 → 跳过 */ }
+    if (hit.length >= n) break;   /* 够数就停，不必扫完 200 个 */
+  }
+  return hit.slice(0, n);
+}
+
 function report() {
   out.unshift(`RESULT pass=${pass} fail=${fail}` + (skipHeavy && !HEAVY ? ` skip=${skipHeavy}（日常档跳过的大链用例；HEAVY=1 全量）` : ''));
   console.log(out.join('\n'));
@@ -5666,10 +5713,10 @@ chk('v184 unplaced 不重复计数（同一池子被 N 台源机器记 N 条 = �
    未接的 8 座全是**布局层限制**：同种机器并排太紧、管道出料口朝内被下一台封死
    （如「污水」@50×50：4 台精炼炉，中间两台的出料口四邻全占）→ 报告已逐条点名，
    由玩家手动拉一根管道或调大间距 —— **不得**因此拒绝生成（见锁 ⑬）。 */
-chk('v184 广谱接线率 ≥90% + unplaced 计数守恒（实测 129/137 = 94.2%）', (() => {
-  const targets = A.RwTargets();
+chkScan('v184 广谱接线率 ≥85% + unplaced 计数守恒（HEAVY 全量实测 129/137 = 94.2%）', (N) => {
+  const targets = pickScanTargets(N, true);
   let want = 0, got = 0, n = 0, badCount = 0;
-  targets.slice(0, 44).forEach(t => {
+  targets.forEach(t => {
     [[10, 50], [10, 70]].forEach(pair => {
       loReset(pair[1]);
       try { A.LawRun(t.id, pair[0]); } catch (e) { return; }
@@ -5687,11 +5734,13 @@ chk('v184 广谱接线率 ≥90% + unplaced 计数守恒（实测 129/137 = 94.2
       if ((pl.unplaced || []).length !== w - (pl.objs || []).length) badCount++;
     });
   });
-  v184n = '广谱 ' + n + ' 用例：应摆 ' + want + '／接上 ' + got + ' = '
+  v184n = '样本 ' + n + ' 用例（' + targets.length + ' 目标）：应摆 ' + want + '／接上 ' + got + ' = '
     + (want ? (got / want * 100).toFixed(1) : 0) + '% · 计数不守恒 ' + badCount + ' 例';
-  if (!want) return true;   /* 这批目标没触发销毁支线，跳过 */
-  return got / want >= 0.90 && badCount === 0;
-})(), () => v184n);
+  if (!want) return false;   /* ⭐筛不出目标 = 判据坏了，不是「通过」 —— 不能静默放过 */
+  /* 门槛 85%：实测档 fast(8 目标→14 用例) 88.4% / 档 mid(20→38 用例) 94.7% / 全量 94.2%。
+     留 ~4 个点余量；v184 那版的 68% 会被这条抓住。 */
+  return got / want >= 0.85 && badCount === 0 && targets.length >= 4;
+}, () => v184n);
 
 /* ⑪ 报告必须如实说「接上了几座」。⭐ 锁只认**与实际状态一致**，不强制要求出现「接不上」——
    成功场景（0 未接）本来就不该有那两个字；强求会让「全部接上」被误判成失败（v184 实测踩中）。
@@ -5831,10 +5880,15 @@ chk('v185 源码门禁：RplaceStores 不再硬编码 rot=0（枚举朝向 + 落
 
 /* ④ ⭐ 广谱对照：改前 135 个用例 rot **全**是 0、出线合计 2130 格；
    改后 120/135 挑到非 0 朝向、出线合计 1236 格（**-42%**），且未接上的用例一个不多。 */
-chk('v185 广谱：出线总长应显著低于 v184 基线 2130 格（实测 1236，-42%）且未接上不增加', (() => {
-  const targets = A.RwTargets();
+chkScan('v185 广谱：出线总长应显著低于 v184 基线 2130 格（HEAVY 全量实测 1236，-42%）且未接上不增加', (N0) => {
+  /* ⭐口径必须与基线表一致：v184 那几个基线值都是在「**最多 60 个目标**」上扫的
+     （RwTargets() 共 200 个，但只有前 60 个真的产出 storelink；后段是别的品类）。
+     HEAVY 档若取 200 个，用 2130 当分母会**严重低估**（分母按 60 算、分子按 200 算）
+     ⇒ 必然假失败。故 N 一律封顶 60。 */
+  const N = Math.min(N0, 60);
+  const targets = pickScanTargets(N, false);
   let tot = 0, n = 0, nz = 0, miss = 0, nStore = 0;
-  targets.slice(0, 60).forEach(t => {
+  targets.forEach(t => {
     [[10, 50], [10, 70], [10, 80]].forEach(pr => {
       loReset(pr[1]);
       try { A.LawRun(t.id, pr[0]); } catch (e) { return; }
@@ -5849,10 +5903,28 @@ chk('v185 广谱：出线总长应显著低于 v184 基线 2130 格（实测 123
       if ((sp.unplaced || []).length) miss++;
     });
   });
-  v185n = nStore + ' 用例：出线 ' + tot + ' 格（v184 基线 2130）· 非0朝向 ' + nz + ' 座 · 未接 ' + miss;
-  /* 门槛按实测留余量：出线必须明显下降、朝向必须真的变了、未接上不得增加 */
-  return nStore > 0 && tot < 2130 * 0.7 && nz > 0 && miss <= 15;
-})(), () => v185n);
+  v185n = '样本 ' + nStore + ' 用例（' + targets.length + ' 目标）：出线 ' + tot
+    + ' 格 · 每目标 ' + (tot / Math.max(1, targets.length)).toFixed(1)
+    + ' 格 · 非0朝向 ' + nz + ' 座 · 未接 ' + miss;
+  /* ⭐ 判据 =「**同样本下** v185 的出线 < v184 的 0.72 倍」。
+     ⭐为什么不能用 v184 全量均值当门槛：v184 全量是 35.5 格/目标，而小样本恰好集中在大链
+     （前 8 个目标的 v184 值就是 57.8 格/目标）—— 拿全量均值当阈值会**必然假失败**（实测踩中）。
+     ⭐「同样本比值」实测非常稳（2026-10-03，checkout v184 产物与 v185 各扫一遍）：
+
+       N   v184 出线   v185 出线   比值
+       8      462        294     0.636
+      12      555        339     0.611
+      20      861        512     0.595
+      30     1264        768     0.608
+      44     1736       1075     0.619
+      ────────────────────────────
+      比值落在 0.595~0.636，判 0.72 留 ~15% 余量（上面留过 0.28 会让 N=8 假失败）。
+     ⭐为什么不写成「< 24 格/目标」：那个数是从 v185 全量（20.6）来的，
+     而小样本的 v185 是 36.8 —— 同款错误，只是方向相反。**判据必须跟着「同样本比值」走。 */
+  const V184_PER_TARGET = { 8: 462, 12: 555, 20: 861, 30: 1264, 44: 1736, 999: 2130 };
+  const base = V184_PER_TARGET[N] || V184_PER_TARGET[999];
+  return nStore > 0 && tot < base * 0.72 && nz > 0 && miss <= Math.max(1, Math.round(nStore * 0.15));
+}, () => v185n);
 
 loReset(50); A.render();
 
