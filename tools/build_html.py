@@ -503,6 +503,16 @@ nav button.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:
 /* 接口按配方分「走 / 不走」：走的加亮圈，不走的淡下去 */
 .lo-port.off{opacity:.28}
 .lo-port.use{box-shadow:0 0 0 1px #fff,0 0 0 2.5px #2E8B9E}
+/* ⭐v187（2026-10-03，作者截图「这里的线怎么断了」）：给**未接物流件**的机器口加一圈灰环。
+   【问题】一台机器常有多个口（如 6×4 封装机 6 个传送带出料口），排布器按产能只需用其中 1 个
+     （单带 30/分，两台共 12/分）⇒ 其余口**合法地空着**。但它们原先只有 `.off{opacity:.28}`
+     —— 7px 小方块压到 28% 透明度，在画布上**几乎看不见** ⇒ 看着像「线从机器上断了」。
+   【修法】不碰任何算法，只把「空口」画得更可辨：灰环 + 把不透明度提回 0.5。
+     ⚠️ **必须同时覆盖 opacity**：`.off` 的 opacity 会作用到**整个元素**（含 box-shadow 画的环），
+        只改 box-shadow 仍然看不见 —— 这是本条改动的关键一行。
+     ⭐ 刻意**不**用醒目色：已接口是青/橙实心块，空口只是「这里还有个口没用」，
+       不是错误 —— 用警示色会让人以为布局坏了（与 C6/存取线的红色标不同语义）。 */
+.lo-port.idle{opacity:.5;box-shadow:0 0 0 1px #fff,0 0 0 2px rgba(90,90,90,.55)}
 /* 产线闭环（排布器）的输入控件与报告 */
 .lo-num{width:76px;padding:5px 8px;border:1px solid var(--line2);border-radius:6px;background:var(--panel);color:var(--ink);font-family:inherit;font-size:12.5px}
 /* ⑥-1 收货物选择网格（2026-09-22 作者：「像游戏里那样给我个传输物品的选择器」）——
@@ -1372,7 +1382,7 @@ const LG_HALF={ t:[[2,0,2.5,2],[4.5,0,2.5,2]], b:[[2,7,2.5,2],[4.5,7,2.5,2]],
 const LG_IN='#186C7D', LG_OUT='#C0561F';
 /* 把一件物流件画成 SVG：边上贴进/出色条（青=进 橙=出，双向边画成半青半橙），
    中心放功能字形；传送带/管道改放一个流向箭头（并配一进一出两条色条）。 */
-function lgSvg(b, rot, inSide){
+function lgSvg(b, rot, inSide, forceOut){
   const ps=lgPortSides(b, rot), role={};
   /* ⭐v106（作者 2026-09-23 游戏截图「一格拐弯画不了」）：带/管的**进色条**要用真实拓扑
      （renderLayout 用 flowIn 由邻居反推的 inSide）——弯头格 rot 单值推的「进=出的反向」
@@ -1381,6 +1391,15 @@ function lgSvg(b, rot, inSide){
   const inOverride=(b.lgType==='Belt'||b.lgType==='Pipe')&&inSide;
   (inOverride?[inSide]:ps.in).forEach(d=>{ role[d]=role[d]||{}; role[d].i=1; });
   ps.out.forEach(d=>{ role[d]=role[d]||{}; role[d].o=1; });
+  /* ⭐⭐v188（2026-10-03，作者截图「这不还是没拐弯吗」）：`forceOut` = 这格的料**实际**要往哪边走
+     （终点是机器进料口时，料从本格拐进本体，方向由口朝向决定，与本件 rot 推出的出边可能不同）。
+     场景：箱 @7,1 rot0，进料口在**上边**（dir='u'），外侧格 (8,0) 的 rot=0 推出出边='r'（直条），
+     但它下面是箱子 ⇒ 真实出边='b'（拐弯）。不覆盖就永远画成水平直条。
+     ⚠️ 覆盖时要把 rot 推出的那些「只有出、没有进」的方向删掉，否则一格会画出两条右向色条。 */
+  if(forceOut){
+    Object.keys(role).forEach(d=>{ if(role[d] && role[d].o && !role[d].i) delete role[d]; });
+    const fr=role[forceOut]=role[forceOut]||{}; fr.o=1;
+  }
   let s='';
   ['t','b','l','r'].forEach(d=>{
     const r=role[d]; if(!r) return;
@@ -1395,7 +1414,7 @@ function lgSvg(b, rot, inSide){
     /* ⭐ 2026-09-21（作者反馈：拐弯箭头不直观）：知道进边时，弯道格画成 L 形圆弧带
        （进边中点 → 圆角 → 出边中点 + 出口小箭头），和游戏里的弯道一个观感；
        直线格 / 线头（不知道进边）保持原来的直箭头。 */
-    const outD=(ps.out&&ps.out[0])||'r';
+    const outD=forceOut||(ps.out&&ps.out[0])||'r';
     const perp=(inSide==='t'||inSide==='b') ? (outD==='l'||outD==='r')
              : (inSide==='l'||inSide==='r') ? (outD==='t'||outD==='b') : false;
     if(inSide && inSide!==outD && perp){
@@ -4397,17 +4416,39 @@ function RplaceStores(plan, rt, res, size, occObjs){
          实测把 test_html 从 36 秒拖到 **348 秒**（每候选要跑 机器数×口数 次 Dijkstra）。 */
       const starts=[];
       let anyOut=false;
+      /* ⭐⭐v188（2026-10-03，作者截图「怎么成了出货口连出货口了」）：起点不能再一律取 `mp[0]`。
+         【问题】所有末级机器都取**第 0 号**出料口 ⇒ 同型机器并排时，各台的 0 号口排在**同一条直线上**
+           （实测 中容武陵电池 @10 @80×80：两台封装机的 0 号口外侧格是 (1,0) 与 (11,0)，
+             都在 y=0 那条预留通道上）⇒ 两条线**必然重叠成一条**，
+             画布上就成了「从这台机器口拉到那台机器口」，箱口反成中间一站。
+         【修法】每台机器按「哪个出料口离本组**几何中心**最近」挑起点（`grp` 的机器中心）：
+           同型并排时，各台会挑到**朝向箱子那一侧**的口 ⇒ 两条线从两端汇入箱子的不同箱口，互不横穿。
+         ⚠️ 一台机器只贡献**一个**起点（产能上单带 30/分就够，见 v187 的分档实测）。
+         ⚠️ 口按**局部 x 排序**后取离中心最近的那个，保证「左半的机器用左口、右半的用右口」。 */
+      const _mcx=grp.reduce((t2,m)=>t2+m.x+m.w/2,0)/(grp.length||1);
       grp.forEach(m=>{
         const mp=(m.b.ports||[]).filter(p=>p.kind==='output' && !p.isPipe);
         if(!mp.length) return;
-        const q=LportXY(mp[0], m.rot||0, m.w, m.d);
-        const dr=LportDirRot(mp[0], m.rot||0, m.w, m.d);
-        const s={x:m.x+q.x+(dr==='l'?-1:dr==='r'?1:0), y:m.y+q.z+(dr==='u'?-1:dr==='d'?1:0)};
-        starts.push(s);
-        const nb=[[0,-1],[0,1],[-1,0],[1,0]];
-        for(let k=0;k<4;k++){
-          const nx=s.x+nb[k][0], ny=s.y+nb[k][1];
-          if(nx>=0&&ny>=0&&nx<size&&ny<size&&!busyB[K(nx,ny)]){ anyOut=true; break; }
+        const fp=Lfp(m.b);
+        /* 候选起点 = 每个 belt 出料口的外侧格；按「离组中心最近」升序（平手按局部 x 升序） */
+        const cands2=mp.map((p,idx)=>{
+          const q=LportXY(p,m.rot||0,m.w,m.d);
+          const dr=LportDirRot(p,m.rot||0,m.w,m.d);
+          const sx=m.x+q.x+(dr==='l'?-1:dr==='r'?1:0), sy=m.y+q.z+(dr==='u'?-1:dr==='d'?1:0);
+          return {p:p, idx:idx, x:sx, y:sy, d:Math.abs(sx+0.5-_mcx)};
+        }).sort((a,c)=>(a.d-c.d)||(a.idx-c.idx));
+        /* 逐个试：第一个「外侧格没被建筑占住且有出路」的即采用（v187：空口是合法的） */
+        for(const cd2 of cands2){
+          if(cd2.x<RW_MARGIN||cd2.x>=size-RW_MARGIN||cd2.y<0||cd2.y>=size) continue;
+          if(busyB[K(cd2.x,cd2.y)]) continue;
+          starts.push({x:cd2.x, y:cd2.y, port:cd2.p, mach:m});
+          const nb=[[0,-1],[0,1],[-1,0],[1,0]];
+          for(let k=0;k<4;k++){
+            const nx=cd2.x+nb[k][0], ny=cd2.y+nb[k][1];
+            if(nx<RW_MARGIN||nx>=size-RW_MARGIN||ny<0||ny>=size) continue;
+            if(!busyB[K(nx,ny)]){ anyOut=true; break; }
+          }
+          break;
         }
       });
       if(!starts.length || !anyOut){
@@ -4418,11 +4459,19 @@ function RplaceStores(plan, rt, res, size, occObjs){
       for(let y=RW_MARGIN; y<=size-RW_MARGIN-sd; y++)
         for(let x=RW_MARGIN; x<=size-RW_MARGIN-sw; x++){
           if(!freeBlk(x,y,sw,sd)) continue;
-          let dmin=Infinity;
-          grp.forEach(m=>{ const d=Math.abs(x-m.x)+Math.abs(y-m.y); if(d<dmin) dmin=d; });
-          cands.push({x:x, y:y, d:dmin});
+          /* ⭐⭐v188：候选位按**到本组各台机器出料口起点的距离之和**排序。
+             原来只看「到最近那台」的距离 ⇒ 箱子会贴到组里**第一台**旁边
+             （实测 中容武陵电池 @10 @80×80：机器在 x=1 与 x=11，箱@8,1 紧贴第一台），
+             于是第二台的线必须**横穿整条**才能到箱口 —— 画布上就成了
+             「从机器口拉到机器口」的长线（作者 2026-10-03 截图
+             「怎么成了出货口连出货口了」：第二台的起点 (11,0) 成了整条线的终点）。
+             改成按**距离之和**排序后，箱子落在组的**几何中间**，两台各自就近接入、互不横穿。
+             ⚠️ 保留 d 作次级判据（距离和相同时取更近的）。 */
+          let dsum=0, dmin=Infinity;
+          starts.forEach(s2=>{ const d=Math.abs(x-s2.x)+Math.abs(y-s2.y); dsum+=d; if(d<dmin) dmin=d; });
+          cands.push({x:x, y:y, d:dmin, dsum:dsum});
         }
-      cands.sort((a,b)=>a.d-b.d);
+      cands.sort((a,b)=>(a.dsum-b.dsum)||(a.d-b.d));
       let pick=null;
       /* ⚠️ **只试最近的 4 个候选** —— 每个候选要跑「末级机器数 × 输入口数」次 RwPath，
          而 RwPath 是手写 Dijkstra（很贵）。实测：
@@ -4465,6 +4514,18 @@ function RplaceStores(plan, rt, res, size, occObjs){
           const dd=Ldims(sb,rr);
           if(dd.w!==sw || dd.d!==sd) continue;   /* 旋转后 footprint 变了 → 口型对不上 */
           let hitAll=true; const got=[];
+          /* ⭐⭐v188（2026-10-03，作者截图「怎么成了出货口连出货口了」）：**逐台写回 + 硬障碍隔离**。
+             【问题】原来多台机器的 `RwPath` 共用同一份 `busyB`/`axis`、命中后也不写回
+               —— 第一台找到 (1,0)→…→(10,0)，第二台照样走同一条路接到 (11,0)，
+               **两个机器出料口被连成一条线**，箱口反成中间一站。
+               ⭐ 关键：`RwPath` **允许踩着已有线走**（靠 `axis` 判能否搭桥），
+               所以只写 busyAll/axis **挡不住**第二台走老路 —— 必须额外给一条**硬障碍**。
+             【修法】本组内维护 `busy2`（临时硬障碍表）：
+               ① 每台命中后 `RwPath` 重算并写回 busyAll/axis；
+               ② 同时把该路径整条塞进 `busy2`，后续机器试连时 `block` 读它 ⇒ 必须绕开；
+               ③ 换朝向重试时连同 busyAll/axis 一起撤回（`undo`）。
+               ⚠️ busy2 只活在试连阶段，落盘不读它 —— 真正的线由 `links` 决定。 */
+          const busy2={}, undo=[];
           for(let mi=0; mi<grp.length && hitAll; mi++){
             const s=starts[mi];
             if(!s){ hitAll=false; break; }        /* 该台没有可用出料口 → 整组放弃 */
@@ -4473,11 +4534,29 @@ function RplaceStores(plan, rt, res, size, occObjs){
               const q2=LportXY(sp[pi], rr, dd.w, dd.d);
               const dr2=LportDirRot(sp[pi], rr, dd.w, dd.d);
               const t={x:cd.x+q2.x+(dr2==='l'?-1:dr2==='r'?1:0), y:cd.y+q2.z+(dr2==='u'?-1:dr2==='d'?1:0)};
-              if(RwPath(s, t, busyB, size, Rwedge(size), axis)) hit={s:s, t:t};
+              const block=(x,y)=>Rwedge(size)(x,y)||!!busy2[K(x,y)];
+              const pth=RwPath(s, t, busyB, size, block, axis);
+              if(pth){ hit={s:s, t:t, path:pth}; }
             }
-            if(!hit) hitAll=false; else got.push(hit);
+            if(!hit) hitAll=false;
+            else {
+              got.push(hit);
+              /* 写回：本台的线进 busyAll（找位/占线）+ axis（后续搭桥判轴）+ busy2（硬障碍） */
+              const tch=[]; hit.own=[];
+              for(let i=0;i<hit.path.length;i++){
+                const c=hit.path[i], kk=K(c.x,c.y);
+                if(busyB[kk]) continue;
+                const r=(i>0?LrotFrom([hit.path[i-1].x,hit.path[i-1].y],[c.x,c.y]):0);
+                if(!busyAll[kk]){ busyAll[kk]=1; tch.push(kk); hit.own.push(kk); }
+                if(!axis[kk]) axis[kk]=((r%360)===0||(r%360)===180)?'h':'v';
+                busy2[kk]=1;
+              }
+              undo.push(tch);
+            }
           }
           if(hitAll && got.length){ bestRot=rr; bestHit=got; break; }
+          /* 这一朝向失败 → 撤回本轮写回（busyAll/axis/busy2），否则污染下一个朝向的试连 */
+          undo.forEach(tch=>tch.forEach(kk=>{ delete busyAll[kk]; delete axis[kk]; }));
         }
         if(bestHit){ bestHit.forEach(h=>trial.push(h)); ok=true; }
         else ok=false;
@@ -4494,22 +4573,29 @@ function RplaceStores(plan, rt, res, size, occObjs){
       markA(at.x, at.y, sw, sd); markB(at.x, at.y, sw, sd);
       out.push({b:sb, x:at.x, y:at.y, w:sw, d:sd, forItem:tid, rot:pick.rot||0});
       pick.trial.forEach(h=>{
-        const path=RwPath(h.s, h.t, busyB, size, Rwedge(size), axis);
+        /* ⭐v188：直接用**试连时算好的** `h.path`，并**照单全收本组自己写的格**。
+           ⚠️ 三个坑（都是 v188 实测踩的，改一处必须想到另外两处）：
+             ① 落盘再跑一次 `RwPath` 会改道 —— 试连阶段已把各机器的路径写回 busyAll/axis，
+                重跑时起点四周多了别人的线，结果与试连不一致；
+             ② 落盘若还判 `if(!busyAll[kk])` ⇒ **一格都不 push**（试连已把 busyAll 写满），
+                表现为 `unplaced: []` 但画布上一条线都没有；
+             ③ 落盘若**完全不判 busyAll** ⇒ 会压到**产线内部已有的线**上
+                （实测 息壤玉葫芦@20/50：storelink@9,5 与 link@9,5 同介质重叠）。
+           ⇒ 正确做法：**路径来自 h.path；只放行本组 `own` 记下的格，其余（别人的线/建筑）照旧跳过。 */
+        const path=h.path;
         if(!path) return;
-        for(let i=0;i<path.length;i++){
-          const c=path[i], kk=K(c.x,c.y);
-          if(busyB[kk]) continue;              /* 建筑格：不落线，也不重复占 */
-          const rot=(i>0?LrotFrom([path[i-1].x,path[i-1].y],[c.x,c.y]):0);
-          if(!busyAll[kk]){
-            busyAll[kk]=1;
-            axis[kk]=((rot%360)===0||(rot%360)===180)?'h':'v';   /* 新线也要进 axis，后续线段才能搭桥穿过它 */
-            links.push({x:c.x, y:c.y, rot:rot});
-          }else if(!axis[kk]){
-            axis[kk]=((rot%360)===0||(rot%360)===180)?'h':'v';
-          }
+        const own={};
+        (h.own||[]).forEach(k=>{ own[k]=1; });
+        for(let i2=0;i2<path.length;i2++){
+          const c=path[i2], kk=K(c.x,c.y);
+          if(busyB[kk]) continue;                    /* 建筑格：不落线 */
+          if(busyAll[kk] && !own[kk]) continue;      /* 别人的线：不压 */
+          const rot=(i2>0?LrotFrom([path[i2-1].x,path[i2-1].y],[c.x,c.y]):0);
+          links.push({x:c.x, y:c.y, rot:rot});
+          busyAll[kk]=1;
+          axis[kk]=((rot%360)===0||(rot%360)===180)?'h':'v';
         }
-      });
-    }
+      });    }
   });
   return {objs:out, links:links, unplaced:unplaced};
 }
@@ -9219,6 +9305,13 @@ function renderLayout(){
      孤格带/管夹在两台对角机器之间时没有带子邻居，flowIn 只查带子会推不出进边
      （作者图1「还是不行」）—— 现在机器口也算拓扑。from = 口朝向的反侧（机器在那边）。 */
   const portOut={};
+  /* ⭐v188（2026-10-03）：**进料口外格**索引 —— 与 portOut 镜像，键是「机器 input 口的外侧格」，
+     值 = 料要往哪个方向离开这格才能进本体。
+     【为什么必须有】v151 只补了 portOut 那一条自查（作者 2026-09-24 截图「入口弯头好了，出口没有」）。
+     **进料口侧的同一个洞一直没补** ⇒ 末端线进储存箱那一格，物料要从 (8,0) **向下**进 (8,1)，
+     但判定查不到「我该往下拐」⇒ 画成水平直条（作者 2026-10-03 截图「这不还是没拐弯吗」）。
+     to 用 flowIn 体系的 t/b/l/r（不是 LportDir 的 u/d —— 见上方转译注释）。 */
+  const portIn={};
   /* ⭐v151 续2：feed 起点格（外部暗管接入点）的进边 —— 料从画布外垂直插进这格，
      它压在哪条边、进边就是朝外那侧；角落取「≠ 第一段走向」的外侧（第一段朝内走时
      外侧恰为反向，同式成立）。没有这条，feed 起点永远画直条（作者 2026-09-24
@@ -9274,6 +9367,15 @@ function renderLayout(){
     if(fs) return fs;
     return null;
   };
+  /* v188：这格若是某件机器**进料口**的外侧格 → 料离开本格、进本体的方向。供 lgSvg 覆盖出边。
+     ⚠️ 必须**独立于 flowIn** 另写一个查询：flowIn 开头先查 flowNext（邻格指向我），
+     而末格必然被上游带子命中 ⇒ 永远走不到「本格是进料口外格」那类判断。 */
+  const outDirTo=(x,y,isPipe)=>{
+    const pi=portIn[x+','+y];
+    if(!pi) return null;
+    if(pi.pipe!==undefined && !!pi.pipe!==!!isPipe) return null;
+    return pi.to;
+  };
   /* ================================================================
      画布渲染段（flowIn ~ 画布 DOM 拼装）。按渲染层次从上到下阅读：
        [a] 接口统计 pAll/pOn     —— 接口图例的计数口径
@@ -9319,6 +9421,11 @@ function renderLayout(){
       /* ⚠️ 两套方向命名在这汇合：LportDir 给 u/d（上下），色条/flowIn 体系用 t/b —— 必须转译，
          否则 LOGI_OPP['u'] 是 undefined，机器口反推的进边整条丢失（探针 2026-09-23 实锤）。 */
       if(dir&&p.kind==='output') portOut[(o.x+q.x+dx)+','+(o.y+q.z+dz)]={from:LOGI_OPP[dir==='u'?'t':dir==='d'?'b':dir], pipe:!!p.isPipe};
+      /* v188：进料口外侧格 → 料要往本体方向走（portOut 的镜像：out 用口朝向的反侧，in 用口朝向本身）。
+         例：储存箱 rot0 的进料口在**上边**（dir='u'），外侧格是箱子**上面**那格，
+         料从外侧格**向下**（b）进本体 ⇒ to='b'。
+         ⚠️ 排除 udpipe_loader 的 input 口：它接的是画布外暗管（见上方注释），画布内永远「没接」。 */
+      if(dir&&p.kind==='input'&&b.id.indexOf('udpipe_loader')!==0) portIn[(o.x+q.x+dx)+','+(o.y+q.z+dz)]={to:dir==='u'?'b':dir==='d'?'t':dir==='l'?'r':'l', pipe:!!p.isPipe};
       if(dir&&LlogiAt(lgi,o.x+q.x+dx,o.y+q.z+dz,p.isPipe)) pOn++;
     });
   });
@@ -9472,7 +9579,7 @@ function renderLayout(){
       return `<div class="lo-cell ${b.lgMedium==='管道'?'lgp':'lgb'} ${on?'sel':''}${o.lock?' lock':''}${_vbad?' vbad':''}" data-uid="${o.uid}"
           style="left:${px}px;top:${py}px;width:${w-2}px;height:${d-2}px"
           title="${o.lock?'【已锁定】':''}${_vwhy}${ttl}"
-        >${lgSvg(b,o.rot,flowIn(o.x,o.y,b.lgMedium==='管道'))}</div>`;
+        >${lgSvg(b,o.rot,flowIn(o.x,o.y,b.lgMedium==='管道'),outDirTo(o.x,o.y,b.lgMedium==='管道'))}</div>`;
     }
     const fp=Lfp(b);
     /* 这台设施选了配方吗？选了就把产出物品标在格子上、并给接口分「走 / 不走」 */
@@ -9512,9 +9619,18 @@ function renderLayout(){
         +' · '+esc(p.medium||'')+' · '+(p.isPipe?'圆形口(管道)':'方形口(传送带)')
         +' · 在'+({u:'上',d:'下',l:'左',r:'右'})[dir]+'边'
         +' · 物料向'+(f?({u:'上',d:'下',l:'左',r:'右'})[f]:'—')+(p.kind==='input'?'进入':'离开')
-        +' · '+(lk?'外侧已接同类物流件':'外侧还没有接')
+        +' · '+(lk?'外侧已接同类物流件':'外侧还没有接（本机还有其它口在用，不算故障）')
         +(rp?(' · 本配方：'+(pu==='use'?('走这里（'+(p.isPipe?'流体料':'固态料')+'）'):'不走这个口')):'');
-      ports+=`<div class="lo-port ${p.isPipe?'pipe':''} ${lk?'on':''} ${pu}" style="left:${pcx}px;top:${pcy}px;background:${col}" title="${ttl}"></div>`;
+      /* ⭐v187：只给**出料口**加灰环，且排除「只摆本体不接线」的热能池。
+         【为什么不标进料口】① 出料口空着是**正常**的（一台机器多个口、按产能只用 1 个）
+           —— 这才是作者截图里「看着像断了」的那类；② 进料口空着多数是**真问题**，
+           该走「接口未接 N/M」那套统计，不该和「合法空口」混成同一个视觉语言。
+         【为什么排除热能池】v169 起热能池是「只摆本体、不连燃料线」（燃料要玩家自己喂），
+           100% 的口都是空的 —— 一起标的话满屏灰点，把真正要看的空口淹掉。
+           ⭐判据用 `planRole==='gen'` 而**不是**建筑 id / lgType ——「只摆本体不接线」是
+           排布器的**行为**（自动配发电），不是建筑的固有属性；按 id 硬编码会漏掉将来新增的同类件。 */
+      const idleMark=(lk||!dir||p.kind!=='output'||o.planRole==='gen')?'':'idle';
+      ports+=`<div class="lo-port ${p.isPipe?'pipe':''} ${lk?'on':idleMark} ${pu}" style="left:${pcx}px;top:${pcy}px;background:${col}" title="${ttl}"></div>`;
       /* ⭐v109 协议核心出货：可点的指向箭头 + 选货清单；选了货变绿、旁边标名字。
          ⭐v124（作者截图红圈「把选择物品的模块移到里面，外侧像其他基建一样是货品进出口」）：
          箭头不再压在口格上 —— 口格留白给物流交互（手拿件点口=拉线、空手点口=选中/拖动，

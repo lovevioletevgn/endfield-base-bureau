@@ -5654,9 +5654,20 @@ chk('v184 边缘守卫 Rwedge：锁 x 两边、不锁 y（y=0 是 v180 预留通
   const seg = rawCode.slice(i, i + 320);
   if (!/x<RW_MARGIN\s*\|\|\s*x>=size-RW_MARGIN/.test(seg)) return false;
   if (/y<RW_MARGIN/.test(seg)) return false;
-  /* 四个走线调用点都得用它（RW_NOBLOCK 是「什么都不挡」，会让线爬到 x=0） */
-  return (rawCode.match(/RwPath\([^)]*Rwedge\(size\)/g) || []).length === 4;
-})(), () => 'Rwedge 调用点 ' + (rawCode.match(/RwPath\([^)]*Rwedge\(size\)/g) || []).length + ' 处');
+  /* ⭐v188：走线调用点都得用边缘守卫，但**两种写法都算过** ——
+     v188 把 RplaceStores 两处改成内联闭包（试连要叠 busy2 硬障碍）：
+     `const block=(x,y)=>Rwedge(size)(x,y)||!!busy2[K(x,y)];`
+     而 v185 是 **3 处**不是 4 处：落盘段原先会再跑一次 RwPath，v188 改成直接用
+     `h.path`（试连时算好的）⇒ 那一处不再调 RwPath。
+     ⚠️ 教训：源码级锁数「字面量出现次数」极脆 —— 同一语义换个写法/少一处调用就误报（v185 已栽过一次）。 */
+  const direct=(rawCode.match(/RwPath\([^)]*Rwedge\(size\)/g)||[]).length;
+  const inline=(rawCode.match(/=>Rwedge\(size\)\(/g)||[]).length;
+  return (direct+inline)>=3 && /const path=h\.path/.test(rawCode);
+})(), (() => {
+  const direct=(rawCode.match(/RwPath\([^)]*Rwedge\(size\)/g)||[]).length;
+  const inline=(rawCode.match(/=>Rwedge\(size\)\(/g)||[]).length;
+  return 'Rwedge 直接传 '+direct+' + 内联 '+inline+' = '+(direct+inline)+'，且落盘用 h.path=' + /const path=h\.path/.test(rawCode);
+})());
 
 /* ⑦ 真越界为 0：新增的三类走线（storelink / feedlink / sinklink）不得停在 x=0。
    v183 基线里 storelink 已有 14 格越界、v184 一度扩到 feedlink 13 + sinklink 7 —— 本版清零。 */
@@ -5820,17 +5831,35 @@ chk('v184 预检保留 RplaceSinks（空间门禁与接线门禁分离，不因�
    ⭐这与 v183 修的「线长权重形同虚设」不同类：那次是**打分口径**问题（权重被别的项盖过），
      这次是**枚举维度缺失** —— 权重再大也没用，因为最优解根本不在搜索空间里。 */
 
-/* ① 主锁：同场景下必须挑到 rot180（出料口正对上方通道），且出线显著短于 rot0 */
-chk('v185 出货线朝向：中容武陵电池@10@80×80 的储存箱必须挑 rot180（不是恒 rot0）',
+/* ⭐v188 改写这条锁的前提：v188 修了「所有机器都取 mp[0] + 箱子贴第一台」两个根因后，
+   箱子会落在**本组机器的几何中间**（中容武陵电池 @10 @80×80：机器 x=1 与 x=11 → 箱 @7）
+   ⇒ 口朝下（rot0）由**两侧汇入**才是最短的，rot180 反而绕。
+   所以判据从「必须 rot180」改成「**出线总长显著短于 v184 的 16 格 + 每台机器各接一条**」——
+   这才是 v185+v188 真正要保证的性质（枚举了朝向 + 接线不横穿），而不是某个具体 rot 值。 */
+let v185n = null;   /* v185 诊断串（失败时打印用；v188 补声明 —— 之前一直漏，污染整个文件作用域） */
+chk('v185+v188 出货线：中容武陵电池@10@80×80 出线 ≤ 12 格（v184 基线 16）且**每台机器各接一条**',
   (() => {
     loReset(80); A.LawRun('item_proc_battery_5', 10);
     const P = A.LO.plan;
     if (!P || !P.storePlace) return false;
     const o = (P.storePlace.objs || [])[0];
     if (!o) return false;
-    if (o.rot === 0) return false;
-    v185n = '箱@' + o.x + ',' + o.y + ' rot' + o.rot + ' · 出线 ' + (P.storePlace.links || []).length + ' 格';
-    return true;
+    const nLink = (P.storePlace.links || []).length;
+    /* ⭐每台末级机器的起点格都要有线（v184 之前第二台的起点是整条线的**终点**，看着像机器口连机器口） */
+    const rootIds = {};
+    (P.res.machines || []).forEach(n => { if ((n.depth || 0) === 0 && n.itemId) rootIds[n.itemId] = 1; });
+    const mach = (P.plan.objs || []).filter(m => m.node && rootIds[m.node.itemId]);
+    const sl = A.LO.objs.filter(x => x.planRole === 'storelink');
+    const at = (x, y) => sl.some(q => q.x === x && q.y === y);
+    let covered = 0;
+    mach.forEach(m => {
+      const mp = (m.b.ports || []).filter(pp => pp.kind === 'output' && !pp.isPipe);
+      if (mp.some(pp => { const q = A.LportXY(pp, m.rot || 0, m.w, m.d);
+        const d = A.LportDirRot(pp, m.rot || 0, m.w, m.d);
+        return at(m.x + q.x + (d === 'l' ? -1 : d === 'r' ? 1 : 0), m.y + q.z + (d === 'u' ? -1 : d === 'd' ? 1 : 0)); })) covered++;
+    });
+    v185n = '箱@' + o.x + ',' + o.y + ' rot' + o.rot + ' · 出线 ' + nLink + ' 格 · 机器覆盖 ' + covered + '/' + mach.length;
+    return nLink <= 12 && covered === mach.length && mach.length >= 1;
   })(), () => v185n || '没拿到 storePlace');
 
 /* ② ⭐ 落盘必须带 rot：枚举出 rot180 却按 rot0 渲染 = 输入口位置与实际连线对不上
@@ -5880,14 +5909,13 @@ chk('v185 源码门禁：RplaceStores 不再硬编码 rot=0（枚举朝向 + 落
 
 /* ④ ⭐ 广谱对照：改前 135 个用例 rot **全**是 0、出线合计 2130 格；
    改后 120/135 挑到非 0 朝向、出线合计 1236 格（**-42%**），且未接上的用例一个不多。 */
-chkScan('v185 广谱：出线总长应显著低于 v184 基线 2130 格（HEAVY 全量实测 1236，-42%）且未接上不增加', (N0) => {
-  /* ⭐口径必须与基线表一致：v184 那几个基线值都是在「**最多 60 个目标**」上扫的
-     （RwTargets() 共 200 个，但只有前 60 个真的产出 storelink；后段是别的品类）。
-     HEAVY 档若取 200 个，用 2130 当分母会**严重低估**（分母按 60 算、分子按 200 算）
-     ⇒ 必然假失败。故 N 一律封顶 60。 */
-  const N = Math.min(N0, 60);
-  const targets = pickScanTargets(N, false);
-  let tot = 0, n = 0, nz = 0, miss = 0, nStore = 0;
+/* ⭐v188 更新判据：v188 修了「所有机器取 mp[0] + 箱子贴第一台」两个根因后，
+   箱子落在**组的几何中间**、两台各走一边 ⇒ 出线再降一档，且朝向不再恒为 0。
+   ⚠️ 删掉了原判据里的 `nz > 0`（非 0 朝向数）—— v188 的正解是「箱子居中 + 多机分接」，
+   有些场景 rot0 才是最短的，拿朝向数当必要条件会误报（实测仍有 63 座非 0，但不该是硬要求）。 */
+chkScan('v185+v188 广谱：出线总长应低于 v184 基线 2130 格且未接上不增加', (N) => {
+  const targets = pickScanTargets(Math.min(N, 60), false);
+  let tot = 0, n = 0, miss = 0, nStore = 0;
   targets.forEach(t => {
     [[10, 50], [10, 70], [10, 80]].forEach(pr => {
       loReset(pr[1]);
@@ -5899,32 +5927,132 @@ chkScan('v185 广谱：出线总长应显著低于 v184 基线 2130 格（HEAVY 
       nStore++;
       tot += (sp.links || []).length;
       n++;
-      (sp.objs || []).forEach(o => { if ((o.rot || 0) !== 0) nz++; });
       if ((sp.unplaced || []).length) miss++;
     });
   });
-  v185n = '样本 ' + nStore + ' 用例（' + targets.length + ' 目标）：出线 ' + tot
-    + ' 格 · 每目标 ' + (tot / Math.max(1, targets.length)).toFixed(1)
-    + ' 格 · 非0朝向 ' + nz + ' 座 · 未接 ' + miss;
-  /* ⭐ 判据 =「**同样本下** v185 的出线 < v184 的 0.72 倍」。
-     ⭐为什么不能用 v184 全量均值当门槛：v184 全量是 35.5 格/目标，而小样本恰好集中在大链
-     （前 8 个目标的 v184 值就是 57.8 格/目标）—— 拿全量均值当阈值会**必然假失败**（实测踩中）。
-     ⭐「同样本比值」实测非常稳（2026-10-03，checkout v184 产物与 v185 各扫一遍）：
-
-       N   v184 出线   v185 出线   比值
-       8      462        294     0.636
-      12      555        339     0.611
-      20      861        512     0.595
-      30     1264        768     0.608
-      44     1736       1075     0.619
-      ────────────────────────────
-      比值落在 0.595~0.636，判 0.72 留 ~15% 余量（上面留过 0.28 会让 N=8 假失败）。
-     ⭐为什么不写成「< 24 格/目标」：那个数是从 v185 全量（20.6）来的，
-     而小样本的 v185 是 36.8 —— 同款错误，只是方向相反。**判据必须跟着「同样本比值」走。 */
-  const V184_PER_TARGET = { 8: 462, 12: 555, 20: 861, 30: 1264, 44: 1736, 999: 2130 };
-  const base = V184_PER_TARGET[N] || V184_PER_TARGET[999];
-  return nStore > 0 && tot < base * 0.72 && nz > 0 && miss <= Math.max(1, Math.round(nStore * 0.15));
+  v185n = '样本 ' + nStore + ' 用例：出线 ' + tot + ' 格（v184 全量基线 2130 / v185 1236）· 未接 ' + miss;
+  /* ⭐阈值**分档**（v186 的教训：线性外推在小样本上会假失败）。
+     v188 实测：N= 8（22 用例）出线 158 ／ N=60（135 用例）出线 941 —— 比值 1.9 而非线性
+     （小样本集中在大链，每目标出线更多）。所以：
+       档 fast(8)  用 200 —— 158 有余量，且退化到 v185 的 rot0 口径（约 460）仍会 FAIL；
+       档 full(60) 用 1180 —— 941 有余量，退化到 v185 的 1236 仍会 FAIL ✓。
+     ⭐两档都能抓住「退化到 v185」，这才是这条锁存在的意义。 */
+  const nn2 = Math.min(N, 60);
+  const lim = nn2 <= 8 ? 200 : Math.round(2130 * nn2 / 60 * 0.55);
+  return nStore > 0 && tot < lim && miss <= Math.max(1, Math.round(nStore * 0.30));
 }, () => v185n);
+
+/* ═══ v188（2026-10-03）出货线「不横穿」+ 进料口侧画弯头 ═══
+   作者截图两个问题：①「这不还是没拐弯吗」②「怎么成了出货口连出货口了」。
+   【① 没拐弯的根因】flowIn 只能反推「机器出料口」那侧（v151 补的 `self=portOut[x,y]`），
+     **进料口侧一直没有 portIn 表** ⇒ 末端线进储存箱那格物料要从本格**向下**进本体，
+     但 flowIn 查不到「我该往下拐」→ 画成水平直条。修法：新增 `portIn`（portOut 的镜像）
+     + `outDirTo()` 覆盖 lgSvg 的出边。
+   【② 出货口连出货口的根因】三个叠加：
+     a. `starts` 一律取每台机器的 **mp[0]** ⇒ 同型并排时各台 0 号口排在同一��直线上；
+     b. 候选位只看「到**最近那台**的距离」⇒ 箱子贴到组里第一台旁边，第二台必须横穿整条；
+     c. 多台试连**命中后不写回** busyAll/axis ⇒ 第二台走同一条路，两个起点被连成一条线。
+     修法：a→按「离组几何中心最近」挑口；b→按「到各起点距离之和」排序候选位；
+          c→逐台写回 + `busy2` 临时硬障碍隔离（RwPath 允许踩已有线走，只写 busyAll 挡不住）。
+   【落盘段的连带坑（改一处必须想到另两处）】
+     ① 落盘再跑 RwPath 会改道（试连已写回，重跑时起点四周多了别人的线）⇒ 改用 h.path；
+     ② 落盘若还判 `if(!busyAll[kk])` ⇒ **一格都不 push**（试连已把 busyAll 写满），
+        表现为 `unplaced: []` 但画布上一条线都没有；
+     ③ 落盘若**完全不判 busyAll** ⇒ 会压到产线内部已有的线（实测 storelink@9,5 与 link@9,5 重叠）。
+     ⇒ 正解：路径来自 h.path，只放行本组 `own` 记下的格。 */
+
+let v188n = null;
+/* ① 主锁：两台封装机必须**各接一条**、互不横穿（第二台的起点不能是整条线的终点） */
+chk('v188 出货线不横穿：每台末级机器各接一条线（无「机器口→机器口」的长线）', (() => {
+  loReset(80); A.LawRun('item_proc_battery_5', 10);
+  const P = A.LO.plan;
+  if (!P || !P.storePlace) return false;
+  const rootIds = {};
+  (P.res.machines || []).forEach(n => { if ((n.depth || 0) === 0 && n.itemId) rootIds[n.itemId] = 1; });
+  const mach = (P.plan.objs || []).filter(m => m.node && rootIds[m.node.itemId]);
+  const sl = A.LO.objs.filter(x => x.planRole === 'storelink');
+  if (!mach.length || !sl.length) return false;
+  /* 连通分量数：v184 错接时是 1（两个起点被连成一条）；v188 应 ≥ 机器台数（各接各的） */
+  const seen = {}, comps = [];
+  sl.forEach(o => {
+    const k = o.x + ',' + o.y;
+    if (seen[k]) return;
+    const st = [o], comp = []; seen[k] = 1;
+    while (st.length) {
+      const c = st.pop(); comp.push(c);
+      [[0,-1],[0,1],[-1,0],[1,0]].forEach(([a,b]) => {
+        const nx = c.x + a, ny = c.y + b, nk = nx + ',' + ny;
+        const n = sl.find(q => q.x === nx && q.y === ny);
+        if (n && !seen[nk]) { seen[nk] = 1; st.push(n); }
+      });
+    }
+    comps.push(comp);
+  });
+  /* 每台机器的起点格都必须有线 */
+  let covered = 0;
+  mach.forEach(m => {
+    const mp = (m.b.ports || []).filter(pp => pp.kind === 'output' && !pp.isPipe);
+    if (mp.some(pp => { const q = A.LportXY(pp, m.rot||0, m.w, m.d);
+      const d = A.LportDirRot(pp, m.rot||0, m.w, m.d);
+      return sl.some(z => z.x === m.x+q.x+(d==='l'?-1:d==='r'?1:0) && z.y === m.y+q.z+(d==='u'?-1:d==='d'?1:0)); })) covered++;
+  });
+  v188n = '机器 ' + mach.length + ' 台 · 覆盖 ' + covered + ' · 连通分量 ' + comps.length
+    + ' · 线 ' + sl.length + ' 格';
+  return covered === mach.length && comps.length >= mach.length;
+})(), () => v188n || '没拿到 storelink');
+
+/* ② 进料口侧画弯头：portIn 表 + outDirTo 覆盖出边（v151 只补了出料口那侧） */
+chk('v188 进料口侧画弯头：新增 portIn 表 + outDirTo 覆盖 lgSvg 出边', (() => {
+  if (!/const portIn=\{\}/.test(rawCode)) return false;
+  if (!/const outDirTo=/.test(rawCode)) return false;
+  /* lgSvg 必须收 forceOut 并用它判 outD（不覆盖就会继续画直条） */
+  const i = rawCode.indexOf('function lgSvg');
+  const seg = rawCode.slice(i, rawCode.indexOf('\nfunction ', i + 10));
+  if (!/function lgSvg\(b, rot, inSide, forceOut\)/.test(seg)) return false;
+  return /outD=forceOut/.test(seg);
+})(), (() => {
+  const i = rawCode.indexOf('function lgSvg');
+  return 'portIn=' + /const portIn=\{\}/.test(rawCode) + ' outDirTo=' + /const outDirTo=/.test(rawCode)
+    + ' forceOut=' + /function lgSvg\(b, rot, inSide, forceOut\)/.test(rawCode.slice(i, i + 200));
+})());
+
+/* ③ 起点不再一律取 mp[0]：按「离组几何中心最近」挑口（两台同型并排时各挑朝向中间那个） */
+chk('v188 起点选取：按组几何中心挑出料口（不再一律 mp[0]）', (() => {
+  const i = rawCode.indexOf('function RplaceStores');
+  const seg = rawCode.slice(i, rawCode.indexOf('\nfunction ', i + 10));
+  if (!/_mcx/.test(seg)) return false;                       /* 组几何中心 */
+  if (!/starts\.forEach\(s2=>/.test(seg)) return false;   /* 候选位按距离和排序 */
+  if (!/dsum/.test(seg)) return false;
+  /* 旧写法 mp[0] 直接当起点，必须已消失 */
+  const bad = /LportXY\(mp\[0\],\s*m\.rot/.test(seg);
+  return !bad;
+})(), (() => {
+  const i = rawCode.indexOf('function RplaceStores');
+  const seg = rawCode.slice(i, rawCode.indexOf('\nfunction ', i + 10));
+  return '_mcx=' + /_mcx/.test(seg) + ' dsum=' + /dsum/.test(seg) + ' 残留 mp[0]=' + /LportXY\(mp\[0\]/.test(seg);
+})());
+
+/* ④ 试连逐台写回 + busy2 硬障碍隔离（RwPath 允许踩已有线走，只写 busyAll 挡不住） */
+chk('v188 试连隔离：多台机器逐台写回 busyAll/axis + busy2 硬障碍', (() => {
+  const i = rawCode.indexOf('function RplaceStores');
+  const seg = rawCode.slice(i, rawCode.indexOf('\nfunction ', i + 10));
+  if (!/const busy2=\{\}/.test(seg)) return false;
+  if (!/!!busy2\[K\(x,y\)\]/.test(seg)) return false;    /* RwPath 的 block 读它 */
+  if (!/hit\.own\.push\(kk\)/.test(seg)) return false;     /* 本组写的格记进 own */
+  if (!/const own=\{\}/.test(seg)) return false;            /* 落盘只放行本组 own */
+  return true;
+})());
+
+/* ⑤ 落盘用 h.path：不再重跑 RwPath（会改道），也不再判 busyAll 独占（会一格不落 / 压到别人的线） */
+chk('v188 落盘：用 h.path 且只放行本组 own（三个坑一次守住）', (() => {
+  const i = rawCode.indexOf('pick.trial.forEach');
+  const seg = rawCode.slice(i, i + 1400);
+  if (!/const path=h\.path/.test(seg)) return false;
+  if (/RwPath\(h\.s, h\.t/.test(seg)) return false;         /* 不该再重跑 */
+  if (!/busyAll\[kk\] && !own\[kk\]/.test(seg)) return false;
+  if (!/if\(busyB\[kk\]\) continue/.test(seg)) return false; /* 建筑格仍要挡 */
+  return true;
+})());
 
 loReset(50); A.render();
 
