@@ -4174,6 +4174,21 @@ function RplaceSinksLinked(plan, rt, res, size, occObjs, sinkPlan){
     }else markB(o.x,o.y,o.w,o.d);
   });
   (plan.objs||[]).forEach(o=>{ markA(o.x,o.y,o.w,o.d); markB(o.x,o.y,o.w,o.d); });
+  /* ⭐v189：机器「出料口外侧格」保护表 —— 池子**不得压住任何机器的出料口**（压住＝把它封死）。
+     实测踩中（v184 遗留的最后一类）：第 9 座池子摆在第 9 台炉子右侧的缝里 (49,32)，
+     它的 5×5 足迹正好盖住那台炉子的管道出料口外侧格 (49,33) → 第 10 座池子就再也接不上。
+     ⚠️ 与 RwRoute 的 outPortCells 是**同一口径的另一半**：那边管「udpipe 别压口」，这边管「池子别压口」。 */
+  const outProt={};
+  (plan.objs||[]).forEach(m=>{
+    const rec=RbyId(m.node&&m.node.recipeId); if(!rec) return;
+    const kinds={};
+    (rec.outcomes||[]).forEach(oc=>{ if(oc.id) kinds[RwFluid(oc.phase)?1:0]=1; });
+    (m.b.ports||[]).filter(p=>p.kind==='output'&&kinds[!!p.isPipe?1:0]).forEach(p=>{
+      const q=LportXY(p,m.rot||0,m.w,m.d), dr=LportDirRot(p,m.rot||0,m.w,m.d);
+      const ox=m.x+q.x+(dr==='l'?-1:dr==='r'?1:0), oy=m.y+q.z+(dr==='u'?-1:dr==='d'?1:0);
+      if(ox>=0&&oy>=0&&ox<size&&oy<size) outProt[K(ox,oy)]=1;
+    });
+  });
   ((rt&&rt.belts)||[]).forEach(b=>{ busyAll[K(b.x,b.y)]=1;
     const r=(((b.rot||0)%360)+360)%360; axis[K(b.x,b.y)]=(r===0||r===180)?'h':'v'; });
   ((rt&&rt.bldgs)||[]).forEach(b=>{ const bb=byBp(b.id), f=bb?Lfp(bb):[1,1];
@@ -4219,7 +4234,9 @@ function RplaceSinksLinked(plan, rt, res, size, occObjs, sinkPlan){
       unplaced.push({sink:s, why:'画布里没有产「'+s.forItem+'」的机器 —— 无处接线'});
       return;
     }
-    let done=false, noFeed=false;
+    /* ⭐v189：三个「没接上」的分支必须**分开记账**（原来 noFeed 一个布尔混了两类，
+       报告会把根因说错 —— 排查 v184 遗留时我被它误导过一次）。 */
+    let done=false, sealed=false, noPick=false, noPort=false;
     for(let ci=0; ci<feeders.length && !done; ci++){
       const fd=feeders[ci];
       if(fd.used) continue;
@@ -4227,7 +4244,7 @@ function RplaceSinksLinked(plan, rt, res, size, occObjs, sinkPlan){
       /* ⚠️ 两类「这台机器用不上」必须分开记账，否则报告会把根因说错：
          · 口型不匹配（池子没有对应相态的输入口）→ 换个 feeder 也没用，跳过即可；
          · 出料口四邻全被占（**并排太紧、口朝内被封死**）→ 这才是玩家要动手处理的那一类。 */
-      if(!ins.length) continue;
+      if(!ins.length){ noPort=true; continue; }
       /* 起点四邻全被占 → 这台机器的出料口根本出不来（否则白扫全画布空位）。
          ⚠️ 还要排掉**边缘**：Rwedge 锁了 x 两边，那两列算「出不来」——
             判据用同一个边界口径，免得白扫一遍最后 RwPath 全 null。 */
@@ -4238,7 +4255,7 @@ function RplaceSinksLinked(plan, rt, res, size, occObjs, sinkPlan){
         if(nx<RW_MARGIN||nx>=size-RW_MARGIN||ny<0||ny>=size) continue;
         if(!busyB[K(nx,ny)]){ anyOut=true; break; }
       }
-      if(!anyOut){ noFeed=true; continue; }
+      if(!anyOut){ sealed=true; continue; }
       const cands=[];
       for(let y=RW_MARGIN; y<size-RW_MARGIN; y++)
         for(let x=RW_MARGIN; x<size-RW_MARGIN; x++){
@@ -4250,6 +4267,7 @@ function RplaceSinksLinked(plan, rt, res, size, occObjs, sinkPlan){
           const xx=cx+i, yy=cy+j;
           if(xx<RW_MARGIN||yy<RW_MARGIN||xx>=size-RW_MARGIN||yy>=size-RW_MARGIN) return false;
           if(busyAll[K(xx,yy)]) return false;
+          if(outProt[K(xx,yy)]) return false;   /* ⭐v189：不压任何机器的出料口外侧格 */
         }
         return true;
       };
@@ -4291,7 +4309,7 @@ function RplaceSinksLinked(plan, rt, res, size, occObjs, sinkPlan){
         if(!dirty) continue;
       }
       if(!pick){
-        noFeed=true;
+        noPick=true;
         continue;
       }
       const dm=pick.dm;
@@ -4314,10 +4332,17 @@ function RplaceSinksLinked(plan, rt, res, size, occObjs, sinkPlan){
     /* ⚠️ 一个池子**只记一条** unplaced —— 不能在 feeder 循环里每台机器记一次
        （实测踩中：5 台源机器试不下 → 同一个池子被记 5 条，报告里显示「5 座接不上」，
         实际只摆了 1 个池子。数量对不上会让人以为池子摆了但线没接，误判严重程度）。 */
-    if(!done) unplaced.push({sink:s, why:noFeed
-      ? '产它的机器的管道出料口**四邻全被建筑占住**（同种机器并排太紧、出料口朝内被封死 —— 属布局层限制）'
-        +' → 需手动从该机器拉一条管道到池子，或把产线间距调大（LawRun 报「间 N」调大一档）'
-      : '试遍最近的 '+RW_SINK_CAND_MAX+' 个能放下的空位都接不上（路径被产线截断）'});
+    if(!done) unplaced.push({sink:s, why:
+      sealed
+        ? '产「'+s.forItem+'」的机器的'+(s.kind==='pool'?'管道':'')+'出料口**四邻全被建筑占住**'
+          +'（同种机器并排太紧、出料口朝内被封死；也可能被入口/出口建筑或已摆的池子压住）'
+          +' → 需手动从该机器拉一条'+(s.kind==='pool'?'管道':'带子')+'到池子，或把产线间距调大（LawRun 报「间 N」调大一档）'
+      : noPick
+        ? '试遍最近的 '+RW_SINK_CAND_MAX+' 个能放下的空位都接不上（路径被产线 / 已摆的池子截断）'
+      : noPort
+        ? '产「'+s.forItem+'」的机器没有该相态（'+(s.kind==='pool'?'管道':'传送带')+'）的进料口，'
+          +'或它的出料口都已被其它池子占用 → 无法再挂一座'
+      : '没有可用的接线源（该物品的产出口都被占用）' });
   });
   return {objs:out, links:links, unplaced:unplaced};
 }
@@ -4871,6 +4896,28 @@ function RwRoute(placed, res, size, corr, extraBusy){
   const outOf=p=>({x:p.gx+(p.dir==='l'?-1:p.dir==='r'?1:0),
                    y:p.gy+(p.dir==='u'?-1:p.dir==='d'?1:0)});
   const free=pt=>pt.x>=0&&pt.y>=0&&pt.x<size&&pt.y<size&&!busy[K(pt.x,pt.y)];
+  /* ⭐v189：机器「出料口外侧格」保护表 —— 入口/出口建筑（udpipe，3×3）**不得压住**它。
+     背景（v184 遗留 10 座销毁池的真因，定点探针实测）：
+       `udpipe_unloader_1` 的 3×3 足迹被 `udExitFor` 摆进**机器之间的缝里**，
+       正好盖住相邻机器**未被产线使用**的出料口外侧格（废气/污水的管道口），
+       → 下游销毁池的起点 `anyOut` 判定全 occupied → 永远接不上（@10 工况 8 座）。
+     口径：**只保护出料口**。udpipe 自己的输出正对目标机器的**进料**口，
+       若连进料口也保护，出发的 udpipe 会把自己锁死（找不到可摆的位）。
+     ⚠️ 与 `reserved`（阶段一挑中的端点格）**互补**：reserved 保护的是「产线要用的口」，
+       这张表保护的是「产线不用、但要留给销毁支线的口」。 */
+  const outPortCells={};
+  placed.forEach(o=>{
+    const rec=RbyId(o.node&&o.node.recipeId); if(!rec) return;
+    const kinds={};
+    (rec.outcomes||[]).forEach(oc=>{ if(oc.id) kinds[RwFluid(oc.phase)?1:0]=1; });
+    const fp=Lfp(o.b);
+    (o.b.ports||[]).filter(p=>p.kind==='output'&&kinds[!!p.isPipe?1:0]).forEach(p=>{
+      const q=LportXY(p,o.rot||0,fp[0],fp[1]);
+      const dr=LportDirRot(p,o.rot||0,fp[0],fp[1]);
+      const ox=o.x+q.x+(dr==='l'?-1:dr==='r'?1:0), oy=o.y+q.z+(dr==='u'?-1:dr==='d'?1:0);
+      if(ox>=0&&oy>=0&&ox<size&&oy<size) outPortCells[K(ox,oy)]=1;
+    });
+  });
 
   const deps=[];
   res.machines.forEach(parent=>{ (parent.children||[]).forEach(child=>{
@@ -5277,7 +5324,8 @@ function RwRoute(placed, res, size, corr, extraBusy){
   let udPairN=0;         /* 配对编号（tooltip/报告用） */
   const udFootFree=(ox,oy,w,d)=>{ for(let yy=oy;yy<oy+d;yy++) for(let xx=ox;xx<ox+w;xx++){
       if(xx<0||yy<0||xx>=size||yy>=size) return false;
-      if(busy[K(xx,yy)]||reserved[K(xx,yy)]) return false; } return true; };
+      if(busy[K(xx,yy)]||reserved[K(xx,yy)]) return false;
+      if(outPortCells[K(xx,yy)]) return false; } return true; };   /* ⭐v189：不压机器出料口外侧格 */
   /* 出口找位：围绕机器端口外侧格 t 逐环找 3×3 空位 + 朝向，output 口外侧格 s2 → RwPath(s2,t) 最短者。
      只在引号外的括号计数——RwPath 调用有上限（4 朝向 × 5 环 × 每环第一个合格格），不会拖慢铺线。 */
   const udExitFor=(t, block)=>{

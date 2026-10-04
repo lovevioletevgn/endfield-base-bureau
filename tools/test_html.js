@@ -5718,13 +5718,14 @@ chk('v184 unplaced 不重复计数（同一池子被 N 台源机器记 N 条 = �
   return '应摆 ' + want + '／实摆 ' + (pl.objs || []).length + '／unplaced ' + (pl.unplaced || []).length;
 });
 
-/* ⑩ 广谱：跨目标扫描，接线率必须 ≥90%（防「只修了示例那一条」）。
-   实测 44 目标 × 2 工况 = 34 个触发销毁支线的用例：应摆 137 座 / 接上 129 座 = 94.2%；
-   拉满到 44×4 工况（155 用例、614 座）实测 604/614 = 98.4%。
-   未接的 8 座全是**布局层限制**：同种机器并排太紧、管道出料口朝内被下一台封死
-   （如「污水」@50×50：4 台精炼炉，中间两台的出料口四邻全占）→ 报告已逐条点名，
-   由玩家手动拉一根管道或调大间距 —— **不得**因此拒绝生成（见锁 ⑬）。 */
-chkScan('v184 广谱接线率 ≥85% + unplaced 计数守恒（HEAVY 全量实测 129/137 = 94.2%）', (N) => {
+/* ⑩ 广谱：跨目标扫描，接线率必须 **100%**（防「只修了示例那一条」）。
+   ⭐v189（2026-10-04）：阈值 **≥85% → 100%**。v184 定这条锁时实测 98.4%（604/614），
+     当时把未接的 10 座判成「布局层限制、报告点名即可」；v189 查明**真因是两处同根** ——
+     `udpipe`（入口/出口建筑）与**已摆的池子**把机器**未被产线使用**的出料口外侧格压住
+     （≠ 布局层限制，是排布器自己能修的）→ 修完 **614/614 = 100%**。
+     ⇒ 阈值提到 100%：接线率再退化（哪怕只是从 100% 掉到 98%）就会被抓住。
+     ⚠️ 若将来**真出现**无法接上的合法工况，应带证据回来复核这条锁，不许直接调低阈值。 */
+chkScan('v184+v189 广谱接线率 = 100%（v184 基线 604/614 = 98.4%）+ unplaced 计数守恒', (N) => {
   const targets = pickScanTargets(N, true);
   let want = 0, got = 0, n = 0, badCount = 0;
   targets.forEach(t => {
@@ -5748,9 +5749,9 @@ chkScan('v184 广谱接线率 ≥85% + unplaced 计数守恒（HEAVY 全量实�
   v184n = '样本 ' + n + ' 用例（' + targets.length + ' 目标）：应摆 ' + want + '／接上 ' + got + ' = '
     + (want ? (got / want * 100).toFixed(1) : 0) + '% · 计数不守恒 ' + badCount + ' 例';
   if (!want) return false;   /* ⭐筛不出目标 = 判据坏了，不是「通过」 —— 不能静默放过 */
-  /* 门槛 85%：实测档 fast(8 目标→14 用例) 88.4% / 档 mid(20→38 用例) 94.7% / 全量 94.2%。
-     留 ~4 个点余量；v184 那版的 68% 会被这条抓住。 */
-  return got / want >= 0.85 && badCount === 0 && targets.length >= 4;
+  /* ⭐v189：门槛提到 **100%**（v184 定这条锁时是 85%，实测 94.2%~98.4%）。
+     v189 查明那 10 座未接不是布局层限制、而是排布器能修的（udpipe / 池子压住出料口）→ 已 100%。 */
+  return got === want && badCount === 0 && targets.length >= 4;
 }, () => v184n);
 
 /* ⑪ 报告必须如实说「接上了几座」。⭐ 锁只认**与实际状态一致**，不强制要求出现「接不上」——
@@ -6053,6 +6054,83 @@ chk('v188 落盘：用 h.path 且只放行本组 own（三个坑一次守住）'
   if (!/if\(busyB\[kk\]\) continue/.test(seg)) return false; /* 建筑格仍要挡 */
   return true;
 })());
+
+/* ═══ v189（2026-10-04）销毁池接线补完 —— 10 座未接清零（v184 遗留的唯一未立项项） ═══
+   真因（定点探针，两处**同根**）：
+     ① `udpipe`（入口/出口建筑，3×3）被 `udExitFor` 摆进**机器之间的缝里**，压住了相邻机器
+        **未被产线使用**的管道出料口外侧格 → 下游销毁池起点「四邻全占」判定为真，永远接不上
+        （@10 工况 8 座：炉子 x=8 / x=15 的管道口被 udpipe 盖住）；
+     ② 第 9 座池子自己摆进缝里，5×5 足迹盖住第 9 台炉子的出料口 → 第 10 座接不上（@30，2 座）。
+   修法：两张**同口径的保护表** —— 机器「出料口外侧格」不许被 ① udpipe 足迹（RwRoute.outPortCells）、
+        ② 池子足迹（RplaceSinksLinked.outProt）压住。
+     ⚠️ **只保护出料口**：udpipe 自己的输出正对目标机器的**进料**口，把进料口也保护会把它自己锁死。
+   实测：广谱 155 用例 604/614 → **614/614（100%）**；既有 994 条锁零破坏。 */
+
+let v189n = null, v189s = null;
+
+/* ① 定向锁：两个根因各守一个 —— 日常跑 @10@50（udpipe 压口，轻）；HEAVY 追加 @30@70（池子压口，重）。
+   ⚠️ **不把 @30 放日常**：那条链 10 台炉子、LawRun 很贵 —— 日常档从 240s 涨到 320s 就是它贡献的
+   （v186「跑验证提速」的教训）。机制本身另有源码锁 ③ 在**日常档**站岗，此处只是行为兜底。 */
+chk('v189 定向：销毁池全部接上（日常 @10@50 两目标；HEAVY 追加 @30@70 池子压口工况）', (() => {
+  const cases = [['item_bottled_rec_hp_5',10,50],['item_bottled_food_5',10,50]];
+  if (HEAVY) { cases.push(['item_bottled_rec_hp_5',30,70],['item_bottled_food_5',30,70]); }
+  const bad = []; v189n = '';
+  cases.forEach(c => {
+    loReset(c[2]); let P = null;
+    try { A.LawRun(c[0], c[1]); P = A.LO.plan; } catch (e) { bad.push(c[0]+'@'+c[1]+'/ERR'); return; }
+    if (!P) { bad.push(c[0]+'@'+c[1]+'/'+c[2]+'/无方案'); return; }
+    const sp = P.sinkPlan || {}, pl = P.sinkPlaced || {};
+    if (!sp.sinks || !sp.sinks.length) { bad.push(c[0]+'@'+c[1]+'/无销毁支线'); return; }
+    const want = sp.sinks.reduce((a,b)=>a+b.count,0);
+    const miss = (pl.unplaced||[]).length;
+    if (miss) bad.push(c[0]+'@'+c[1]+'@'+c[2]+' 未接'+miss);
+    v189n += ' ' + c[0].slice(-6) + '@' + c[1] + '/' + c[2] + ':' + (pl.objs||[]).length + '/' + want;
+  });
+  return bad.length === 0;
+})(), () => '未接=' + (v189n || '(空)') );
+
+/* ② 源码锁：RwRoute 保护「机器出料口外侧格」不被 udpipe 足迹压住 */
+chk('v189 RwRoute：udpipe 足迹不得压机器出料口外侧格（outPortCells 保护表）', (() => {
+  const i = rawCode.indexOf('function RwRoute');
+  const seg = rawCode.slice(i, rawCode.indexOf('\nfunction ', i + 10));
+  if (!/const outPortCells=\{\}/.test(seg)) return false;          /* 保护表建了 */
+  if (!/outPortCells\[K\(ox,oy\)\]=1/.test(seg)) return false;    /* 表里确实填了出料口外侧格 */
+  return /outPortCells\[K\(xx,yy\)\]/.test(seg);                  /* udFootFree 判它（否则形同虚设） */
+})(), (() => {
+  const i = rawCode.indexOf('function RwRoute');
+  const seg = rawCode.slice(i, rawCode.indexOf('\nfunction ', i + 10));
+  return '表=' + /const outPortCells=\{\}/.test(seg) + ' 填=' + /outPortCells\[K\(ox,oy\)\]=1/.test(seg)
+       + ' 判=' + /outPortCells\[K\(xx,yy\)\]/.test(seg);
+})());
+
+/* ③ 源码锁：RplaceSinksLinked 池子不得压任何机器的出料口（否则第 9 座会把第 10 座的源口封死） */
+chk('v189 RplaceSinksLinked：池子足迹不得压机器出料口外侧格（outProt 保护表）', (() => {
+  const i = rawCode.indexOf('function RplaceSinksLinked');
+  const seg = rawCode.slice(i, rawCode.indexOf('\nfunction ', i + 10));
+  if (!/const outProt=\{\}/.test(seg)) return false;
+  if (!/outProt\[K\(ox,oy\)\]=1/.test(seg)) return false;
+  return /outProt\[K\(xx,yy\)\]/.test(seg);                       /* freeAt 判它 */
+})(), (() => {
+  const i = rawCode.indexOf('function RplaceSinksLinked');
+  const seg = rawCode.slice(i, rawCode.indexOf('\nfunction ', i + 10));
+  return '表=' + /const outProt=\{\}/.test(seg) + ' 填=' + /outProt\[K\(ox,oy\)\]=1/.test(seg)
+       + ' 判=' + /outProt\[K\(xx,yy\)\]/.test(seg);
+})());
+
+/* ④ 文案锁：unplaced 的根因**三分支分开**（sealed / noPick / noPort）。
+   旧实现用一个 `noFeed` 布尔混了「口被封死」与「找不到能接上的空位」两类 ——
+   报告把根因说错，排查 v184 遗留时被它误导过。 */
+chk('v189 unplaced 根因三分支分开（sealed/noPick/noPort），旧混合标志 noFeed 已消失', (() => {
+  const i = rawCode.indexOf('function RplaceSinksLinked');
+  const seg = rawCode.slice(i, rawCode.indexOf('\nfunction ', i + 10));
+  const noOld = !/noFeed/.test(seg.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, ''));
+  return noOld
+    && /let done=false, sealed=false, noPick=false, noPort=false/.test(seg)
+    && /sealed=true/.test(seg) && /noPick=true/.test(seg) && /noPort=true/.test(seg);
+})());
+
+/* ⑤ 广谱锁：**并入 v184⑩**（复用它的扫描，不再单独扫一遍 —— v189 首版单独加了一条
+   广谱锁，日常档从 210s 涨到 331s，与 v186「跑验证提速」的目标直接打架，改并进 ⑩）。 */
 
 loReset(50); A.render();
 
