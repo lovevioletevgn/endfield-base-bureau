@@ -418,11 +418,13 @@ chk('默认清单不含纯装饰（玩偶/立牌/田块）',
 chk('默认清单不含采集设备（矿机/水泵）',
     !loAllowedList.some(b => b.id === 'miner_1' || b.id === 'pump_1'));
 chk('默认清单不含防御塔', !loAllowedList.some(b => b.id === 'battle_turret_1'));
-chk('默认清单不含中继器（中继器 + 息壤中继器）',
-    !loAllowedList.some(b => b.id === 'power_pole_2' || b.id === 'power_pole_3'),
+/* ⭐v190 改写这两条：作者 2026-10-06 要求把中继器**放回清单**（原锁守的是 2026-09-21「去掉」的旧决定）。
+   **如实记录：我改了老锁** —— 不是产品退化，是决定反转。 */
+chk('默认清单含中继器（⭐v190 作者要求放回：中继器 + 息壤中继器）',
+    loAllowedList.some(b => b.id === 'power_pole_2') && loAllowedList.some(b => b.id === 'power_pole_3'),
     loAllowedList.filter(b => b.id.indexOf('power_pole') === 0).map(b => b.id).join(','));
-chk('电力组剔掉两台中继器后还剩 3 台',
-    loAllowedList.filter(b => b.categoryName === '电力').length === 3,
+chk('电力组 5 台（中继器×2 + 供电桩×2 + 热能池）',
+    loAllowedList.filter(b => b.categoryName === '电力').length === 5,
     loAllowedList.filter(b => b.categoryName === '电力').map(b => b.name).join(','));
 
 // 物流件：10 件全部进默认清单，按 1×1 处理，带介质与吞吐
@@ -472,11 +474,13 @@ chk('物流件按钮尾标给的是吞吐不是尺寸',
     /Lpick(?:FromList)?\('grid_belt_01'\)[\s\S]{0,240}?lo-tag">30 个\/分/.test(layoutPal), 'grid_belt_01');
 chk('左栏默认不含防御塔与矿机',
     !palIds.includes('battle_turret_1') && !palIds.includes('miner_1'));
-chk('左栏默认不含中继器',
-    !palIds.includes('power_pole_2') && !palIds.includes('power_pole_3'));
+/* ⭐v190：作者要求把中继器放回清单（原锁守 2026-09-21 的「去掉」）—— **我改了老锁** */
+chk('左栏默认含中继器（v190 放回）',
+    palIds.includes('power_pole_2') && palIds.includes('power_pole_3'));
 chk('左栏顶部说明了默认列了哪几类',
     layoutPal.indexOf('默认只列') >= 0 && layoutPal.indexOf('核心结构') >= 0);
-chk('左栏顶部标注了中继器已去掉', layoutPal.indexOf('中继器') >= 0);
+chk('左栏顶部不再声称「中继器已去掉」（v190 放回清单）',
+    layoutPal.indexOf('v190 起') >= 0 && layoutPal.indexOf('中继器（含息壤中继器）') < 0);
 
 // ---- 5d-3. 仓库存取线的放置规则（纯函数 + 渲染）----
 // 口径经作者 2026-09-21 游戏内实拍确认：**边有接触就算相连** —— 可横向并排、可 L 形拐弯、
@@ -580,8 +584,8 @@ chk('示意图声明了「只记几条边 / 方位随镜头变」',
 A.Lonly('电力');
 const palPower = outEl.innerHTML || '';
 const powerIds = [...palPower.matchAll(/onclick="Lpick(?:FromList)?\('([^']+)'\)"/g)].map(m => m[1]);
-chk('单看「电力」时保留供电桩、不给中继器',
-    powerIds.includes('power_diffuser_1') && !powerIds.includes('power_pole_2') && !powerIds.includes('power_pole_3'),
+chk('单看「电力」时供电桩与中继器都给（⭐v190 放回中继器 —— 我改了老锁）',
+    powerIds.includes('power_diffuser_1') && powerIds.includes('power_pole_2') && powerIds.includes('power_pole_3'),
     powerIds.join(','));
 A.Lonly('战斗辅助');
 const palDef = outEl.innerHTML || '';
@@ -960,11 +964,14 @@ chk('第2期 RbaseBest：武陵启销毁专区（带 sink 的小产线挪去副�
   return rb.sinkZone === '武陵' && rb.sinkMoved.length === 1
     && rb.sinkMoved[0].zone === rb.bases.filter(b => b.role !== '主基地')[0].zoneName;
 })());
+/* ⭐v191 改写：原来拿「中容武陵电池@40@四号谷地」当 capacity 用例 —— v191 起该目标在谷地是
+   **region 硬否决**（息壤家族本地造不出），走不到 capacity。换成本地区的**高容谷地电池@60**
+   （同样大链、≤180 不超台数，但 4 个谷地基地都摆不下）继续守 capacity 这条路。**如实记录：我改了老锁**。 */
 chk('第2期 RbaseBest：装不下的目标如实点名、不静默丢（B2 报告）', (() => {
   const all = A.RwTargets();
-  const big = all.filter(x => x.name.indexOf('中容武陵电池') >= 0)[0];
+  const big = all.filter(x => x.name.indexOf('高容谷地电池') >= 0)[0];
   if (!big) return false;
-  const rb = A.RbaseBest([{ id: big.id, name: big.name, rate: 40 }], '四号谷地');
+  const rb = A.RbaseBest([{ id: big.id, name: big.name, rate: 60 }], '四号谷地');
   return rb.unassigned.length === 1 && rb.unassigned[0].kind === 'capacity'
     && rb.unassigned[0].why.indexOf('装不下') >= 0;
 })());
@@ -1033,11 +1040,12 @@ chk('v159 台数闸门：超 180 台的目标进 unassigned（kind=machines）�
   return /kind:'machines'/.test(rawCode) && /把速率调小到约/.test(rawCode);
 })());
 chk('v159 真试摆优先于台数：大链符合「试摆不过 → capacity」而不是被台数误拦', (() => {
-  /* 中容武陵电池@谷地：174 台（≤180 不超台数）但 4 个谷地基地都摆不下 → 必须报 capacity */
+  /* ⭐v191 换目标：中容武陵电池@谷地 v191 起是 region 硬否决 → 改用本地区的 高容谷地电池@60
+     （≤180 台不超台数，但 4 个谷地基地都摆不下）→ 必须报 capacity。**如实记录：我改了老锁**。 */
   const all = A.RwTargets();
-  const big = all.filter(x => x.name.indexOf('中容武陵电池') >= 0)[0];
+  const big = all.filter(x => x.name.indexOf('高容谷地电池') >= 0)[0];
   if (!big) return false;
-  const rb = A.RbaseBest([{ id: big.id, name: big.name, rate: 40 }], '四号谷地');
+  const rb = A.RbaseBest([{ id: big.id, name: big.name, rate: 60 }], '四号谷地');
   const u = rb.unassigned[0];
   return !!u && u.kind === 'capacity' && u.why.indexOf('装不下') >= 0;
 })());
@@ -1403,8 +1411,10 @@ chk('第3期 RxlAll：byRegion 与 assign 一致（每地区一桶、不丢目�
   return n === al.assign.length;
 })());
 chk('第3期 RgenAdvice：超台数 → 给出「降到多少/分」的可操作建议（R6①）', (() => {
+  /* ⭐v191 换目标：中容武陵电池@谷地 v191 起 region 硬否决 → 改用 高容谷地电池@80
+     （210 台 > 上限 180 → machines 分支，建议降到约 68/分以下）。**如实记录：我改了老锁**。 */
   const all = A.RwTargets();
-  const big = all.filter(x => x.name.indexOf('中容武陵电池') >= 0)[0];
+  const big = all.filter(x => x.name.indexOf('高容谷地电池') >= 0)[0];
   if (!big) return false;
   const rb = A.RbaseBest([{ id: big.id, name: big.name, rate: 80 }], '四号谷地');
   if (rb.unassigned.length !== 1) return false;
@@ -1412,10 +1422,11 @@ chk('第3期 RgenAdvice：超台数 → 给出「降到多少/分」的可操作
   return adv.length >= 1 && adv[0].text.indexOf('降到') >= 0;
 })());
 chk('第3期 RgenAdvice：装不下时至少给一条建议（不静默失败，R6）', (() => {
+  /* ⭐v191 换目标（同 lock 上一条）：中容武陵电池@谷地 现在是 region 硬否决 → 用 高容谷地电池@60 */
   const all = A.RwTargets();
-  const big = all.filter(x => x.name.indexOf('中容武陵电池') >= 0)[0];
+  const big = all.filter(x => x.name.indexOf('高容谷地电池') >= 0)[0];
   if (!big) return false;
-  const rb = A.RbaseBest([{ id: big.id, name: big.name, rate: 40 }], '四号谷地');
+  const rb = A.RbaseBest([{ id: big.id, name: big.name, rate: 60 }], '四号谷地');
   if (!rb.unassigned.length) return false;
   return A.RgenAdvice([rb]).length >= 1;
 })());
@@ -6131,6 +6142,137 @@ chk('v189 unplaced 根因三分支分开（sealed/noPick/noPort），旧混合�
 
 /* ⑤ 广谱锁：**并入 v184⑩**（复用它的扫描，不再单独扫一遍 —— v189 首版单独加了一条
    广谱锁，日常档从 210s 涨到 331s，与 v186「跑验证提速」的目标直接打架，改并进 ⑩）。 */
+
+/* ═══ v190（2026-10-06）自动铺供电桩 —— 生成的画布终于「能通电」 ═══
+   起因：作者提问「供电桩怎么没有摆上，不通电如何工作？」。探针实测：画布上摆了机器 / 物流线 / 销毁池 /
+   仓库两端 / 热能池（发电），**但供电桩 0 座** —— 排布器从来不摆桩（git 里只有 v148 的显示层；
+   设计规格 0 次提及；硬约束 C1~C3+C6 里没有「供电覆盖」）。
+   供电桩真身 **`power_diffuser_1`**（武陵 `power_diffuser_2`）：2×2 / 覆盖 **12×12** / 无接口、不用连线。
+   覆盖口径＝**设备与 12×12 范围有交集即算通电**（「整块落在范围内」在紧凑布局上**无解**：顶排机器一字排满、
+   缝只 1 格宽，探针实测「能覆盖它们的候选位全空 = 0 个」）。
+   ⚠️ 两条如实记录：① 首版踩了两个坑 —— 耗电判据误用 `needPower`（连供电桩/热能池自己都是 true）+
+   画布对象**没有 `.b`**（`Lmk` 只存 {uid,id,x,y,rot,w,d}，建筑要 `byBp(o.id)` 回查）；已各有源码锁守住。 */
+
+let v190n = null;
+const v190noCmt = t => String(t).replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+
+/* ① 行为锁：生成后**所有耗电设备都被桩盖住**（独立复核 —— 不信函数自报，自己按 12×12 再算一遍），
+   且桩与任何件都不重叠、不越界 */
+chk('v190 自动铺供电桩：耗电设备 100% 被覆盖（独立复核）+ 桩不重叠不越界', (() => {
+  loReset(70); A.LawRun('item_copper_nugget', 10);
+  const P = A.LO.plan; if (!P || !P.polePlace) { v190n = '无 polePlace'; return false; }
+  const poles = (A.LO.objs || []).filter(o => o.planRole === 'pole');
+  if (!poles.length) { v190n = '没铺桩'; return false; }
+  const tgt = (A.LO.objs || []).filter(o => { const b = A.byBp(o.id);
+    return o.planRole && o.planRole !== 'pole' && b && (+b.powerConsume > 0); });
+  if (!tgt.length) { v190n = '没有耗电设备'; return false; }
+  const cover = t => poles.some(p => !(t.x + t.w <= p.x - 5 || t.x >= p.x + 2 + 5
+    || t.y + t.d <= p.y - 5 || t.y >= p.y + 2 + 5));
+  const miss = tgt.filter(t => !cover(t));
+  let bad = 0;
+  poles.forEach(p => {
+    if (p.x < 1 || p.y < 1 || p.x + 2 > 69 || p.y + 2 > 69) bad++;
+    (A.LO.objs || []).forEach(o => { if (o === p) return;
+      if (!(p.x + 2 <= o.x || o.x + o.w <= p.x || p.y + 2 <= o.y || o.y + o.d <= p.y)) bad++; });
+  });
+  v190n = '桩 ' + poles.length + ' 座 · 耗电设备 ' + tgt.length + ' 台 · 没盖到 ' + miss.length + ' · 重叠/越界 ' + bad;
+  return miss.length === 0 && bad === 0;
+})(), () => v190n || '(空)');
+
+/* ② 源码锁：生成与重排**两条路径都铺桩** —— v184「重排丢件」的教训（重排一次就把自动摆的悄悄弄丢） */
+chk('v190 生成与重排两条路径都铺桩（Lreroll 同步，v184 教训）', (() => {
+  if (rawCode.indexOf('function RplacePoles') < 0) return false;
+  const i = rawCode.indexOf('function LawRun');
+  if (!/RplacePoles\(plan, rt, res/.test(rawCode.slice(i, i + 30000))) return false;
+  const j = rawCode.indexOf('function Lreroll');
+  const seg2 = rawCode.slice(j, j + 24000);
+  return /RplacePoles\(best\.plan, best\.route/.test(seg2) && /planRole='pole'/.test(seg2);
+})(), () => {
+  const j = rawCode.indexOf('function Lreroll');
+  return 'reroll 段含 RplacePoles=' + /RplacePoles\(best\.plan/.test(rawCode.slice(j, j + 24000));
+});
+
+/* ③ 口径锁：耗电判据必须与 Rpower 同源（`powerConsume>0`，**不是 needPower**）；
+     画布对象没有 `.b`，必须 `byBp(o.id)` 回查 —— 首版这两个坑各踩一次 */
+chk('v190 目标口径与 Rpower 同源（powerConsume>0 + byBp 回查），未误用 needPower / o.b', (() => {
+  const i = rawCode.indexOf('function RplacePoles');
+  const seg = v190noCmt(rawCode.slice(i, rawCode.indexOf('\nfunction ', i + 10)));
+  return /\+b\.powerConsume>0/.test(seg) && /byBp\(o\.id\)/.test(seg)
+    && !/o\.b\./.test(seg) && !/needPower/.test(seg);
+})(), () => {
+  const i = rawCode.indexOf('function RplacePoles');
+  const seg = v190noCmt(rawCode.slice(i, rawCode.indexOf('\nfunction ', i + 10)));
+  return 'powerConsume=' + /\+b\.powerConsume>0/.test(seg) + ' byBp=' + /byBp\(o\.id\)/.test(seg)
+    + ' 误用o.b=' + /o\.b\./.test(seg) + ' 误用needPower=' + /needPower/.test(seg);
+});
+
+/* ④ id 锁：供电桩真身是 power_diffuser_1 / 息壤版 power_diffuser_2 —— **`power_pole_1` 这个 id 不存在**
+   （老注释里写错过，别再回去） */
+chk('v190 供电桩 id：power_diffuser_1 / _2 在表、power_pole_1 不存在（别再写错）', (() => {
+  return !!A.byBp('power_diffuser_1') && !!A.byBp('power_diffuser_2') && !A.byBp('power_pole_1');
+})(), () => 'diffuser_1=' + !!A.byBp('power_diffuser_1') + ' diffuser_2=' + !!A.byBp('power_diffuser_2')
+  + ' pole_1=' + !!A.byBp('power_pole_1'));
+
+/* ⑤ 开关锁：关掉自动铺桩 → 一座不铺，且产线照常生成（不升级成门禁） */
+chk('v190 开关：自动铺桩关掉后不铺桩，产线照常生成', (() => {
+  loReset(50); A.LO.autoPole = false;
+  A.LawRun('item_iron_cmpt', 10);
+  const n = (A.LO.objs || []).filter(o => o.planRole === 'pole').length;
+  const ok = !!A.LO.plan;
+  A.LO.autoPole = true;   /* ⚠️ 复位，别污染后面的用例 */
+  return ok && n === 0;
+})(), () => '桩数=' + (A.LO.objs || []).filter(o => o.planRole === 'pole').length + ' 有方案=' + !!A.LO.plan);
+
+/* ═══ v191（2026-10-06）选点建议硬否决：息壤家族物料只有武陵能产 ═══
+   作者截图指出：「中容武陵电池是武陵的啊，怎么可能在四号谷地，这些删掉」。
+   真因：该链要 480/分 的「惰性壤晶废液」（**不可跨地区收货**）并要**本地生产**「壤晶 / 壤晶废液」，
+   而这些都属于**息壤家族**（上游是武陵限定的**天有洪炉**）。但配置表里这几件的 `items.domains`
+   写的是 universal、「息壤气→息壤」那条链在本工具数据里又是**悬空**的 ⇒ 光看数据判不出来；
+   原来只把它当「放这里就得本地想办法」的**提示** → 于是给出了做不到的推荐。
+   修法：显式登记 `RW_WULING_ONLY_MATS`（按项目规矩：**配置表与实测冲突以实测为准**），
+   只在「链上必须**本地生产**它」或「它是**不可跨地区收货**的必需原料」时**硬否决** —— 口径要窄。 */
+
+let v191n = null;
+chk('v191 选点硬否决：中容武陵电池 四号谷地不可行（息壤家族本地造不出）· 武陵可行', (() => {
+  const a1 = A.RxlAnalyze('item_proc_battery_5', 10, '四号谷地');
+  const a2 = A.RxlAnalyze('item_proc_battery_5', 10, '武陵');
+  /* 多基地分配层也要报 region（不是 capacity / 不是静默） */
+  const rb = A.RbaseBest([{ id: 'item_proc_battery_5', name: '中容武陵电池', rate: 10 }], '四号谷地');
+  const u = rb.unassigned[0];
+  const rbOk = !!u && u.kind === 'region';
+  v191n = '谷地 ok=' + a1.ok + '（' + a1.blocked.length + ' 条）· 武陵 ok=' + a2.ok
+    + ' · RbaseBest kind=' + (u ? u.kind : '已分配') + ' | 谷地首条理由: ' + (a1.blocked[0] || '—');
+  return a1.ok === false && a1.blocked.some(b => b.indexOf('息壤家族') >= 0) && a2.ok === true && rbOk;
+})(), () => v191n || '(空)');
+
+chk('v191 选点推荐：中容武陵电池 不再被分到四号谷地（作者截图那条错误推荐）', (() => {
+  const tb = A.RxlBest([{ id: 'item_proc_battery_5', rate: 10 }]);
+  const best = tb && tb.best;
+  v191n = 'best.assign=' + JSON.stringify(best && best.assign);
+  return !!best && best.assign.length === 1 && best.assign[0] === '武陵';
+})(), () => v191n || '(空)');
+
+chk('v191 硬否决文案带物品名（不再出现 undefined —— 顺手修的老 bug）', (() => {
+  const tb = A.RxlBest([{ id: 'item_proc_battery_5', rate: 10 }]);
+  const bad = ((tb && tb.combos) || []).filter(c => c.invalid).map(c => c.invalid).join(' | ');
+  v191n = bad.slice(0, 140);
+  return bad.indexOf('undefined') < 0 && bad.indexOf('中容武陵电池') >= 0;
+})(), () => v191n || '(没有 invalid 组合)');
+
+chk('v191 口径要窄：不用到息壤家族的链在两地都不被否决（防过度否决）', (() => {
+  const a1 = A.RxlAnalyze('item_proc_battery_2', 10, '四号谷地');   /* 中容谷地电池：只吃铁制零件 */
+  const a2 = A.RxlAnalyze('item_iron_cmpt', 10, '四号谷地');
+  v191n = '中容谷地电池@谷地 ok=' + a1.ok + ' · 铁制零件@谷地 ok=' + a2.ok;
+  return a1.ok === true && a2.ok === true;
+})(), () => v191n || '(空)');
+
+chk('v191 数据前提：天有洪炉是武陵限定机器（RW_WULING_ONLY_MATS 的依据）', (() => {
+  const b = (A.DB.buildings || []).filter(x => x.id === 'xiranite_oven_1')[0];
+  return !!b && b.isUniversal === false && (b.domainNames || []).indexOf('武陵') >= 0;
+})(), () => {
+  const b = (A.DB.buildings || []).filter(x => x.id === 'xiranite_oven_1')[0];
+  return b ? (b.name + ' isUniversal=' + b.isUniversal + ' domainNames=' + JSON.stringify(b.domainNames)) : '不在表';
+});
 
 loReset(50); A.render();
 

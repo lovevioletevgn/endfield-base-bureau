@@ -2201,7 +2201,7 @@ function LlogiAt(idx,x,y,isPipe){
   return !!b&&!!b.isLogi&&((!!isPipe)===(b.lgMedium==='管道'));
 }
 function Linit(){
-  if(!LO) LO={size:50,pick:null,pickRot:0,objs:[],sel:[],undo:[],redo:[],seq:0,msg:'',lastT:0,lastUid:'',showPort:true,showGas:true,showPwr:true,zone:'',viewRot:0,base:'',plan:null,plans:[],tgt:'item_iron_cmpt',rate:10,selfLoop:false,shipIn:false,autoGen:true,autoStore:true,autoFeed:true,autoBus:true,tv:0,tvHours:1,mt:[],shipPick:'',shipCands:[],shipDmap:null,shipRawSet:null,
+  if(!LO) LO={size:50,pick:null,pickRot:0,objs:[],sel:[],undo:[],redo:[],seq:0,msg:'',lastT:0,lastUid:'',showPort:true,showGas:true,showPwr:true,zone:'',viewRot:0,base:'',plan:null,plans:[],tgt:'item_iron_cmpt',rate:10,selfLoop:false,shipIn:false,autoGen:true,autoStore:true,autoFeed:true,autoBus:true,autoPole:true,tv:0,tvHours:1,mt:[],shipPick:'',shipCands:[],shipDmap:null,shipRawSet:null,
     /* ⭐⑥-3 收货方向（2026-09-22 作者：两地对称互传，现在用谷地→武陵；下拉为未来新地区留口） */
     shipFrom:'domain_1', shipTo:'domain_2', pickShow:false,
       /* ⭐v144 建筑清单默认收起（作者：那 45 项的大块一直摊在画布上方，换基建很麻烦） */
@@ -3100,12 +3100,13 @@ function LonKeyDown(e){
 const LO_KEEP_CATS=['仓储存取','基础生产','合成制造','电力','功能设备'];
 const LO_KEEP_IDS=['sp_hub_1','sp_sub_hub_1'];
 /* 沙盘里一概不提供的建筑（按 ID 拉黑，含多地区同名变体）：
-     中继器 power_pole_2 / 息壤中继器 power_pole_3 —— 作者 2026-09-21 要求去掉。
-     洒水机 squirter / 给水器 dumper / 滑索架 travel_pole（含长距滑索架 travel_pole_2）
+     ⭐v190（2026-10-06）**放回**「中继器 power_pole_2 / 息壤中继器 power_pole_3」——
+       起因：作者提问「供电桩怎么没有摆上，不通电如何工作？」。除自动铺桩外，**也要能手动补桩/拉中继器**，
+       所以撤销作者 2026-09-21 的拉黑决定（**这次改动如实记在这里**：原来是「作者要求去掉」，现在是作者要求放回）。
+     仍在拉黑：洒水机 squirter / 给水器 dumper / 滑索架 travel_pole（含长距滑索架 travel_pole_2）
      / 便捷存取站 carrier_1 / 留言信标 marker_1 —— 作者 2026-09-21 要求不出现在试摆里。
    拉黑对「默认清单」和「分类下拉单独看」都生效；要放回来，把 ID 从这里删掉即可。 */
-const LO_SKIP_IDS=['power_pole_2','power_pole_3',
-  'mix_pool_1',                         /* ⭐v136 基础反应池不作独立条目 —— 界面上的「反应池」= 扩容池（作者只用扩容） */
+const LO_SKIP_IDS=['mix_pool_1',                         /* ⭐v136 基础反应池不作独立条目 —— 界面上的「反应池」= 扩容池（作者只用扩容） */
   'squirter_1','squirter_nop_1',        /* 洒水机 */
   'dumper_1','dumper_nop_1',            /* 给水器 */
   'travel_pole_1','travel_pole_nop_1',  /* 滑索架 */
@@ -5674,6 +5675,100 @@ function RwPath(s, t, busy, size, block, axis, soft){
      [8] 落盘：写 L.objs / L.plan / L.msg → render()
    ⚠️ 第 7 节三段共享 best/tried 状态且顺序敏感；抽成独立函数要传 6 个上下文，
       签名比函数体还长 → **刻意不抽**（详见 排布器算法地图.md 第五节）。 */
+/* ⭐⭐v190（2026-10-06）自动铺供电桩 —— 让生成的画布真的「能通电」。
+   【为什么会有这一版】作者 2026-10-06 提问「供电桩怎么没有摆上，不通电如何工作？」。
+   实测（探针）：画布上摆了机器 / 物流线 / 销毁池 / 仓库两端 / 热能池（发电），**但供电桩 0 座** ——
+   排布器**从来不摆供电桩**：git 里只有 v148 的「供电范围显示层」，设计规格 0 次提及，
+   硬约束 C1~C3+C6 里也**没有「供电覆盖」**。⇒ 之前产出的其实是「布局示意图」，最后一公里的电要玩家自己放桩。
+   【供电桩的事实（配置表实锤，别再写错 id）】真身是 **`power_diffuser_1`（供电桩）** /
+   **`power_diffuser_2`（息壤供电桩，武陵限定）** —— ⚠️ 以前注释里写的 `power_pole_1` **这个 id 根本不存在**。
+   本体 **2×2**、**没有任何接口**（不用连线、不占物流）、`FactoryPowerPoleTable.rangeExtend {x:5,y:5,z:5}`
+   ⇒ 外扩 5 格 → 覆盖 **12×12**（y 是高度，水平范围只看 x/z）。中继器 `power_pole_2`（3×3 / 7×7 / 单段 80）
+   在基地里不需要 —— 12×12 的桩足够铺满基地画布。
+   【覆盖口径】⚠️ **「设备与 12×12 范围有交集」即算通电**（首版用「整块落在范围内」，实测在紧凑布局上**无解**：
+   顶排机器一字排满、缝只 1 格宽 → 能覆盖它们的候选区域里一个 2×2 空位都没有）。
+   ⚠️ 这条是**游戏机制假设**，需作者实机确认；若实机要求整块落在范围内，把 `poleCovers` 换成 `poleStrict` 口径即可（一处）。
+   统计里同时给出「其中 N 台整块落在范围内」。
+   【摆位】贪心集合覆盖：每轮挑「**新覆盖目标最多**」的候选 2×2 空位（并列时先比「离热源（热能池）近」、
+   再比「离它覆盖的目标近」）。目标＝画布上 **`powerConsume>0`** 的件（口径与 `Rpower` **同源**：
+   机器 / 仓储存取 / 销毁池…；⚠️ **不能用 `needPower`** —— 那是「要不要接电」的标志位，
+   连供电桩/中继器/热能池自己都是 true，而真正的机器可能一个都筛不出来（首版就是这么错的：目标 0、桩 0）。
+   ⚠️ 画布对象是 `Lmk` 产的 `{uid,id,x,y,rot,w,d}`、**没有 `.b`**，建筑一律 `byBp(o.id)` 回查（首版第二个坑）。
+   ⚠️ **只摆本体、不布线**（桩无接口）；⚠️ **放不下不拒绝生成**（与 v184 销毁池同一条红线）。
+   ⚠️ 本摆位在**参数搜索之后**跑（属落盘期的显示层补摆），因此**不参与 pickScore** —— 桩数多少不影响方案择优。
+   返回 {objs, uncovered, targets, strict}：objs 每项带 {b,x,y,w,d,rot,cover,strict}。 */
+const RW_POLE_RANGE=5;          /* rangeExtend：本体 2×2 外扩 5 → 覆盖 12×12 */
+function RplacePoles(plan, rt, res, size, occObjs, region){
+  const out=[], uncovered=[];
+  const K=(x,y)=>x+','+y;
+  const isWuling=/武陵/.test(String(region||''));
+  const poleB=byBp(isWuling?'power_diffuser_2':'power_diffuser_1')||byBp('power_diffuser_1');
+  if(!poleB) return {objs:out, uncovered:uncovered, targets:0};
+  const occ={};
+  const mark=(x,y,w,d)=>{ for(let j=0;j<d;j++) for(let i=0;i<w;i++) occ[K(x+i,y+j)]=1; };
+  (occObjs||[]).forEach(o=>{ if(o.x!=null&&o.w&&o.d) mark(o.x,o.y,o.w,o.d); });
+  ((rt&&rt.belts)||[]).forEach(b=>{ occ[K(b.x,b.y)]=1; });
+  /* 覆盖目标 + 热源位置。
+     ⚠️ 耗电口径**必须与 Rpower 同源**：判据是 `powerConsume>0`，**不是 `needPower`** ——
+        实测踩中：`needPower` 连供电桩/中继器/热能池自己都是 true（它们 powerConsume=0），
+        用它当判据会「把基础设施当耗电设备」而且真正的机器可能一个都筛不出来（首版就是这样，目标 0、桩 0）。 */
+  const tgt=[], gens=[];
+  (occObjs||[]).forEach(o=>{
+    if(o.x==null) return;
+    /* ⚠️ 画布上的对象结构是 `Lmk` 产出的 `{uid,id,x,y,rot,w,d}` —— **没有 `.b`**，
+       建筑必须 `byBp(o.id)` 回查（与 `Rpower` 同款写法）。首版直接读 `o.b` → 目标恒为 0、一座桩都不铺。 */
+    const b=byBp(o.id); if(!b) return;
+    if(o.planRole==='gen'){ gens.push({x:o.x,y:o.y}); return; }
+    if(!(+b.powerConsume>0)) return;
+    tgt.push({x:o.x, y:o.y, w:o.w, d:o.d});
+  });
+  if(!tgt.length) return {objs:out, uncovered:uncovered, targets:0};
+  /* 覆盖判定：**目标与 12×12 范围有交集**即算通电 + **整块落在范围内**的严格版（只用于统计/择优）。
+     ⚠️ 口径说明（重要，别偷偷改回去）：首版用「整块落在范围内」（更保守），**实测在紧凑布局上无解** ——
+        顶排机器 y=1..4 一字排满、缝只有 1 格宽，「能覆盖它们」的候选区域里**一个 2×2 空位都没有**
+        （探针实证：36/42/60 个候选位、全空 0 个）。改成「有交集」后同片区在 y=5 以下就有落点。
+     ⚠️ **这条是游戏机制假设**（「设备与供电范围有交集即通电」），需作者实机确认；
+        若实机要求整块落在范围内，把 `poleCovers` 换回 `poleStrict` 的口径即可（一处）。 */
+  const poleCovers=(px,py,t)=> !(t.x+t.w<=px-RW_POLE_RANGE || t.x>=px+2+RW_POLE_RANGE
+    || t.y+t.d<=py-RW_POLE_RANGE || t.y>=py+2+RW_POLE_RANGE);
+  const poleStrict=(px,py,t)=> t.x>=px-RW_POLE_RANGE && t.y>=py-RW_POLE_RANGE
+    && t.x+t.w<=px+2+RW_POLE_RANGE && t.y+t.d<=py+2+RW_POLE_RANGE;
+  const freeAt=(px,py)=>{
+    for(let j=0;j<2;j++) for(let i=0;i<2;i++){
+      const xx=px+i, yy=py+j;
+      if(xx<RW_MARGIN||yy<RW_MARGIN||xx>=size-RW_MARGIN||yy>=size-RW_MARGIN) return false;
+      if(occ[K(xx,yy)]) return false;
+    }
+    return true;
+  };
+  const genDist=(px,py)=>{ let m=1e9; gens.forEach(g=>{ const v=Math.abs(g.x-px)+Math.abs(g.y-py); if(v<m)m=v; }); return m; };
+  const left=tgt.slice();
+  let strictN=0;
+  for(let guard=0; guard<96 && left.length; guard++){
+    let best=null;
+    for(let py=RW_MARGIN; py<size-RW_MARGIN-1; py++){
+      for(let px=RW_MARGIN; px<size-RW_MARGIN-1; px++){
+        if(!freeAt(px,py)) continue;
+        let hit=0, dsum=0;
+        for(let i=0;i<left.length;i++){ const t=left[i];
+          if(poleCovers(px,py,t)){ hit++; dsum+=Math.abs(px-t.x)+Math.abs(py-t.y); } }
+        if(!hit) continue;
+        if(!best || hit>best.hit
+          || (hit===best.hit && (genDist(px,py)<best.gd
+              || (genDist(px,py)===best.gd && dsum<best.dsum)))) best={px:px, py:py, hit:hit, dsum:dsum, gd:genDist(px,py)};
+      }
+    }
+    if(!best) break;
+    mark(best.px,best.py,2,2);
+    let st=0;
+    for(let i=0;i<left.length;i++) if(poleStrict(best.px,best.py,left[i])) st++;
+    strictN+=st;
+    out.push({b:poleB, x:best.px, y:best.py, w:2, d:2, rot:0, cover:best.hit, strict:st});
+    for(let i=left.length-1;i>=0;i--) if(poleCovers(best.px,best.py,left[i])) left.splice(i,1);
+  }
+  left.forEach(t=>uncovered.push(t));
+  return {objs:out, uncovered:uncovered, targets:tgt.length, strict:strictN};
+}
 function LawRun(targetId, perMin){
   /* ── [1] 入参校验 / 目标与速率 ───────────────────────── */
   const L=Linit();
@@ -6047,8 +6142,21 @@ function LawRun(targetId, perMin){
       L.objs.push(obj);
     });
   }
+  /* ⭐⭐v190 自动铺供电桩（最后一步 —— 机器/线/池子/仓库/仓库取货口/热能池全部定形后，只捡剩余空位）。
+     详见 RplacePoles 头部。⚠️ 只摆本体、不布线；放不下不拒绝生成。 */
+  let polePlace=null;
+  if(L.autoPole!==false){
+    polePlace=RplacePoles(plan, rt, res, L.size, L.objs, Lregion());
+    (polePlace.objs||[]).forEach(p=>{
+      const obj=Lmk(p.b, p.x, p.y, p.rot||0);
+      obj.planRole='pole';
+      obj.prod='供电桩（覆盖 12×12，本桩盖 '+p.cover+' 台耗电设备）';
+      L.objs.push(obj);
+    });
+  }
   L.plan={res:res, plan:plan, route:rt, rawNeed:rawNeedOf(res), sinkPlan:sinkPlan, sinkPlaced:sinkPlaced,
-          genPlan:genPlan, genPlaced:genPlaced, storePlace:storePlace, feedPlace:feedPlace, busPlace:busPlace};
+          genPlan:genPlan, genPlaced:genPlaced, storePlace:storePlace, feedPlace:feedPlace, busPlace:busPlace,
+          polePlace:polePlace};
   const limWarns=RwPlaceLimitWarn(res);   /* ⑥-4：建筑专属限摆（天有洪炉 ≤12 台）—— 报警不拦截 */
   /* ⭐v184：销毁支线通报补「接线」口径 —— 池子摆上不算完，接上线才算有去路 */
   const sinkNote=sinkPlan.sinks.length?('；♻️ 销毁支线：'+sinkPlan.reasons.join('；')
@@ -6074,6 +6182,13 @@ function LawRun(targetId, perMin){
     ?('；📥 进货端已摆仓库取货口 '+feedPlace.objs.length+' 个（从地区仓库取原料）'
       +(feedPlace.unplaced.length?('；⚠ '+feedPlace.unplaced.length+' 条原料没接上（见报告）'):''))
     :'';
+  /* ⭐v190 供电覆盖通报：摆了几座桩 / 盖住几台 / 有几台盖不到（盖不到不拦截，提示手动补桩） */
+  const poleNote=(polePlace&&polePlace.targets)
+    ?('；🔌 供电覆盖：已铺供电桩 '+polePlace.objs.length+' 座（每座覆盖 12×12，无接口、不用连线），盖住 '
+      +((polePlace.targets-polePlace.uncovered.length))+'/'+polePlace.targets+' 台耗电设备'
+      +(polePlace.strict?('（其中 '+polePlace.strict+' 台整块落在范围内）'):'')
+      +(polePlace.uncovered.length?('；⚠ '+polePlace.uncovered.length+' 台没盖到（需手动补桩）'):''))
+    :'';
   L.msg='产线已生成：'+(res.targets?res.targets.map(t=>t.name+' '+t.perMin+'/分').join(' ＋ ')
     :res.targetName+' '+perMin+'/分')+' —— 机器 '+res.totalMachines+' 台 + 管线 '+rt.belts.length+' 格'
         +(pickNote?('；'+pickNote):'')
@@ -6082,6 +6197,7 @@ function LawRun(targetId, perMin){
         +storeNote
         +feedNote
         +busNote
+        +poleNote
         +(limWarns.length?('；⚠ '+limWarns.join('；')):'')
         +(rt.warns.length?('；'+rt.warns.length+' 条提醒见下方'):'');
   render();
@@ -6242,11 +6358,23 @@ function Lreroll(){
       });
     }
   }
+  /* ⭐v190 自动铺供电桩：重排同样会重建 L.objs → 桩必须跟销毁池/热能池一样**重摆**，
+     否则「重排其余」一次就把自动铺的供电桩悄悄弄丢（与 C6 假成功同款坑，见 v184 的教训）。 */
+  let rerollPole=null;
+  if(L.autoPole!==false){
+    rerollPole=RplacePoles(best.plan, best.route, P.res, L.size, L.objs, Lregion());
+    (rerollPole.objs||[]).forEach(p=>{
+      const obj=Lmk(p.b, p.x, p.y, p.rot||0);
+      obj.planRole='pole';
+      obj.prod='供电桩（覆盖 12×12，本桩盖 '+p.cover+' 台耗电设备）';
+      L.objs.push(obj);
+    });
+  }
   L.sel=locks.map(o=>o.uid);
   /* 评价函数看的是「整套布局」→ 把锁定件 + 新摆件合并后的那份交给它 */
   L.plan={res:P.res, plan:{objs:best.all, bands:best.plan.bands, height:best.plan.height, over:[], order:{}},
           route:best.route, rawNeed:P.rawNeed, sinkPlan:rerollSink, sinkPlaced:rerollSinkPlaced,
-          genPlan:rerollGen, genPlaced:rerollGenPlaced};
+          genPlan:rerollGen, genPlaced:rerollGenPlaced, polePlace:rerollPole};
   const stR=best.route.stats;
   L.msg='重排完成：锁定 '+locks.length+' 台（位置不动）· 重摆 '+newM+' 台 · 管线 '+best.route.belts.length+' 格 —— '
     +'间'+best.c[0]+'/通道'+best.c[1]+'（连通 '+best.sc.ok+' 段 · 手动连 '+best.sc.manual+' · 试了 '+tried+' 组'
@@ -6254,6 +6382,8 @@ function Lreroll(){
     +(stR&&(stR.merge||stR.split)?(' · 汇流 '+stR.merge+' / 分流 '+stR.split):'')+'）'
     +(loose.length?('；画布上另有 '+loose.length+' 个手摆件留在原地，已被当障碍避开'):'')
     +(rerollGen&&rerollGen.need?('；⚡ 热能池重摆 '+rerollGenPlaced.objs.length+'/'+rerollGen.need+' 台'):'')
+    +(rerollPole&&rerollPole.targets?('；🔌 供电桩重摆 '+rerollPole.objs.length+' 座（盖住 '
+      +((rerollPole.targets-rerollPole.uncovered.length))+'/'+rerollPole.targets+' 台耗电设备）'):'')
     +(best.route.warns.length?('；'+best.route.warns.length+' 条提醒见下方'):'');
   render();
 }
@@ -6568,6 +6698,19 @@ function RwLocalGather(itemId, regionName){
 }
 function RxlSlots(side){ return Math.floor(((side||0)-1)/3); }
 /* 单目标 × 地区 适配分析（收货前展开；regionName='' = 不限地区）。带缓存。 */
+/* ⭐⭐v191（2026-10-06，作者实机确认）：**息壤家族物料只有武陵能产**，四号谷地造不出来。
+   【为什么要在代码里显式登记】配置表上这条**推不出来**：
+     · 这几件的 `items.domains` 写的是 universal（谷地/武陵都有），
+     · 唯一能与天有洪炉并列的「息壤」产法（固气转化机：息壤气→息壤）在本工具的数据里是**悬空链**
+       —— 固气转化机既不在建筑表（摆不出来）、息壤气也没有可解析的产法。
+   所以按项目规矩（**配置表与游戏实测冲突时以实测为准，并在注释里记录差异**）显式登记。
+   ⚠️ 口径要**窄**：只在「链上必须**本地生产**它」或「它是**不可跨地区收货**的必需原料」时才硬否决，
+      不是为了把整条链一刀切掉。链接上能**收货**的（如壤晶可跨区传）照旧走收货口径。
+   依据：天有洪炉 xiranite_oven_1 是 buildings.domainNames=['武陵'] 的武陵限定机器（数据可查），
+        而息壤 ← 天有洪炉 是这几件的上游（machine_recipes 可查：息壤→液化息壤→壤晶废液→壤晶/惰性壤晶废液）。*/
+const RW_WULING_ONLY_MATS=['item_xiranite_powder','item_xiranite_enr_powder','item_muck_xiranite',
+  'item_xiranite_poly','item_liquid_xiranite','item_liquid_xiranite_poly','item_liquid_xiranite_lowpoly'];
+function RwWulingRegion(r){ return /武陵/.test(String(r||'')); }   /* regionName 就是中文地区名（与 RwMade/domainNames 同口径） */
 function RxlAnalyze(iid, perMin, regionName){
   RxlAnalyze._c=RxlAnalyze._c||{};
   const key=iid+'@'+perMin+'@'+(regionName||'');
@@ -6584,6 +6727,13 @@ function RxlAnalyze(iid, perMin, regionName){
     out.area+=(b.gridArea||0)*(n.machines||1);
     if(regionName && !b.isUniversal && (b.domainNames||[]).indexOf(regionName)<0)
       out.blocked.push('「'+b.name+'」是'+(b.domainNames||[]).join('/')+'限定 —— '+(regionName||'当地')+'建不了');
+    /* ⭐v191：链上要**本地生产**息壤家族物料 → 硬否决（同一物品只报一次，免得刷屏） */
+    if(regionName && !RwWulingRegion(regionName) && RW_WULING_ONLY_MATS.indexOf(n.itemId)>=0){
+      out._wuling=out._wuling||{};
+      if(!out._wuling[n.itemId]){ out._wuling[n.itemId]=1;
+        out.blocked.push('链上要本地生产「'+RwItemName(n.itemId)+'」（息壤家族 —— 只有武陵的天有洪炉能产）—— '
+          +(regionName||'当地')+'造不出，放这里就得改产线'); }
+    }
   });
   /* 占地估算：机器格数 × 2.2（通道/间距系数，按 v63~v66 实测产线量级校准）—— 报告里明标「估算」 */
   out.areaEst=Math.round(out.area*2.2);
@@ -6595,6 +6745,10 @@ function RxlAnalyze(iid, perMin, regionName){
     if(n.external && !RwCanReceive(n.itemId)){
       /* 不可传的外部供给（息壤液这类：聚合池/拆解自筹，本工具没建模其产线）→ 不算矿缺口、
          也不算收货候选（根本传不过来），但**要点名** —— 不然报告会漏说一大块原料 */
+      /* ⚠️ v191 经验：**这里刻意不再按「息壤家族」硬否决**。首版在这条分支上也加了否决，
+         结果把「罐@谷地」误杀了 —— 罐链里也有不可收货的「惰性壤晶废液 240/分」（同样是回收环
+         带来的建模产物），可罐本来就是谷地能建的东西。⇒ 判据只认「链上必须**本地生产**息壤家族物料」
+         （见上面机器节点那段），**不认「外部供给里出现了它」** —— 后者太容易误伤。 */
       const ex=out.manual.filter(x=>x.itemId===n.itemId)[0];
       if(ex) ex.demand+=(n.demand||0);
       else out.manual.push({itemId:n.itemId, name:RwItemName(n.itemId), demand:(n.demand||0)});
@@ -6682,7 +6836,7 @@ function RxlBest(targets){
     let invalid=null, cost=0, notes=[];
     for(let i=0;i<N;i++){
       const a=A(targets[i], assign[i]);
-      if(!a.ok){ invalid=targets[i].name+' 不能放 '+assign[i]+'（'+a.blocked[0]+'）'; break; }
+      if(!a.ok){ invalid=(targets[i].name||RwItemName(targets[i].id))+' 不能放 '+assign[i]+'（'+a.blocked[0]+'）'; break; }
     }
     if(invalid){ combos.push({assign:assign, invalid:invalid, cost:Infinity}); continue; }
     /* 1) 每片地区的收货压力（口径① + 同方向单种） */
@@ -8108,6 +8262,12 @@ function LpickToggle(){ const L=Linit(); L.pickShow=!L.pickShow; render(); }
 function LautoGen(){ const L=Linit(); L.autoGen=!L.autoGen;
   L.msg=L.autoGen?'自动配发电：开 —— 生成产线时按用电缺口自动把热能池摆到画布空位（只摆本体、燃料需自接）'
     :'自动配发电：关 —— 只统计用电，不自动摆发电设备';
+  render(); }
+/* ⭐v190 自动铺供电桩开关（作者 2026-10-06：「供电桩怎么没有摆上，不通电如何工作？」）：
+   开 → 生成产线时按 12×12 覆盖自动铺桩（只摆本体、无需连线），把画布上所有耗电设备盖住 */
+function LautoPole(){ const L=Linit(); L.autoPole=!L.autoPole;
+  L.msg=L.autoPole?'自动铺供电桩：开 —— 生成产线时按 12×12 覆盖自动铺桩，盖住画布上所有耗电设备（只摆本体、无需连线）'
+    :'自动铺供电桩：关 —— 不自动铺桩；自己手放（左栏「电力」里的供电桩 / 中继器 / 息壤供电桩）';
   render(); }
 /* ⭐v144 建筑清单折叠开关 */
 function LpalToggle(){ const L=Linit(); L.palOpen=!L.palOpen; render(); }
@@ -9846,8 +10006,8 @@ function renderLayout(){
         <button class="lo-size ${L.selfLoop?'on':''}" onclick="LselfLoop()" title="开：环里的料（惰气那种）自己循环，报告给出「在哪台机器塞什么启动料」；关：那种料按外部输入处理">闭环自持：${L.selfLoop?'开':'关'}</button>
         <button class="lo-size ${L.shipIn?'on':''}" onclick="LshipIn()" title="开：出发地（方向见下方从/到下拉，默认四号谷地）集成工业能产的全部物品都能传（游戏口径：解锁过产能就行、仓库有没有无所谓）；这条链缺的原料/半成品排在最前，全量可传清单在折叠区里可搜索；选中谁，本地就不建谁和它的上游；关：原料一律按野外采集 / 本地自产">跨地区收货：${L.shipIn?'开':'关'}</button>
         <button class="lo-size ${L.autoGen?'on':''}" onclick="LautoGen()" title="开：生成产线时按「用电 − 协议核心基础发电 200」的缺口，自动把需要的热能池捡空位摆到画布上（按地区第一种燃料算台数：谷地电池 220 / 武陵电池 1600 / 自由模式按源矿 50）。⚠ 只摆本体、不连燃料线 —— 燃料（源矿 / 电池）要你自己接；放不下时不拒绝生成，报告里点名还差几台。关：只统计用电、不摆发电设备">自动配发电：${L.autoGen?'开':'关'}</button>
-        <button class="lo-size ${L.pickShow?'on':''}" onclick="LpickToggle()" title="⑥-3 跨基地选点：多个目标放哪个地区更省 —— 按矿脉分布/机器限定/收货压力穷举分配，含口径①地区合计收货反推与口径②取货口建模；只出建议不摆画布">选点建议</button>
-        <button class="lo-size on" onclick="LgenAll()" title="第 3 期：不用先选基地 —— 自动判断每个目标该去四号谷地还是武陵，各地区内再自动分基地，逐基地摆位+连线并落到各自画布（收货按基地所在地区自动对齐）。⚠ 会覆盖各基地上一次排布器生成的产线（手摆的散件保留），可一次撤销">一键生成（全地区）</button>
+        <button class="lo-size ${L.autoPole?'on':''}" onclick="LautoPole()" title="开：生成产线时按 12×12 覆盖自动铺供电桩（本体 2×2、没有任何接口、不用连线），把画布上所有耗电设备盖住；并列时优先离热能池近的落点。⚠ 只摆本体，位置仅供参考；放不下时不拒绝生成，报告里点名没盖到几台。关：不自动铺桩，自己手放（左栏「电力」里现在有供电桩 / 息壤供电桩 / 中继器）">供电桩：${L.autoPole?'开':'关'}</button>
+        <button class="lo-size ${L.pickShow?'on':''}" onclick="LpickToggle()" title="⑥-3 跨基地选点：多个目标放哪个地区更省 —— 按矿脉分布/机器限定/收货压力穷举分配，含口径①地区合计收货反推与口径②取货口建模；只出建议不摆画布">选点建议</button>        <button class="lo-size on" onclick="LgenAll()" title="第 3 期：不用先选基地 —— 自动判断每个目标该去四号谷地还是武陵，各地区内再自动分基地，逐基地摆位+连线并落到各自画布（收货按基地所在地区自动对齐）。⚠ 会覆盖各基地上一次排布器生成的产线（手摆的散件保留），可一次撤销">一键生成（全地区）</button>
         <button class="lo-size" onclick="LassignRun()" title="第 2 期：把当前目标分配到本地区 4 个基地（主基地优先，装不下才溢到副基地；武陵另有销毁专区），并逐基地落到各自画布。⚠ 会覆盖各基地上一次排布器生成的产线（手摆的散件保留），可一次撤销">一键分配落画布</button>
         <button class="lo-size ${lockMach?'on':'off'}" onclick="Lreroll()" title="锁定件原地不动，其余机器重新分层摆位并绕开它们（管线会整条重铺）。锁定用工具栏的「锁定选中」">重排其余${lockMach?('（锁 '+lockMach+' 台）'):''}</button>
         <button class="lo-size" onclick="LawClear()">清掉产线</button>
@@ -9879,8 +10039,9 @@ function renderLayout(){
     ? `<div class="lo-ph">只显示「${esc(f1)}」共 ${arr.length} ${f1==='物流件'?'件':'座'}
          <button class="lo-reset" onclick="Lonly('')">回到默认清单</button></div>`
     : `<div class="lo-ph">默认只列 ${grp.map(g=>`<b>${g[0]} ${cnt(g)}</b>`).join(' · ')}，共 ${arr.length} 项。<br>
-         资源开采（矿机/水泵只能放野外矿点）、战斗辅助、装饰不列；中继器（含息壤中继器）、洒水机 / 给水器 / 滑索架、便捷存取站 / 留言信标，
-         以及配置表里与正常版同名的<b>免电变体</b>（id 带 <code>_nop_</code>）同样不列 —— 要单独看某一类，用上方分类下拉选。
+         资源开采（矿机/水泵只能放野外矿点）、战斗辅助、装饰不列；洒水机 / 给水器 / 滑索架、便捷存取站 / 留言信标，
+         以及配置表里与正常版同名的<b>免电变体</b>（id 带 <code>_nop_</code>）同样不列 —— 要单独看某一类，用上方分类下拉选。<br>
+         ⭐<b>v190 起「电力」里的中继器 / 息壤中继器放回清单</b>（作者 2026-10-06 要求）—— 自动铺桩之外也能手动补桩 / 拉中继器。
          ${presetBus?'<br><b>当前选了四号谷地的基地</b>：谷地的存取线由基地自动铺，所以源桩 / 基段这里不列（要自己摆就切到武陵的基地）。':''}</div>`;
   /* ---- [3] 图例：接口图例 + 环境圈图例 ---- */
   const legend=L.showPort?`<div class="lo-legend">
@@ -10107,7 +10268,7 @@ function renderLayout(){
       <span class="lo-sep"></span>
       <button class="lo-size ${L.showPort?'on':''}" onclick="LtogglePort()">接口 ${L.showPort?'显示中':'已隐藏'}</button>
       <button class="lo-size ${L.showGas?'on':''}" onclick="LtoggleGas()" title="气体散布机的环境范围层：13×13 方形，圈色 = 通入的气体（数据 FactoryVaporizerTable + FactoryEnvDisplayTable）">环境圈 ${L.showGas?'显示中':'已隐藏'}</button>
-      <button class="lo-size ${L.showPwr?'on':''}" onclick="LtogglePwr()" title="供电桩 / 中继器的配电覆盖层：供电桩 13×13、中继器 7×7（数据 FactoryPowerPoleTable.rangeExtend，与气体散布机同字段同口径；与游戏内实机若有出入按实测修正）">供电范围 ${L.showPwr?'显示中':'已隐藏'}</button>
+      <button class="lo-size ${L.showPwr?'on':''}" onclick="LtogglePwr()" title="供电桩 / 中继器的配电覆盖层：供电桩 12×12、中继器 7×7（数据 FactoryPowerPoleTable.rangeExtend，与气体散布机同字段同口径；与游戏内实机若有出入按实测修正）">供电范围 ${L.showPwr?'显示中':'已隐藏'}</button>
       <span class="lo-sep"></span>
       <button class="lo-size ${L.undo.length?'':'off'}" onclick="Lundo()">撤销（Ctrl+Z）</button>
       <button class="lo-size ${L.redo.length?'':'off'}" onclick="Lredo()">重做（Ctrl+Y）</button>
