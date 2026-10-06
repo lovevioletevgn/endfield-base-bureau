@@ -6274,6 +6274,137 @@ chk('v191 数据前提：天有洪炉是武陵限定机器（RW_WULING_ONLY_MATS
   return b ? (b.name + ' isUniversal=' + b.isUniversal + ' domainNames=' + JSON.stringify(b.domainNames)) : '不在表';
 });
 
+/* ═══ v193（2026-10-06）自动摆气体散布机 —— 「需要气体散布机的产线」终于自己把散布机摆上 ═══
+   起因：作者提问「气体散布机是不是可以加上，让效率更高」→ 确认「是建产线的时候有需要气体散布机的产线」。
+   探针实证（2026-10-06，全库 200 目标）：能生成的 102 条里 **27 条含环境依赖机器**（共 78 台），
+   而画布上散布机**一律 0 台** —— 配方用的是省料的环境版，但不摆散布机这些机器游戏里不工作。
+   建筑事实：`vaporizer_1` 3×3 · 免电 · 1 个管道进料口 · `rangeExtend{x:5,y:5,z:5}` → 圈 13×13。
+   口径：**机器与圈「有交集」即生效**（⭐作者 2026-10-06 实机确认；与供电桩同款）；**只摆本体 + 报告接入点**（气从画布外接入）。 */
+let v193n = null;
+/* 独立复核用的覆盖判定（自己写一遍，不信函数自报）：
+   · v193cover＝**有交集**（作者确认的生效口径，摆位门槛）；
+   · v193strict＝**整块落在圈内**（只用于统计那句「其中 K 台整块落在圈内」）。 */
+const v193cover = (v, t) => !(t.x + t.w <= v.x - 5 || t.x >= v.x + 3 + 5
+  || t.y + t.d <= v.y - 5 || t.y >= v.y + 3 + 5);
+const v193strict = (v, t) => t.x >= v.x - 5 && t.y >= v.y - 5
+  && t.x + t.w <= v.x + 3 + 5 && t.y + t.d <= v.y + 3 + 5;
+
+/* ① 行为锁：气态灼铜（一台要稳定环境、一台要酸性环境）→ 两种气各摆到，且两台都被**同气**的圈罩住 */
+chk('v193 自动摆散布机：气态灼铜链两台环境机器各被「同气」圈罩住（独立复核 · 有交集口径）', (() => {
+  loReset(70); A.LO.autoVap = true;
+  A.LawRun('item_gas_copper_enr2', 10);
+  const P = A.LO.plan;
+  if (!P || !P.vapPlace) { v193n = '无 vapPlace'; return false; }
+  const envMap = A.DB.recipeEnv || {};
+  const objs = A.LO.objs || [];
+  const envM = objs.filter(o => o.planRole === 'machine' && envMap[o.r]);
+  const vaps = objs.filter(o => o.planRole === 'vaporizer');
+  const covered = envM.length > 0 && envM.every(t => vaps.some(v => v.gas === envMap[t.r] && v193cover(v, t)));
+  const gases = [...new Set(vaps.map(v => v.gas))].sort().join(',');
+  v193n = '环境机 ' + envM.length + ' · 散布机 ' + vaps.length + '（气 ' + gases + '）· 全覆盖=' + covered;
+  return envM.length === 2 && vaps.length >= 2 && gases === '1,3' && covered;
+})(), () => v193n || '(空)');
+
+/* ② 免电 + 不压件 + 不越界（沿用①的画布状态） */
+chk('v193 散布机免电（powerConsume=0 · needPower=false）+ 不压任何件、不越界', (() => {
+  const vb = A.byBp('vaporizer_1');
+  if (!vb) { v193n = 'vaporizer_1 不在表'; return false; }
+  const vaps = (A.LO.objs || []).filter(o => o.planRole === 'vaporizer');
+  if (!vaps.length) { v193n = '① 没摆出散布机'; return false; }
+  let bad = 0;
+  vaps.forEach(v => {
+    if (v.x < 1 || v.y < 1 || v.x + 3 > 69 || v.y + 3 > 69) bad++;
+    (A.LO.objs || []).forEach(o => { if (o === v) return;
+      if (!(v.x + 3 <= o.x || o.x + o.w <= v.x || v.y + 3 <= o.y || o.y + o.d <= v.y)) bad++; });
+  });
+  v193n = 'powerConsume=' + vb.powerConsume + ' needPower=' + vb.needPower + ' 越界/重叠=' + bad;
+  return (+vb.powerConsume === 0) && vb.needPower === false && bad === 0;
+})(), () => v193n || '(空)');
+
+/* ③ 反向锁：无环境依赖的链**一台都不摆**（不误摆） */
+chk('v193 反向：铁制零件链（无环境配方）→ 一台散布机都不摆', (() => {
+  loReset(50); A.LawRun('item_iron_cmpt', 10);
+  const n = (A.LO.objs || []).filter(o => o.planRole === 'vaporizer').length;
+  v193n = '散布机=' + n + ' 有方案=' + !!A.LO.plan;
+  return !!A.LO.plan && n === 0;
+})(), () => v193n || '(空)');
+
+/* ④ 开关锁：关掉自动摆 → 一台不摆，且产线照常生成（不升级成门禁） */
+chk('v193 开关：自动摆散布机关掉后不摆，产线照常生成', (() => {
+  loReset(70); A.LO.autoVap = false;
+  A.LawRun('item_gas_copper_enr2', 10);
+  const n = (A.LO.objs || []).filter(o => o.planRole === 'vaporizer').length;
+  const ok = !!A.LO.plan;
+  A.LO.autoVap = true;   /* ⚠️ 复位，别污染后面的用例 */
+  v193n = '散布机=' + n + ' 有方案=' + ok;
+  return ok && n === 0;
+})(), () => v193n || '(空)');
+
+/* ⑤ 报告锁：有环境的链点明「已自动摆好气体散布机 + 画布外接入 + 进料口外侧格坐标 + 其中 N 台整块落在圈内」；
+      无环境的链**不能出现**这两句（用报告段专属短语判，避开帮助手册里的同名词） */
+chk('v193 报告：有环境链点名自动摆 + 接入点坐标 + 整块统计；无环境链不出现该段', (() => {
+  loReset(70); A.tab = 'layout'; A.LawRun('item_gas_copper_enr2', 10); A.render();
+  const h1 = outEl.innerHTML || '';
+  const ok1 = h1.indexOf('已自动摆好气体散布机') >= 0 && h1.indexOf('画布外接入') >= 0
+    && /进料口外侧格 = \(\d+,\d+\)/.test(h1) && h1.indexOf('台整块落在圈内') >= 0;
+  loReset(50); A.LawRun('item_iron_cmpt', 10); A.render();
+  const h2 = outEl.innerHTML || '';
+  const ok2 = h2.indexOf('已自动摆好气体散布机') < 0 && h2.indexOf('要摆进气体散布机的环境圈才会开工') < 0;
+  v193n = '有环境链含该段=' + ok1 + ' 无环境链干净=' + ok2;
+  return ok1 && ok2;
+})(), () => v193n || '(空)');
+
+/* ⑥ 源码锁：生成与重排**两条路径都摆**（v184「重排丢件」的教训 —— 重排不重摆＝悄悄弄丢自动摆的件） */
+chk('v193 生成与重排两条路径都摆散布机（Lreroll 同步，v184 教训）', (() => {
+  if (rawCode.indexOf('function RplaceVaporizers') < 0) return false;
+  const i = rawCode.indexOf('function LawRun');
+  if (!/RplaceVaporizers\(plan, rt, res/.test(rawCode.slice(i, i + 30000))) return false;
+  const j = rawCode.indexOf('function Lreroll');
+  const seg = rawCode.slice(j, j + 26000);
+  return /RplaceVaporizers\(best\.plan, best\.route/.test(seg) && /planRole='vaporizer'/.test(seg);
+})(), () => {
+  const j = rawCode.indexOf('function Lreroll');
+  return 'reroll 段含 RplaceVaporizers=' + /RplaceVaporizers\(best\.plan/.test(rawCode.slice(j, j + 26000));
+});
+
+/* ⑦ 口径锁：摆位门槛必须是「有交集」（⭐作者 2026-10-06 实机确认 —— 与供电桩同款），
+      「整块落在圈内」只留作统计；目标数据与报告同源 DB.recipeEnv。
+      ⚠️ 首版把「整块」当门槛，实测 78 台里 5 台一个落点都没有 —— 别偷偷改回去。 */
+chk('v193 口径锁：摆位门槛用「有交集」（作者实机确认）+ 整块只作统计 + 目标取 DB.recipeEnv', (() => {
+  const i = rawCode.indexOf('function RplaceVaporizers');
+  if (i < 0) return false;
+  const seg = rawCode.slice(i, rawCode.indexOf('\nfunction ', i + 10));
+  const nc = seg.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  return /const RW_VAP_RANGE=5/.test(rawCode)
+    && /const covers=\(px,py,t\)=>/.test(nc)
+    && /if\(!covers\(px,py,t\)\) continue;/.test(nc)                 /* 候选打分走「有交集」 */
+    && /if\(covers\(best\.px,best\.py,left\[i\]\)\) left\.splice/.test(nc)   /* 剔除也走「有交集」 */
+    && /if\(inside\(px,py,t\)\) st\+\+/.test(nc)                     /* 整块只作次要偏好/统计 */
+    && /strictN\+=best\.st;/.test(nc)
+    && /DB\.recipeEnv/.test(nc) && /o\.r/.test(nc);
+})(), () => {
+  const i = rawCode.indexOf('function RplaceVaporizers');
+  const nc = rawCode.slice(i, rawCode.indexOf('\nfunction ', i + 10))
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  return 'RANGE5=' + /const RW_VAP_RANGE=5/.test(rawCode)
+    + ' covers=' + /const covers=\(px,py,t\)=>/.test(nc)
+    + ' 门槛=有交集=' + /if\(!covers\(px,py,t\)\) continue;/.test(nc)
+    + ' 整块只作统计=' + /if\(inside\(px,py,t\)\) st\+\+/.test(nc)
+    + ' recipeEnv=' + /DB\.recipeEnv/.test(nc);
+});
+
+/* ⑧ 数据前提锁：气体散布机 3×3 · 外扩 5（圈 13×13）· 只有 1 个管道进料口（配置表口径） */
+chk('v193 数据前提：散布机 3×3 · 外扩 5 → 圈 13×13 · 1 个管道进料口', (() => {
+  const vb = A.byBp('vaporizer_1');
+  const vp = vb && (A.vaporizerOf(vb) || vb.vaporizer);
+  const fp = vb ? String(vb.gridFootprint || '') : '';
+  const ports = (vb && vb.ports) || [];
+  v193n = 'footprint=' + fp + ' rangeExtend=' + JSON.stringify(vp && vp.rangeExtend)
+    + ' ports=' + ports.length + (ports[0] ? ('（' + (ports[0].isPipe ? '管道' : '传送带') + '）') : '');
+  return fp === '3×3' && !!vp && vp.rangeExtend && vp.rangeExtend.x === 5
+    && ports.length === 1 && !!ports[0].isPipe;
+})(), () => v193n || '(空)');
+
 loReset(50); A.render();
 
 report();

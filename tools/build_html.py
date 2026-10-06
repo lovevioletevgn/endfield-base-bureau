@@ -2201,7 +2201,7 @@ function LlogiAt(idx,x,y,isPipe){
   return !!b&&!!b.isLogi&&((!!isPipe)===(b.lgMedium==='管道'));
 }
 function Linit(){
-  if(!LO) LO={size:50,pick:null,pickRot:0,objs:[],sel:[],undo:[],redo:[],seq:0,msg:'',lastT:0,lastUid:'',showPort:true,showGas:true,showPwr:true,zone:'',viewRot:0,base:'',plan:null,plans:[],tgt:'item_iron_cmpt',rate:10,selfLoop:false,shipIn:false,autoGen:true,autoStore:true,autoFeed:true,autoBus:true,autoPole:true,tv:0,tvHours:1,mt:[],shipPick:'',shipCands:[],shipDmap:null,shipRawSet:null,
+  if(!LO) LO={size:50,pick:null,pickRot:0,objs:[],sel:[],undo:[],redo:[],seq:0,msg:'',lastT:0,lastUid:'',showPort:true,showGas:true,showPwr:true,zone:'',viewRot:0,base:'',plan:null,plans:[],tgt:'item_iron_cmpt',rate:10,selfLoop:false,shipIn:false,autoGen:true,autoStore:true,autoFeed:true,autoBus:true,autoPole:true,autoVap:true,tv:0,tvHours:1,mt:[],shipPick:'',shipCands:[],shipDmap:null,shipRawSet:null,
     /* ⭐⑥-3 收货方向（2026-09-22 作者：两地对称互传，现在用谷地→武陵；下拉为未来新地区留口） */
     shipFrom:'domain_1', shipTo:'domain_2', pickShow:false,
       /* ⭐v144 建筑清单默认收起（作者：那 45 项的大块一直摊在画布上方，换基建很麻烦） */
@@ -5699,6 +5699,134 @@ function RwPath(s, t, busy, size, block, axis, soft){
    ⚠️ **只摆本体、不布线**（桩无接口）；⚠️ **放不下不拒绝生成**（与 v184 销毁池同一条红线）。
    ⚠️ 本摆位在**参数搜索之后**跑（属落盘期的显示层补摆），因此**不参与 pickScore** —— 桩数多少不影响方案择优。
    返回 {objs, uncovered, targets, strict}：objs 每项带 {b,x,y,w,d,rot,cover,strict}。 */
+/* ⭐⭐v193（2026-10-06）：自动摆「气体散布机」—— 让环境依赖机器在游戏里真的能开工。
+   【起因】作者问「气体散布机是不是可以加上，让效率更高」→ 追问确认「是建产线的时候有需要气体散布机的产线」。
+   探针实证（2026-10-06，扫全库 200 个目标）：能生成产线的 **102 条里有 27 条含环境依赖机器**
+   （天有洪炉气液模式 / 提纯机省料版 / 气态灼铜…，最多的一条 10 台），而画布上散布机**一律 0 台** ——
+   配方选的是「省料的环境版」（v104 起的既有口径），但不摆散布机这些机器**游戏里不工作**，
+   方案静默失效。与 v180（成品出不去）/ v184（销毁池没接线）/ v190（不通电）**同一类「最后一公里」缺口**。
+   【建筑事实（配置表实锤）】`vaporizer_1` 气体散布机：占地 **3×3**、**免电**（`powerConsume=0`、`needPower=false`）、
+   `FactoryVaporizerTable.rangeExtend{x:5,y:5,z:5}` ⇒ 圈 **13×13 方形**（v103 作者实拍确认非圆）；
+   **1 个管道进料口**（本体 x=0 边，随 rot 转到别的边），四种气体各对应一种环境（GenEnv 1~4 =
+   惰气/水蒸气/酸气/息壤气），持续吃气 **最低 6 单位/分**、储气上限 30。
+   【覆盖口径】✅ **机器与圈「有交集」即生效** —— ⭐**作者 2026-10-06 实机确认**（问「机器部分压在圈边上算不算吃到环境」→ 答「算」）。
+   ⭐**与 v190 供电桩同款口径**（那边也是「有交集即通电」，同日确认）。摆位判据用 `covers`（有交集）；
+   报告里另给「其中 K 台**整块**落在圈内」（`inside` 只作统计，不作摆位门槛）。
+   ⚠️ 首版按「整块落在圈内」摆，实测 27 条链里 78 台机器有 **5 台一个落点都没有**、
+   另有 4 台只能压到圈边 —— 改「有交集」后同片画布上就都有落点了（作者确认后当场收编）。
+   【摆位】按**气体分组**做贪心集合覆盖：每组每轮挑「新覆盖目标最多」的 3×3 空位
+   （并列时比到被覆盖目标的曼哈顿距离和），直到该组目标全部罩住、或再也找不到能罩住人的落点。
+   ⚠️ **一台散布机只出一种气** —— 同一条链要两种气（如气态灼铜：稳定 + 酸性）就摆两组，
+      两组各自成圈、互不干扰（圈重叠没有副作用）。
+   【气源】⭐作者 2026-10-06 选定口径：**只摆本体 + 报告接入点**（气从画布外接入，管子自己接）——
+   与既有「外部暗管接入」提示同款。因此本函数**不铺管、不摆储气罐**；
+   每台落位时按 4 朝向挑「进料口外侧格空着」的那个朝向，并把该格记为 `access` 报出来。
+   ⚠️ **放不下不拒绝生成**（与 v184 销毁池 / v190 供电桩同一条红线）：没罩到的机器逐台点名。
+   ⚠️ 本摆位在**参数搜索之后**跑（属落盘期的补摆），**不参与 pickScore** —— 散布机摆几台不影响方案择优。
+   返回 {objs, uncovered, targets, groups, gasRate, strict}；objs 每项 {b,x,y,w,d,rot,gas,cover,strict,access}。 */
+const RW_VAP_RANGE=5;        /* rangeExtend：本体 3×3 外扩 5 → 圈 13×13 */
+const RW_VAP_ROTS=[0,90,180,270];
+function RplaceVaporizers(plan, rt, res, size, occObjs){
+  const out=[], uncovered=[];
+  const vb=byBp('vaporizer_1');
+  if(!vb) return {objs:out, uncovered:uncovered, targets:0, groups:0, gasRate:6, strict:0};
+  const fp=Lfp(vb), vw=fp[0]||3, vd=fp[1]||3;
+  /* 吃气速率取配置表「最低需求」（官方面板口径 6/分）；取不到就用 6 兜底 */
+  const gasRate=(function(){
+    const v=vaporizerOf(vb), g=v&&(v.gasGroups||[])[0];
+    return (g&&g.rate)||6;
+  })();
+  const K=(x,y)=>x+','+y;
+  const occ={};
+  const mark=(x,y,w,d)=>{ for(let j=0;j<d;j++) for(let i=0;i<w;i++) occ[K(x+i,y+j)]=1; };
+  /* ⚠️ 只栅格化一次（与 RplacePoles/RplaceStores 同款）：绝不在候选循环里回调遍历 L.objs —
+     那是「6400 位置 × 9 格 × 2000 个对象」的量级，实测能把测试从 36s 拖到 283s。 */
+  (occObjs||[]).forEach(o=>{ if(o.x!=null&&o.w&&o.d) mark(o.x,o.y,o.w,o.d); });
+  ((rt&&rt.belts)||[]).forEach(b=>{ occ[K(b.x,b.y)]=1; });
+  /* 目标 = 画布上**选了环境依赖配方**的机器。数据链：`DB.recipeEnv`（build 注入层从
+     `FactoryMachineCraftTable.gasEnv` 补，全库仅 5 条非零：4 条环境 1 + 1 条环境 3）。
+     ⚠️ 判据读 `o.r`（画布对象的配方 id）—— 与报告区「💨 环境依赖」段**同一数据源**，别另立口径。 */
+  const envMap=DB.recipeEnv||{};
+  const byGas={};
+  (occObjs||[]).forEach(o=>{
+    if(o.x==null||o.planRole!=='machine') return;
+    const ge=o.r&&envMap[o.r];
+    if(!ge) return;
+    (byGas[ge]=byGas[ge]||[]).push({x:o.x, y:o.y, w:o.w, d:o.d, gas:ge, recipeId:o.r});
+  });
+  const gasKeys=Object.keys(byGas);
+  if(!gasKeys.length) return {objs:out, uncovered:uncovered, targets:0, groups:0, gasRate:gasRate, strict:0};
+  let targets=0; gasKeys.forEach(g=>{ targets+=byGas[g].length; });
+  /* ⭐覆盖判定两套（别混）：
+     · `covers`＝**有交集即生效** —— ✅作者 2026-10-06 实机确认，**摆位门槛用它**（与供电桩 `poleCovers` 同款）；
+     · `inside`＝**整块落在圈内** —— 只用于报告里那句「其中 K 台整块落在圈内」的统计，**不作门槛**。
+     几何：圈 = 本体 [px,px+vw-1]×[py,py+vd-1] 向外扩 RW_VAP_RANGE 格。 */
+  const inside=(px,py,t)=> t.x>=px-RW_VAP_RANGE && t.y>=py-RW_VAP_RANGE
+    && t.x+t.w<=px+vw+RW_VAP_RANGE && t.y+t.d<=py+vd+RW_VAP_RANGE;
+  const covers=(px,py,t)=> !(t.x+t.w<=px-RW_VAP_RANGE || t.x>=px+vw+RW_VAP_RANGE
+    || t.y+t.d<=py-RW_VAP_RANGE || t.y>=py+vd+RW_VAP_RANGE);
+  const freeAt=(px,py)=>{
+    for(let j=0;j<vd;j++) for(let i=0;i<vw;i++){
+      const xx=px+i, yy=py+j;
+      if(xx<RW_MARGIN||yy<RW_MARGIN||xx>=size-RW_MARGIN||yy>=size-RW_MARGIN) return false;
+      if(occ[K(xx,yy)]) return false;
+    }
+    return true;
+  };
+  /* 进料口外侧格（气从这里进来）：按朝向算，落位时优先挑「外侧格空着」的那个朝向 */
+  const accessOf=(px,py,rot)=>{
+    const p0=(vb.ports||[]).filter(p=>p.kind==='input')[0];
+    if(!p0) return null;
+    const q=LportXY(p0,rot,vw,vd), dr=LportDirRot(p0,rot,vw,vd);
+    const dx=dr==='l'?-1:dr==='r'?1:0, dz=dr==='u'?-1:dr==='d'?1:0;
+    return {x:px+q.x+dx, y:py+q.z+dz};
+  };
+  let strictAll=0;
+  gasKeys.forEach(gk=>{
+    const ge=+gk;
+    let left=byGas[gk].slice();
+    let strictN=0;
+    for(let guard=0; guard<64 && left.length; guard++){
+      let best=null;
+      for(let py=RW_MARGIN; py<=size-RW_MARGIN-vd; py++){
+        for(let px=RW_MARGIN; px<=size-RW_MARGIN-vw; px++){
+          if(!freeAt(px,py)) continue;
+          /* 择优：① 罩住的目标数（有交集）最多 → ② 其中**整块**落在圈内的台数最多 →
+             ③ 到被罩目标的曼哈顿距离和最小。
+             ② 是「罩得更实」的次要偏好：口径已确认「有交集即生效」，但能整块罩住当然更好
+             （机器离圈边越远，越不挑游戏侧判定实现细节，也不怕玩家手挪一格）。 */
+          let hit=0, st=0, dsum=0;
+          for(let i=0;i<left.length;i++){ const t=left[i];
+            if(!covers(px,py,t)) continue;
+            hit++; dsum+=Math.abs(px-t.x)+Math.abs(py-t.y);
+            if(inside(px,py,t)) st++; }
+          if(!hit) continue;
+          if(!best || hit>best.hit
+            || (hit===best.hit && st>best.st)
+            || (hit===best.hit && st===best.st && dsum<best.dsum)) best={px:px, py:py, hit:hit, st:st, dsum:dsum};
+        }
+      }
+      if(!best) break;
+      let rot=0, acc=null;
+      for(let ri=0; ri<RW_VAP_ROTS.length; ri++){
+        const rr=RW_VAP_ROTS[ri], a=accessOf(best.px,best.py,rr);
+        if(!a) continue;
+        if(a.x<RW_MARGIN||a.y<RW_MARGIN||a.x>=size-RW_MARGIN||a.y>=size-RW_MARGIN) continue;
+        if(occ[K(a.x,a.y)]) continue;
+        rot=rr; acc=a; break;
+      }
+      if(acc===null) acc=accessOf(best.px,best.py,0);   /* 四条边都挤着 → rot0，坐标照实报 */
+      mark(best.px,best.py,vw,vd);
+      strictN+=best.st;
+      out.push({b:vb, x:best.px, y:best.py, w:vw, d:vd, rot:rot, gas:ge, cover:best.hit, strict:best.st, access:acc});
+      for(let i=left.length-1;i>=0;i--) if(covers(best.px,best.py,left[i])) left.splice(i,1);
+    }
+    left.forEach(t=>uncovered.push({gas:ge, x:t.x, y:t.y, recipeId:t.recipeId}));
+    strictAll+=strictN;
+  });
+  return {objs:out, uncovered:uncovered, targets:targets, groups:gasKeys.length, gasRate:gasRate,
+          strict:strictAll};
+}
 const RW_POLE_RANGE=5;          /* rangeExtend：本体 2×2 外扩 5 → 覆盖 12×12 */
 function RplacePoles(plan, rt, res, size, occObjs, region){
   const out=[], uncovered=[];
@@ -6144,6 +6272,20 @@ function LawRun(targetId, perMin){
       L.objs.push(obj);
     });
   }
+  /* ⭐⭐v193 自动摆气体散布机（**排在供电桩之前** —— 散布机挑位更受限：必须罩住环境依赖机器，
+     而供电桩哪儿都能铺，让受限的先挑）。
+     详见 RplaceVaporizers 头部。⚠️ 只摆本体 + 报告接入点（气从画布外接入），不铺管。 */
+  let vapPlace=null;
+  if(L.autoVap!==false){
+    vapPlace=RplaceVaporizers(plan, rt, res, L.size, L.objs);
+    (vapPlace.objs||[]).forEach(v=>{
+      const obj=Lmk(v.b, v.x, v.y, v.rot||0);
+      obj.planRole='vaporizer'; obj.gas=v.gas;
+      obj.prod='气体散布机（通'+envGasName(v.gas)+' · 环境圈 13×13 · 本台罩 '+v.cover+' 台）';
+      if(v.access) obj.vapAccess=v.access;
+      L.objs.push(obj);
+    });
+  }
   /* ⭐⭐v190 自动铺供电桩（最后一步 —— 机器/线/池子/仓库/仓库取货口/热能池全部定形后，只捡剩余空位）。
      详见 RplacePoles 头部。⚠️ 只摆本体、不布线；放不下不拒绝生成。 */
   let polePlace=null;
@@ -6158,7 +6300,7 @@ function LawRun(targetId, perMin){
   }
   L.plan={res:res, plan:plan, route:rt, rawNeed:rawNeedOf(res), sinkPlan:sinkPlan, sinkPlaced:sinkPlaced,
           genPlan:genPlan, genPlaced:genPlaced, storePlace:storePlace, feedPlace:feedPlace, busPlace:busPlace,
-          polePlace:polePlace};
+          polePlace:polePlace, vapPlace:vapPlace};
   const limWarns=RwPlaceLimitWarn(res);   /* ⑥-4：建筑专属限摆（天有洪炉 ≤12 台）—— 报警不拦截 */
   /* ⭐v184：销毁支线通报补「接线」口径 —— 池子摆上不算完，接上线才算有去路 */
   const sinkNote=sinkPlan.sinks.length?('；♻️ 销毁支线：'+sinkPlan.reasons.join('；')
@@ -6191,6 +6333,15 @@ function LawRun(targetId, perMin){
       +(polePlace.strict?('（其中 '+polePlace.strict+' 台整块落在范围内）'):'')
       +(polePlace.uncovered.length?('；⚠ '+polePlace.uncovered.length+' 台没盖到（需手动补桩）'):''))
     :'';
+  /* ⭐v193 环境圈通报：摆了几台散布机 / 各什么气 / 罩住几台 / 有几台没罩到（不拦截，提示手动补）
+     ⭐口径＝「机器与圈有交集即生效」（作者 2026-10-06 实机确认），另给「其中 K 台整块落在圈内」 */
+  const vapNote=(vapPlace&&vapPlace.targets)
+    ?('；💨 环境圈：已摆气体散布机 '+vapPlace.objs.length+' 台'
+      +(vapPlace.objs.length?('（'+vapPlace.objs.map(o=>envGasName(o.gas)).join(' / ')+'，每台 3×3 · 免电 · 最低 '+vapPlace.gasRate+' 气/分）'):'')
+      +'，罩住 '+((vapPlace.targets-vapPlace.uncovered.length))+'/'+vapPlace.targets+' 台环境依赖机器'
+      +(vapPlace.strict?('（其中 '+vapPlace.strict+' 台整块落在圈内）'):'')
+      +(vapPlace.uncovered.length?('；⚠ '+vapPlace.uncovered.length+' 台没罩到（需手动补散布机，见报告）'):''))
+    :'';
   L.msg='产线已生成：'+(res.targets?res.targets.map(t=>t.name+' '+t.perMin+'/分').join(' ＋ ')
     :res.targetName+' '+perMin+'/分')+' —— 机器 '+res.totalMachines+' 台 + 管线 '+rt.belts.length+' 格'
         +(pickNote?('；'+pickNote):'')
@@ -6199,6 +6350,7 @@ function LawRun(targetId, perMin){
         +storeNote
         +feedNote
         +busNote
+        +vapNote
         +poleNote
         +(limWarns.length?('；⚠ '+limWarns.join('；')):'')
         +(rt.warns.length?('；'+rt.warns.length+' 条提醒见下方'):'');
@@ -6360,6 +6512,19 @@ function Lreroll(){
       });
     }
   }
+  /* ⭐v193 自动摆气体散布机：重排同样会重建 L.objs → 散布机必须跟销毁池/热能池/供电桩一样**重摆**
+     （v184 假成功教训：重排不重摆＝自动摆的东西被悄悄弄丢，报告还照样写「已摆」）。 */
+  let rerollVap=null;
+  if(L.autoVap!==false){
+    rerollVap=RplaceVaporizers(best.plan, best.route, P.res, L.size, L.objs);
+    (rerollVap.objs||[]).forEach(v=>{
+      const obj=Lmk(v.b, v.x, v.y, v.rot||0);
+      obj.planRole='vaporizer'; obj.gas=v.gas;
+      obj.prod='气体散布机（通'+envGasName(v.gas)+' · 环境圈 13×13 · 本台罩 '+v.cover+' 台）';
+      if(v.access) obj.vapAccess=v.access;
+      L.objs.push(obj);
+    });
+  }
   /* ⭐v190 自动铺供电桩：重排同样会重建 L.objs → 桩必须跟销毁池/热能池一样**重摆**，
      否则「重排其余」一次就把自动铺的供电桩悄悄弄丢（与 C6 假成功同款坑，见 v184 的教训）。 */
   let rerollPole=null;
@@ -6376,7 +6541,7 @@ function Lreroll(){
   /* 评价函数看的是「整套布局」→ 把锁定件 + 新摆件合并后的那份交给它 */
   L.plan={res:P.res, plan:{objs:best.all, bands:best.plan.bands, height:best.plan.height, over:[], order:{}},
           route:best.route, rawNeed:P.rawNeed, sinkPlan:rerollSink, sinkPlaced:rerollSinkPlaced,
-          genPlan:rerollGen, genPlaced:rerollGenPlaced, polePlace:rerollPole};
+          genPlan:rerollGen, genPlaced:rerollGenPlaced, polePlace:rerollPole, vapPlace:rerollVap};
   const stR=best.route.stats;
   L.msg='重排完成：锁定 '+locks.length+' 台（位置不动）· 重摆 '+newM+' 台 · 管线 '+best.route.belts.length+' 格 —— '
     +'间'+best.c[0]+'/通道'+best.c[1]+'（连通 '+best.sc.ok+' 段 · 手动连 '+best.sc.manual+' · 试了 '+tried+' 组'
@@ -6386,6 +6551,8 @@ function Lreroll(){
     +(rerollGen&&rerollGen.need?('；⚡ 热能池重摆 '+rerollGenPlaced.objs.length+'/'+rerollGen.need+' 台'):'')
     +(rerollPole&&rerollPole.targets?('；🔌 供电桩重摆 '+rerollPole.objs.length+' 座（盖住 '
       +((rerollPole.targets-rerollPole.uncovered.length))+'/'+rerollPole.targets+' 台耗电设备）'):'')
+    +(rerollVap&&rerollVap.targets?('；💨 散布机重摆 '+rerollVap.objs.length+' 台（罩住 '
+      +((rerollVap.targets-rerollVap.uncovered.length))+'/'+rerollVap.targets+' 台环境依赖机器）'):'')
     +(best.route.warns.length?('；'+best.route.warns.length+' 条提醒见下方'):'');
   render();
 }
@@ -8271,6 +8438,14 @@ function LautoPole(){ const L=Linit(); L.autoPole=!L.autoPole;
   L.msg=L.autoPole?'自动铺供电桩：开 —— 生成产线时按 12×12 覆盖自动铺桩，盖住画布上所有耗电设备（只摆本体、无需连线）'
     :'自动铺供电桩：关 —— 不自动铺桩；自己手放（左栏「电力」里的供电桩 / 中继器 / 息壤供电桩）';
   render(); }
+/* ⭐v193 自动摆气体散布机开关（作者 2026-10-06：「气体散布机是不是可以加上，让效率更高」
+   →「是建产线的时候有需要气体散布机的产线」）：
+   开 → 生成产线时按 13×13 覆盖自动摆散布机，把链上所有「环境依赖机器」罩住并按需就地选气
+   （只摆本体；气从画布外接入，接入点写进报告 —— 只摆不接是作者 2026-10-06 选定的口径） */
+function LautoVap(){ const L=Linit(); L.autoVap=!L.autoVap;
+  L.msg=L.autoVap?'自动摆气体散布机：开 —— 生成产线时按 13×13 覆盖摆散布机，罩住链上所有环境依赖机器（机器与圈有交集即生效 · 免电 · 每台最低吃 6 气/分；气从画布外接入，接入点见报告）'
+    :'自动摆气体散布机：关 —— 不自动摆；自己手放（左栏「合成制造」里的气体散布机）';
+  render(); }
 /* ⭐v144 建筑清单折叠开关 */
 function LpalToggle(){ const L=Linit(); L.palOpen=!L.palOpen; render(); }
 /* ⭐v144 清单宽度自适应：清单 absolute 挂在画布左侧，所以「左边有多少空白就用多宽」。
@@ -9269,9 +9444,28 @@ function Rreport(P, pw, bw, th, lim, st, rawNeed, sc){
         const rows=Object.keys(byEnv).map(k=>byEnv[k]);
         if(!rows.length) return '';
         const uniqEnv=[...new Set(rows.map(r=>r.ge))];
+        /* ⭐v193（2026-10-06）：本版起会自动摆散布机 —— 报告把「摆了几台 / 各什么气 / 罩住几台 /
+           气怎么进」讲清（作者选定口径：只摆本体、气从画布外接入）。
+           ⚠️ v193 之前生成的产线快照没有 P.vapPlace → 退回 v104 的老文案，不报假数。 */
+        const vp=P.vapPlace;
+        const vapLine=!vp?''
+          :(vp.objs.length
+            ?('<div class="c-sub" style="margin-top:4px"><span><b style="color:#1B6E9E">✅ 已自动摆好气体散布机</b> <span class="lo-tag">v193 · 2026-10-06</span>：<b>'+vp.objs.length+'</b> 台（'
+              +vp.objs.map(o=>esc(envGasName(o.gas))+'@'+o.x+','+o.y).join('、')
+              +'），罩住 <b>'+((vp.targets-vp.uncovered.length))+'/'+vp.targets+'</b> 台环境依赖机器'
+              +(vp.strict?('（其中 <b>'+vp.strict+'</b> 台整块落在圈内）'):'')
+              +'（每台最低吃 <b>'+vp.gasRate+'</b> 单位/分，共 '+Math.round(vp.objs.length*vp.gasRate*10)/10+'/分 · 散布机免电）</span></div>'
+              +'<div class="c-sub" style="margin-top:2px"><span class="c-id">气从<b>画布外接入</b>（本版只摆本体、不铺管）：每台的管道进料口外侧格 = '
+              +vp.objs.map(o=>'('+(o.access?o.access.x+','+o.access.y:'—')+')').join('、')
+              +'，照这些坐标把管接过去。'
+              +(vp.uncovered.length?('　<b style="color:'+RW_COL.warn+'">⚠ '+vp.uncovered.length+' 台没罩到</b>（画布上找不到能罩住它的 3×3 空位）：'
+                +vp.uncovered.map(u=>'('+u.x+','+u.y+')').join('、')+' —— 需手动补散布机或调大画布'):'')
+              +'</span></div>')
+            :('<div class="c-sub" style="margin-top:4px"><span><b style="color:'+RW_COL.warn+'">⚠ 本链要环境，但画布上摆不下散布机</b>（'+vp.targets+' 台机器找不到能罩住它们的 3×3 空位）—— 需手动摆或调大画布</span></div>'));
         return `<div class="c-sub" style="margin-top:6px"><span><b style="color:#1B6E9E">💨 环境依赖 —— 这些机器要摆进气体散布机的环境圈才会开工</b> <span class="lo-tag">v104 · 2026-09-23</span></span></div>
         ${rows.map(r=>`<div class="c-sub" style="margin-top:2px"><span>· <i style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${r.env.c};border:1px solid ${envEdgeOf(r.ge)};vertical-align:-1px"></i> <b>${esc(r.recipe?(r.recipe.machineName||''):'')}</b> ×<b>${r.machines}</b> 台 —— 配方「${esc(r.recipe?(r.recipe.outcomes||[]).map(x=>x.name).join('+'):'')}」需要 <b>${esc(r.env.n)}环境</b>（通${esc(r.env.g)}，最低 6 单位/分）</span></div>`).join('')}
-        <div class="c-sub" style="margin-top:2px"><span class="c-id">口径：这些配方按「有环境」的<b>省料版</b>算（这是排布器一直以来的最优口径${uniqEnv.indexOf(1)>=0?'，本链涉及稳定环境':''}）—— 机器<b>完全处于</b>散布机 13×13 圈内才生效，一台的圈可罩多台；散布机免电。没摆散布机时这些机器不会开工（提纯机/洪炉可在游戏里换回费料的普通配方顶替，但料与台数会变，报告不再准确）。</span></div>`;
+        <div class="c-sub" style="margin-top:2px"><span class="c-id">口径：这些配方按「有环境」的<b>省料版</b>算（这是排布器一直以来的最优口径${uniqEnv.indexOf(1)>=0?'，本链涉及稳定环境':''}）—— 机器与散布机 13×13 圈<b>有交集</b>即生效（⭐作者 2026-10-06 实机确认；整块落在圈内自然也生效），一台的圈可罩多台；散布机免电。${vp?('本版已按该口径自动摆好散布机（见下一段）；'):''}没摆散布机时这些机器不会开工（提纯机/洪炉可在游戏里换回费料的普通配方顶替，但料与台数会变，报告不再准确）。</span></div>
+        ${vapLine}`;
       })()}
       ${(Linit().shipIn&&(Linit().shipCands||[]).length)?`
       <div class="c-sub" style="margin-top:6px"><span><b style="color:#185FA5">跨地区收货 —— 这批料不在本地做，从「${esc(LshipFromName())}」超库存传输过来</b> <span class="lo-tag">路线图 ⑥-1 · 2026-09-22</span></span></div>
@@ -10009,6 +10203,7 @@ function renderLayout(){
         <button class="lo-size ${L.shipIn?'on':''}" onclick="LshipIn()" title="开：出发地（方向见下方从/到下拉，默认四号谷地）集成工业能产的全部物品都能传（游戏口径：解锁过产能就行、仓库有没有无所谓）；这条链缺的原料/半成品排在最前，全量可传清单在折叠区里可搜索；选中谁，本地就不建谁和它的上游；关：原料一律按野外采集 / 本地自产">跨地区收货：${L.shipIn?'开':'关'}</button>
         <button class="lo-size ${L.autoGen?'on':''}" onclick="LautoGen()" title="开：生成产线时按「用电 − 协议核心基础发电 200」的缺口，自动把需要的热能池捡空位摆到画布上（按地区第一种燃料算台数：谷地电池 220 / 武陵电池 1600 / 自由模式按源矿 50）。⚠ 只摆本体、不连燃料线 —— 燃料（源矿 / 电池）要你自己接；放不下时不拒绝生成，报告里点名还差几台。关：只统计用电、不摆发电设备">自动配发电：${L.autoGen?'开':'关'}</button>
         <button class="lo-size ${L.autoPole?'on':''}" onclick="LautoPole()" title="开：生成产线时按 12×12 覆盖自动铺供电桩（本体 2×2、没有任何接口、不用连线），把画布上所有耗电设备盖住；并列时优先离热能池近的落点。⚠ 只摆本体，位置仅供参考；放不下时不拒绝生成，报告里点名没盖到几台。关：不自动铺桩，自己手放（左栏「电力」里现在有供电桩 / 息壤供电桩 / 中继器）">供电桩：${L.autoPole?'开':'关'}</button>
+        <button class="lo-size ${L.autoVap?'on':''}" onclick="LautoVap()" title="开：生成产线时按 13×13 覆盖自动摆气体散布机（本体 3×3、免电、1 个管道进料口），把链上所有「环境依赖机器」（洪炉气液模式 / 提纯机省料版 / 气态灼铜…）罩进圈里（口径：机器与圈有交集即生效 —— 作者 2026-10-06 实机确认），并按每台机器所需气体就地选气（圈色跟着变）。⚠ 只摆本体、不铺管 —— 气（惰气/酸气，每台最低 6 单位/分）要从画布外接入，报告里给出每台的进料口外侧格坐标；放不下时不拒绝生成，报告里点名没罩到几台。关：不自动摆，自己手放（左栏「合成制造」）">气体散布机：${L.autoVap?'开':'关'}</button>
         <button class="lo-size ${L.pickShow?'on':''}" onclick="LpickToggle()" title="⑥-3 跨基地选点：多个目标放哪个地区更省 —— 按矿脉分布/机器限定/收货压力穷举分配，含口径①地区合计收货反推与口径②取货口建模；只出建议不摆画布">选点建议</button>        <button class="lo-size on" onclick="LgenAll()" title="第 3 期：不用先选基地 —— 自动判断每个目标该去四号谷地还是武陵，各地区内再自动分基地，逐基地摆位+连线并落到各自画布（收货按基地所在地区自动对齐）。⚠ 会覆盖各基地上一次排布器生成的产线（手摆的散件保留），可一次撤销">一键生成（全地区）</button>
         <button class="lo-size" onclick="LassignRun()" title="第 2 期：把当前目标分配到本地区 4 个基地（主基地优先，装不下才溢到副基地；武陵另有销毁专区），并逐基地落到各自画布。⚠ 会覆盖各基地上一次排布器生成的产线（手摆的散件保留），可一次撤销">一键分配落画布</button>
         <button class="lo-size ${lockMach?'on':'off'}" onclick="Lreroll()" title="锁定件原地不动，其余机器重新分层摆位并绕开它们（管线会整条重铺）。锁定用工具栏的「锁定选中」">重排其余${lockMach?('（锁 '+lockMach+' 台）'):''}</button>
@@ -10104,10 +10299,16 @@ function renderLayout(){
       多台的圈重叠会自然加深（湿润的白圈单独加了浓度，浅画布上也能看清）；色块<b>不挡点击 / 框选 / 摆放</b>；
       工具栏「环境圈」按钮可整层收起（收起不影响换气）。散布机持续吃气：最低 <b>6 单位/分</b>（官方面板「最低需求」口径）·
       储气上限 30。<br>
-      <b>环境影响生产</b>（v104 起，报告会点名）：机器须<b>完全处于圈内</b>才受影响，一台的圈可同时罩多台；
+      <b>环境影响生产</b>（v104 起，报告会点名）：机器与圈<b>有交集</b>即生效（⭐作者 2026-10-06 实机确认；
+      整块落在圈内自然也生效），一台的圈可同时罩多台；
       部分配方要在特定环境才生效 —— <b>气态反应炉</b>的气态灼铜（酸性）/ 实验息壤铜气（稳定）整组依赖环境，
       <b>提纯机</b>省料版（分离芯 2→1）与<b>天有洪炉</b>气液模式（富集碳 2 → 普通碳 1）没环境时游戏里跑不起来，
       产线报告的「💨 环境依赖」段会列出这些机器与所需气体；配方页这 5 条配方也标了「💨 需 XX 环境」。<br>
+      <b>一键生成会自动摆散布机</b>（v193 · 2026-10-06，工具行「气体散布机：开/关」）：链上只要有环境依赖机器，
+      工具就按 <b>13×13 覆盖</b>把散布机摆到画布空位、把那些机器<b>罩进圈里</b>（按「有交集即生效」口径），
+      并按每台所需气体就地选气（一台只出一种气；两种气就摆两组，如气态灼铜）。⚠ <b>只摆本体、不铺管</b> —— 气（每台最低 6 单位/分）
+      要从<b>画布外接入</b>，报告给每台的进料口外侧格坐标，照坐标拉管即可；画布上找不到能罩住某台机器的
+      3×3 空位时，报告逐台点名并给坐标，<b>不拒绝生成</b>（可手动补或调大画布）。<br>
       <b>物流件</b>：左栏「物流件」一栏是配置表里的 10 件 1×1 件 —— 传送带、管道、汇流器、分流器、
       管道汇流器、管道分流器、物流桥、管道桥、物品准入口、管道准入口。
       每件在自己的四条边上画出<b>进/出</b>：<b>青条=进、橙条=出</b>，半青半橙=这条边双向。
