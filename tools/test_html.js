@@ -6158,7 +6158,7 @@ const v190noCmt = t => String(t).replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[
 
 /* ① 行为锁：生成后**所有耗电设备都被桩盖住**（独立复核 —— 不信函数自报，自己按 12×12 再算一遍），
    且桩与任何件都不重叠、不越界 */
-chk('v190 自动铺供电桩：耗电设备 100% 被覆盖（独立复核）+ 桩不重叠不越界', (() => {
+chk('v190 自动铺供电桩：耗电设备 100% 被覆盖（独立复核 · 口径「有交集即通电」⭐已实机确认）+ 桩不重叠不越界', (() => {
   loReset(70); A.LawRun('item_copper_nugget', 10);
   const P = A.LO.plan; if (!P || !P.polePlace) { v190n = '无 polePlace'; return false; }
   const poles = (A.LO.objs || []).filter(o => o.planRole === 'pole');
