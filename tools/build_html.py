@@ -3968,13 +3968,19 @@ function LawPlan(res, size, corr, opts){
   const FX=opts.fixed||[];
   /* v99：折行行间通道 —— 缺省 = corr（旧行为），纵向爆时由函数尾递归降级（见函数尾） */
   const rgCap=(opts.rowGap!==undefined)?opts.rowGap:corr;
+  /* ⭐v195（2026-10-06 晚）：**整链起摆偏移** `opts.off` —— 产线一直从画布 (1,1) 起摆，
+     顶排 / 最左列机器贴着画布边，四周被自己的带管围死 ⇒ 供电桩连一个能放的 2×2 空地都没有
+     （探针实测：这类件「能相交的空桩位」恒为 0，**放宽桩的边距也救不了**）。
+     整链往右下偏 3~5 格，左上就自然空出一片，桩能放下。⚠️ 默认 0 = 老行为逐字节不变。 */
+  const OFF=(opts.off|0);
+  const MG=RW_MARGIN+OFF;
   const md={};
   res.machines.forEach(n=>{ (md[n.depth]=md[n.depth]||[]).push(n); });
   const depths=Object.keys(md).map(Number).sort((a,b)=>a-b);
   const objs=[], bands=[];
-  let cy=RW_MARGIN, rowH=0, x=RW_MARGIN;
+  let cy=MG, rowH=0, x=MG;
   /* g 缺省 = 层间换行，用层间通道 corr；层内折行显式传 rgCap（行间通道，v99） */
-  const newRow=(g)=>{ cy+=rowH+(g===undefined?corr:g); x=RW_MARGIN; rowH=0; };
+  const newRow=(g)=>{ cy+=rowH+(g===undefined?corr:g); x=MG; rowH=0; };
   /* ⭐ 路线图 ③「按列对齐」（2026-09-21）：逐层排布时，深层机器按「消费它产出的下游机器
      的 x 中心均值」排序 —— 喂同一下游的机器聚到那台机器正下方，走线从"绕"变"直上直下"。
      depth 从小到大 = 从成品到原料，消费者一定先排好。同 itemId 排序键相同 → 天然相邻。 */
@@ -4018,7 +4024,7 @@ function LawPlan(res, size, corr, opts){
         const b=byBp(n.machineId); if(!b) return;
         const fp=Lfp(b), w=fp[0]||1, h=fp[1]||1;
         const dstId=(cons[n.itemId]||[])[0];
-        const wantX=(dstId!=null&&xStart[dstId]!=null)?xStart[dstId]:RW_MARGIN;
+        const wantX=(dstId!=null&&xStart[dstId]!=null)?xStart[dstId]:MG;
         /* ⭐③ 收尾「按层级换行」（2026-09-22）：组内机器从 wantX 等距横排，**到右墙折行**
            （回到 wantX、行下移继续摆）—— 旧行为是 break 直接丢机器：赤铜耐压罐@30 实摆 18/30
            台、报告零警告（丢的机器连手动连都不算，产能悄悄不达标）。冲突失败同理换行重试
@@ -4053,7 +4059,7 @@ function LawPlan(res, size, corr, opts){
         xCenter[n.itemId]=wantX+w/2;
       });
       bands.push({depth:d, y0:cy, y1:maxBottom});
-      cy=maxBottom+corr; rowH=0; x=RW_MARGIN;
+      cy=maxBottom+corr; rowH=0; x=MG;
       return;
     }
     md[d].forEach(n=>{
@@ -4155,6 +4161,23 @@ function RplaceSinks(sinkPlan, size, busyFn, margin){
    返回 {objs, links, unplaced}；unplaced 每条都带**为什么不连**（如实上报，不静默丢）。 */
 const RW_SINK_CAND_MAX=8;    /* 每个池子最多试几个候选摆位（性能护栏，见函数头） */
 const RW_SINK_ROTS=[0,90,270,180];   /* 试朝向的优先序（0 最常见：口朝左/朝下） */
+/* ⭐⭐v195（2026-10-06 晚）：**这件东西摆在这里，回头还放得下供电桩吗？**
+   起因：作者截图「这个都没覆盖上供电桩啊」—— 探针查明 1% 的耗电设备（大多是**销毁池**）
+   被塞进「左右都是带管、上下都是池子」的死缝里，供电桩随后**一个能放的 2×2 空地都没有**。
+   这里的判据与 `RplacePoles` **同源**：桩本体 2×2、`rangeExtend` 外扩 5 → 12×12、**与件有交集即通电**。
+   ⇒ 后勤件（销毁池 / 协议储存箱）选位时，用它做**同距离档内的偏好**：能留出桩位的候选先用。
+   `blocked(x,y)` 由调用方传（各函数自己的占用图口径，含 outProt 之类保护表）。 */
+function RwPoleSpot(cx, cy, w, d, size, blocked){
+  const R=RW_POLE_RANGE, PW=2;
+  for(let py=cy-R; py<=cy+d+R-1; py++)
+    for(let px=cx-R; px<=cx+w+R-1; px++){
+      if(px<RW_MARGIN||py<RW_MARGIN||px+PW>size-RW_MARGIN||py+PW>size-RW_MARGIN) continue;
+      let ok=true;
+      for(let j=0;j<PW&&ok;j++) for(let i=0;i<PW;i++){ if(blocked(px+i,py+j)){ ok=false; break; } }
+      if(ok) return true;
+    }
+  return false;
+}
 function RplaceSinksLinked(plan, rt, res, size, occObjs, sinkPlan){
   const out=[], links=[], unplaced=[];
   if(!sinkPlan||!sinkPlan.sinks||!sinkPlan.sinks.length) return {objs:out, links:links, unplaced:unplaced};
@@ -4263,6 +4286,19 @@ function RplaceSinksLinked(plan, rt, res, size, occObjs, sinkPlan){
           cands.push({x:x, y:y, d:Math.abs(x-fd.m.x)+Math.abs(y-fd.m.y)});
         }
       cands.sort((a,c)=>a.d-c.d);
+      /* ⭐⭐v195（作者 2026-10-06 截图「这个都没覆盖上供电桩啊」的**第二刀**）：
+         **后勤件主动让位** —— 前 K 个最近候选里，若有「自己 12×12 内留得出 2×2 桩位」的，
+         就把它提到最前面先用。原因：销毁池挨着源机器落位时，很容易被塞进「左右都是带管、上下都是池子」
+         的死缝里，供电桩随后**连一个能放的 2×2 空地都找不到**（探针实测：没盖到的池子其可放桩位恒为 0）。
+         距离仍然优先（桶内比较），只是**在距离相近的候选里挑一个对供电友好的**。
+         ⚠️ 只对前 K 个候选算（每个候选 ~225 格扫描）—— 全量算会把 test_html 拖慢一个量级（v189 的教训）。 */
+      (function(){
+        const KN=Math.min(24, cands.length), f=Lfp(b), bw=f[0]||1, bd=f[1]||1;
+        const blocked=(x,y)=>!!(busyAll[K(x,y)]||outProt[K(x,y)]);
+        let hit=-1;
+        for(let i=0;i<KN;i++){ if(RwPoleSpot(cands[i].x, cands[i].y, bw, bd, size, blocked)){ hit=i; break; } }
+        if(hit>0){ const t=cands.splice(hit,1)[0]; cands.unshift(t); }
+      })();
       const freeAt=(cx,cy,w,d)=>{
         for(let j=0;j<d;j++) for(let i=0;i<w;i++){
           const xx=cx+i, yy=cy+j;
@@ -4498,6 +4534,15 @@ function RplaceStores(plan, rt, res, size, occObjs){
           cands.push({x:x, y:y, d:dmin, dsum:dsum});
         }
       cands.sort((a,b)=>(a.dsum-b.dsum)||(a.d-b.d));
+      /* ⭐v195：前 K 个候选里优先挑「回头放得下供电桩」的位置（与销毁池同一口径，
+         见 RwPoleSpot 注释）—— 储存箱也是耗电设备，被挤在角上时桩同样盖不到它。 */
+      (function(){
+        const KN=Math.min(24, cands.length);
+        const blocked=(x,y)=>!!busyAll[K(x,y)];
+        let hit=-1;
+        for(let i=0;i<KN;i++){ if(RwPoleSpot(cands[i].x, cands[i].y, sw, sd, size, blocked)){ hit=i; break; } }
+        if(hit>0){ const t=cands.splice(hit,1)[0]; cands.unshift(t); }
+      })();
       let pick=null;
       /* ⚠️ **只试最近的 4 个候选** —— 每个候选要跑「末级机器数 × 输入口数」次 RwPath，
          而 RwPath 是手写 Dijkstra（很贵）。实测：
@@ -5850,7 +5895,9 @@ function RplacePoles(plan, rt, res, size, occObjs, region){
     const b=byBp(o.id); if(!b) return;
     if(o.planRole==='gen'){ gens.push({x:o.x,y:o.y}); return; }
     if(!(+b.powerConsume>0)) return;
-    tgt.push({x:o.x, y:o.y, w:o.w, d:o.d});
+    /* ⭐v194：目标上带 id / 名字 / 角色 —— 没盖到时要能在报告里**逐台点名**（v190 只报了数量，
+       作者 2026-10-06 截图「这个都没覆盖上供电桩啊」时，报告里查不到是哪几台、去哪儿补）。 */
+    tgt.push({x:o.x, y:o.y, w:o.w, d:o.d, id:o.id, name:b.name, planRole:o.planRole, prod:o.prod||''});
   });
   if(!tgt.length) return {objs:out, uncovered:uncovered, targets:0};
   /* 覆盖判定：**目标与 12×12 范围有交集**即算通电 + **整块落在范围内**的严格版（只用于统计/择优）。
@@ -5899,7 +5946,42 @@ function RplacePoles(plan, rt, res, size, occObjs, region){
   left.forEach(t=>uncovered.push(t));
   return {objs:out, uncovered:uncovered, targets:tgt.length, strict:strictN};
 }
-function LawRun(targetId, perMin){
+/* ⭐⭐v195（2026-10-06 晚，作者选方案 1）：**供电覆盖失败驱动重排**。
+   起因：作者截图「这个都没覆盖上供电桩啊」；探针查明 1% 的耗电设备其 12×12 内**连一个能与它相交的
+   2×2 空地都没有**（紧凑布局里桩位稀缺）⇒ 唯一出路是把这条链**摆得更松/或整体挪一挪**，腾出桩位。
+   流程：LawRun 正常跑完第一遍 → 若 `polePlace.uncovered` 非空，就**按 RW_POLE_PLAN 逐组重试**：
+     ① 宽间距（gapX 8/6 + 通道加高）→ ② 再加**整链起摆偏移**（LawPlan `opts.off`，治「贴死画布边」那类）；
+   每组都完整落盘并数一次「没盖到几台」，**一旦比第一遍少就保留并停止**；全都一样差 → 回退第一遍。
+   ⚠️ 撤销点：第一遍已 push（存的是「生成前」状态）→ 重试遍用 `opts.noPush` 跳过 push，
+      保证「一次生成 = 一个撤销点」。
+   ⚠️ 只在有缺口时才多跑（约 5% 的链、最多 4 组），其余链零额外开销。
+   ⚠️ 重试遍里**任何失败都往下试/回退第一遍**，绝不 LawFail 清场（否则宽布局放不下会把用户原来那条产线也抹了）。 */
+const RW_POLE_PLAN=[
+  {gapX:8, corrAdd:6,  mode:'down', off:0},   /* 纯宽间距（v195 首版救回 4 台的组合） */
+  {gapX:6, corrAdd:6,  mode:'down', off:0},
+  {gapX:8, corrAdd:10, mode:'down', off:0},
+  {gapX:6, corrAdd:10, mode:'down', off:0},
+  {gapX:8, corrAdd:0,  mode:'down', off:0},
+  {gapX:6, corrAdd:6,  mode:'down', off:3},   /* 再加**整链起摆偏移**：治「贴死画布边」那类 */
+  {gapX:6, corrAdd:8,  mode:'down', off:5}
+];
+let RW_POLE_CTX=null;        /* {targetId, perMin, idx, best:{u,objs,plan,msg}} */
+let RW_POLE_INWIDE=false;    /* 是否正处在重试遍里（LawFail 据此往下试而不是清场） */
+/* 收尾：**取缺口最少的那一版**（并列时早试的优先 → 第一遍天然占优），恢复它的落盘件与报告。 */
+function RwPoleRetryFinish(){
+  const c=RW_POLE_CTX; RW_POLE_CTX=null; RW_POLE_INWIDE=false;
+  if(c&&c.best){ const L=Linit(); L.objs=c.best.objs; L.plan=c.best.plan; L.msg=c.best.msg; L.sel=[]; L.pick=null; }
+  render();
+}
+function RwPoleRetryNext(){
+  const c=RW_POLE_CTX;
+  if(!c) return RwPoleRetryFinish();
+  c.idx++;
+  if(c.idx>=RW_POLE_PLAN.length) return RwPoleRetryFinish();
+  RW_POLE_INWIDE=true;
+  return LawRun(c.targetId, c.perMin, {retryIdx:c.idx, noPush:1});
+}
+function LawRun(targetId, perMin, opts){
   /* ── [1] 入参校验 / 目标与速率 ───────────────────────── */
   const L=Linit();
   if(!targetId){ L.msg='先选一个目标物品'; render(); return; }
@@ -6007,6 +6089,12 @@ function LawRun(targetId, perMin){
       v:ok*1000 - jam*500 - manual*400 - rt.belts.length*RW_LINE_WEIGHT};
   };
   const small=res.totalMachines<=15;
+  /* ⭐⭐v195（2026-10-06 晚，作者选方案 1）：**供电缺口重试专用**的宽间距候选集。
+     只在「落盘后还有耗电设备没被桩盖到」时，用 `opts.widePole` 递归跑第二遍 ——
+     机器间距 8/6、通道 +6/+10，机器之间腾出 2×2 桩位的机会大得多（同 v66/⑤-3 的失败驱动扩搜思路）。 */
+  const retryIdx=(opts&&opts.retryIdx!=null)?opts.retryIdx:-1;   /* ⭐v195：供电缺口重试的第几组（-1 = 正常第一遍） */
+  if(retryIdx>=0) RW_POLE_INWIDE=true;
+  const wideBase=Math.min(14, Math.ceil(depLines/2)+2);
   /* ── [5] 参数网格候选（含 wide 换行档）──────────────── */
   const cands=[];
   /* 宽度不匹配检测：某层台数 > 其下游层台数 × 1.3 → 加「层内主动换行」候选（down 模式） */
@@ -6017,6 +6105,12 @@ function LawRun(targetId, perMin){
   for(let wi=1;wi<dks.length;wi++){
     if(cntByDepth[dks[wi]] > (cntByDepth[dks[wi-1]]||0)*1.6){ wide=true; break; }
   }
+  if(retryIdx>=0){
+    /* 重试遍：**只**跑 RW_POLE_PLAN 里指定的那一组（每组都完整落盘 → 数出「没盖到几台」再决定去哪） */
+    const rp=RW_POLE_PLAN[Math.min(retryIdx, RW_POLE_PLAN.length-1)];
+    cands.push({gapX:rp.gapX, align:false, corrBase:Math.min(20, wideBase+rp.corrAdd),
+                swap:null, mode:rp.mode, off:rp.off});
+  }else{
   (small?[4,3,2]:[4,3,2]).forEach(gx=>{
     (small?[false,true]:[false,true]).forEach(al=>{
       (small?[5,3]:[Math.min(5, depLines)]).forEach(cb=>{
@@ -6030,11 +6124,12 @@ function LawRun(targetId, perMin){
     [4,2].forEach(gx=>{ cands.push({gapX:gx, align:false, corrBase:cbD, swap:null, mode:'down'}); });
     if(small) cands.push({gapX:3, align:false, corrBase:cbD, swap:null, mode:'down'});
   }
+  }
   /* ── [6] 第一轮：全候选摆+铺+打分 → best ────────────── */
   let best=null, tried=0, overAll=true;
   cands.forEach(c=>{
     const corr=Math.max(c.corrBase, Math.min(14, Math.ceil(depLines/2)+2));
-    const pl=LawPlan(res, L.size, corr, {gapX:c.gapX, align:c.align, mode:c.mode});
+    const pl=LawPlan(res, L.size, corr, {gapX:c.gapX, align:c.align, mode:c.mode, off:c.off});
     if(pl.over.length) return;
     overAll=false;
     const rt=RwRoute(pl.objs, res, L.size, corr);
@@ -6043,6 +6138,9 @@ function LawRun(targetId, perMin){
     if(!best || sc.v>best.sc.v) best={c:c, sc:sc, plan:pl, route:rt, corr:corr};
   });
   if(overAll || !best){
+    /* ⭐v195：重试遍若连这一组参数也越界 → 往下试下一组；全试完仍不行 → 回退第一遍。
+       绝不能走 LawFail（那会把画布上的产线清掉，比不重试还糟）。 */
+    if(retryIdx>=0) return RwPoleRetryNext();
     /* ⑥-4：拒绝生成时也要点名限摆 —— 天有洪炉 >12 台的链单层宽超任何画布（12×(5+间) ≈ 108 列），
        实际上「超限」几乎必然伴随「放不下」；只报放不下玩家会以为是布局器菜，其实是游戏限摆。 */
     const limW=RwPlaceLimitWarn(res);
@@ -6057,7 +6155,7 @@ function LawRun(targetId, perMin){
      所以**只在最优方案还有手动连时才补跑这几组**：平时一分钱不花，失败时才多花 1~2 秒。 */
   const corrAuto=Math.min(14, Math.ceil(depLines/2)+2);
   let wideTried=0;
-  if(best.sc.manual>0){
+  if(retryIdx<0 && best.sc.manual>0){
     const wideC=[];
     [4,6,8].forEach(gx=>{
       [corrAuto+2, Math.min(20, corrAuto+6)].forEach(cb=>{
@@ -6141,7 +6239,9 @@ function LawRun(targetId, perMin){
         +'。先把画布调大、降低速率，或清掉画布上一些东西再试。');
     }
   }
-  Lpush();
+  /* ⭐v195：wide 遍（供电缺口重试）**不再压撤销点** —— 第一遍已经压过（存的是「生成前」状态），
+     再压一次就会变成「撤销两步才回到生成前」。 */
+  if(!(opts&&opts.noPush)) Lpush();
   L.objs=[]; L.sel=[]; L.pick=null;
   plan.objs.forEach(o=>{
     const obj=Lmk(o.b, o.x, o.y, 0);
@@ -6326,12 +6426,15 @@ function LawRun(targetId, perMin){
     ?('；📥 进货端已摆仓库取货口 '+feedPlace.objs.length+' 个（从地区仓库取原料）'
       +(feedPlace.unplaced.length?('；⚠ '+feedPlace.unplaced.length+' 条原料没接上（见报告）'):''))
     :'';
-  /* ⭐v190 供电覆盖通报：摆了几座桩 / 盖住几台 / 有几台盖不到（盖不到不拦截，提示手动补桩） */
+  /* ⭐v190 供电覆盖通报：摆了几座桩 / 盖住几台 / 有几台盖不到（盖不到不拦截，提示手动补桩）
+     ⭐v194：没盖到的那几台**带坐标点名**（作者 2026-10-06 截图反馈：只报数量的话，画布上根本找不着是哪几台） */
   const poleNote=(polePlace&&polePlace.targets)
     ?('；🔌 供电覆盖：已铺供电桩 '+polePlace.objs.length+' 座（每座覆盖 12×12，无接口、不用连线），盖住 '
       +((polePlace.targets-polePlace.uncovered.length))+'/'+polePlace.targets+' 台耗电设备'
       +(polePlace.strict?('（其中 '+polePlace.strict+' 台整块落在范围内）'):'')
-      +(polePlace.uncovered.length?('；⚠ '+polePlace.uncovered.length+' 台没盖到（需手动补桩）'):''))
+      +(polePlace.uncovered.length?('；⚠ '+polePlace.uncovered.length+' 台没盖到（其周围 12×12 内没有能放桩的 2×2 空位，需手动补：'
+        +polePlace.uncovered.slice(0,3).map(u=>'('+u.x+','+u.y+')').join('、')
+        +(polePlace.uncovered.length>3?' 等':'')+' —— 详见报告）'):''))
     :'';
   /* ⭐v193 环境圈通报：摆了几台散布机 / 各什么气 / 罩住几台 / 有几台没罩到（不拦截，提示手动补）
      ⭐口径＝「机器与圈有交集即生效」（作者 2026-10-06 实机确认），另给「其中 K 台整块落在圈内」 */
@@ -6354,7 +6457,24 @@ function LawRun(targetId, perMin){
         +poleNote
         +(limWarns.length?('；⚠ '+limWarns.join('；')):'')
         +(rt.warns.length?('；'+rt.warns.length+' 条提醒见下方'):'');
-  render();
+  /* ⭐⭐v195：**供电覆盖失败驱动重排**（作者 2026-10-06 选的方案 1）——
+     第一遍落盘后若有耗电设备没被桩盖到，就按 RW_POLE_PLAN 逐组换参数跑，**取「没盖到最少」的那一版**
+     （并列早试者优先 = 第一遍天然占优）；某一遍缺口归零就直接收工。 */
+  {
+    const uNow=polePlace?polePlace.uncovered.length:0;
+    if(retryIdx<0){
+      if(uNow===0){ RW_POLE_CTX=null; RW_POLE_INWIDE=false; render(); return; }
+      RW_POLE_CTX={targetId:targetId, perMin:perMin, idx:-1,
+                   best:{u:uNow, objs:JSON.parse(JSON.stringify(L.objs)), plan:L.plan, msg:L.msg}};
+      RW_POLE_INWIDE=true;
+      return LawRun(targetId, perMin, {retryIdx:0, noPush:1});
+    }
+    if(RW_POLE_CTX && uNow < RW_POLE_CTX.best.u){
+      RW_POLE_CTX.best={u:uNow, objs:JSON.parse(JSON.stringify(L.objs)), plan:L.plan, msg:L.msg};
+      if(uNow===0) return RwPoleRetryFinish();     /* 已经全盖上，不用再试 */
+    }
+    return RwPoleRetryNext();
+  }
 }
 /* 原料需求汇总（排布器的报告、评价函数都要用，抽出来免得两处口径不一致） */
 function rawNeedOf(res){
@@ -6372,6 +6492,9 @@ function rawNeedOf(res){
    修法：失败时**清掉 planRole 件 + 计划状态**，但**不 push 撤销点**（失败不该占撤销），
    并保留手摆件（只清排布器自己生成的）。msg 由调用方传入。 */
 function LawFail(msg){
+  /* ⭐v195：**供电缺口重试遍**里任何失败都「往下试下一组参数」，全试完则回退第一遍（那一版是能用的）——
+     绝不把画布清掉，否则「宽布局放不下」会把用户原来那条产线也抹了，比不重试还糟。 */
+  if(RW_POLE_INWIDE && RW_POLE_CTX) return RwPoleRetryNext();
   const L=Linit();
   L.objs=L.objs.filter(o=>!o.planRole); L.sel=[]; L.plan=null;
   L.msg=msg; render();
@@ -9523,6 +9646,20 @@ function Rreport(P, pw, bw, th, lim, st, rawNeed, sc){
       <div class="c-sub" style="margin-top:8px"><span><b>⚠️ 约束校验</b>（硬校验；协议容量 · 建造上限 · 用电取配置表，发电量 · 矿点数 · 存电取社区实测）</span></div>
       ${''/* ⭐v145 撤项：协议容量不约束基地内设备（只约束集成核心区域外的野外设备）→ 报告不再列此项 */}
       <div class="c-sub" style="margin-top:2px"><span>· <b>发电</b>：这条产线用电 <b>${pw.total}</b> 电；协议核心自带 <b>${th.base}</b> 基础发电${th.gap>0?(' → 缺口 <b>'+th.gap+'</b>，需要热能池：'+th.fuels.map(f=>esc(f.item)+' <b>'+f.count+'</b> 台（'+f.power+'/台）'+(f.perBankMin>0?('　每分钟要喂 <b>'+f.burnPerMin+'</b> 个'+esc(f.item)+'（单台 '+f.perBankMin+' 个/分）→ 需 <b>'+f.belts+'</b> 条传送带供料'):'')).join(' · ')):' → <b>不用额外发电</b>'}${th.fuels.length?(' <span class="c-id">（按地区选燃料：'+esc(Lregion()||'通用')+'）</span>'):''}${stations?('　<span class="c-id">画布上已摆热能池 '+stations+' 台</span>'):''}${(P.genPlan&&P.genPlan.need)?('　<span class="c-id">⚡ 自动配发电：本次自动摆 <b>'+(P.genPlaced?P.genPlaced.objs.length:0)+'</b> 台（共需 '+P.genPlan.need+' 台，按'+esc(P.genPlan.fuel||'')+' '+P.genPlan.perF+'/台）'+((P.genPlaced&&P.genPlaced.unplaced.length)?('；⚠ 还差 '+P.genPlaced.unplaced.length+' 台没空位 —— 把画布调大，或关掉「自动配发电」自己摆'):'')+'　<b>只摆本体，燃料（源矿 / 电池）需你自接</b></span>'):''}</span></div>
+      ${/* ⭐v194（2026-10-06 晚，作者截图「这个都没覆盖上供电桩啊」）：**逐台点名没盖到的耗电设备**。
+           背景：v190 只报「N 座桩 · 盖住 M/M」，画布上哪几台没盖到、要去哪补，报告一字未提（只有 L.msg 一句数量）。
+           探针实证（全库 102 条链 · @10 · 70×70）：1048 台耗电设备里 11 台没盖到，且这 11 台
+           其 12×12 内**一个能与目标相交的 2×2 空位都没有**（贴死的销毁池区 / 画布角的封装机·储存箱）——
+           不是没算，是**几何上摆不下**；放宽画布边距也是 0。⇒ 报告逐台给坐标 + 讲清补救方式。
+           ⚠️ 覆盖口径与 RplacePoles 同源：「桩与设备有交集即通电」（作者 2026-10-06 实机确认）。 */
+        (function(){
+          const pp=P.polePlace;
+          if(!pp||!pp.targets) return '';
+          const miss=pp.uncovered||[];
+          const cov=pp.targets-miss.length;
+          return `<div class="c-sub" style="margin-top:2px"><span>· <b>供电覆盖</b> <span class="lo-tag">v190/v194 · 2026-10-06</span>：自动铺 <b>${pp.objs.length}</b> 座供电桩（本体 2×2 · 每座覆盖 12×12 · 免连线），盖住 <b>${cov}/${pp.targets}</b> 台耗电设备${pp.strict?('（其中 <b>'+pp.strict+'</b> 台整块落在范围内）'):''}${miss.length?`　<b style="color:${RW_COL.warn}">⚠ ${miss.length} 台没盖到</b>：${miss.map(u=>'('+u.x+','+u.y+') '+esc(u.name||u.id||'')).join('、')}`:'　✓ 全部盖住'}</span></div>`
+            +(miss.length?`<div class="c-sub" style="margin-top:2px"><span class="c-id">上面这几台的 12×12 范围内<b>一个能放桩的 2×2 空位都没有</b>（四周被机器 / 销毁池 / 带管占死，或贴着画布边）—— 排布器摆不下，需你手动补一座桩（贴着它放就行，桩不用连线）；想让它自动盖住得在布局期给桩留位，那会让整体布局变松。</span></div>`:'');
+        })()}
       ${(th.gap>0&&th.fuels.length&&th.fuels[0].perBankMin>0)?`<div class="c-sub" style="margin-top:2px"><span class="c-id">⚠ <b>喂料口径</b>（对标社区电池分流计算器）：热能池是<b>固定燃烧速率</b>设备 —— 单台只烧 <b>${th.fuels[0].perBankMin}</b> 个/分（${esc(th.fuels[0].item)} ${th.fuels[0].seconds} 秒/个）<b>，把整条带全塞给一台也不会多发一度电</b>，多余的燃料请在分流器上分流回仓库。想省燃料就让台数正好够、别堆料。</span></div>`:''}
       <div class="c-sub" style="margin-top:2px"><span>· <b>存电</b> <span class="lo-tag">路线图 ②c · 已纳入</span>：上限 <b>${st.cap.toLocaleString?st.cap.toLocaleString('en-US'):st.cap}</b>（社区实测）${st.gap>0?('　当前缺口 <b>'+st.gap+'</b> 电 → 纯靠存电能撑 <b>'+st.minutes+'</b> 分钟（约 '+r1(st.minutes/60)+' 小时），撑完设备就停；这是缓冲不是电源，得补发电'):'　当前用电没超基础发电，存电不动 ✓'}</span></div>
       <div class="c-sub" style="margin-top:2px"><span>· <b>防御建筑上限</b> <span class="lo-tag">路线图 ②b</span>：${lim.defCap!=null?('<b>'+lim.def+'</b> / '+lim.defCap+'（'+esc(lim.zone||'')+'）'+(lim.defOver?' —— <b style="color:'+RW_COL.bad+'">超了 '+(lim.def-lim.defCap)+'</b>':' —— 在限内 ✓')):'（自由模式没指定基地，没有上限可对）'}<span class="c-id">　按分类「战斗辅助」计</span></span></div>

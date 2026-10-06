@@ -6405,6 +6405,139 @@ chk('v193 数据前提：散布机 3×3 · 外扩 5 → 圈 13×13 · 1 个管�
     && ports.length === 1 && !!ports[0].isPipe;
 })(), () => v193n || '(空)');
 
+/* ═══ v194（2026-10-06 晚）供电覆盖「逐台点名」 —— 作者截图「这个都没覆盖上供电桩啊」 ═══
+   侦察结论（探针 · 全库 102 条可生成链）：1048 台耗电设备里 **11 台没盖到（1%）**；
+   这 11 台其 12×12 内**一个能与目标相交的 2×2 空位都没有**（贴死的销毁池区 / 画布角的封装机·储存箱），
+   放宽画布边距也还是 0 ⇒ **几何上摆不下**，不是「没算」也不是「择优失误」。
+   v190 只报数量 → 报告里查不到是哪几台、去哪补 → 本版逐台点名给坐标。 */
+let v194n = null;
+/* 与 RplacePoles 同源的覆盖判据：桩 2×2 + 外扩 5，与目标**有交集**即通电 */
+const v194covers = (p, t) => !(t.x + t.w <= p.x - 5 || t.x >= p.x + 2 + 5
+  || t.y + t.d <= p.y - 5 || t.y >= p.y + 2 + 5);
+
+/* ① 报告锁：有缺口的工况 → 出「供电覆盖」段 + 逐台坐标点名 + 讲清是「没有 2×2 空位」 */
+chk('v194 报告：没盖到的耗电设备逐台点名（带坐标 + 说明排布器摆不下）', (() => {
+  loReset(70); A.tab = 'layout'; A.LawRun('item_proc_battery_5', 10); A.render();
+  const P = A.LO.plan;
+  const miss = (P && P.polePlace && P.polePlace.uncovered) || [];
+  const h = outEl.innerHTML || '';
+  const ok = h.indexOf('供电覆盖') >= 0 && miss.length > 0
+    && h.indexOf('(' + miss[0].x + ',' + miss[0].y + ')') >= 0
+    && h.indexOf('一个能放桩的 2×2 空位都没有') >= 0;
+  v194n = '缺口 ' + miss.length + ' 台 · 点名=' + ok + ' | ' + (miss[0] ? (miss[0].name || miss[0].id) : '—');
+  return ok;
+})(), () => v194n || '(空)');
+
+/* ② 反向锁：没有缺口时给「✓ 全部盖住」，不要吓人（口径：盖住 = 与桩有交集） */
+chk('v194 报告：全覆盖的工况显示「✓ 全部盖住」，不出现「没盖到」', (() => {
+  loReset(50); A.tab = 'layout'; A.LawRun('item_copper_nugget', 10); A.render();
+  const P = A.LO.plan;
+  const miss = (P && P.polePlace && P.polePlace.uncovered) || [];
+  const h = outEl.innerHTML || '';
+  const ok = miss.length === 0 && h.indexOf('✓ 全部盖住') >= 0 && h.indexOf('台没盖到') < 0;
+  v194n = '缺口 ' + miss.length + ' · 含✓=' + (h.indexOf('✓ 全部盖住') >= 0);
+  return ok;
+})(), () => v194n || '(空)');
+
+/* ③ 独立复核锁：没盖到的那几台，**真的**没有任何「能相交且 2×2 空」的桩位
+      —— 防将来退化成「其实有解却没盖」（v184 的教训：先问最优解在不在搜索空间里）。
+      ⚠️ 复用 ① 的画布状态（中容武陵电池 @70）。 */
+chk('v194 独立复核：没盖到的目标确实无解（能相交的 2×2 空桩位 = 0）', (() => {
+  const P = A.LO.plan;
+  const miss = (P && P.polePlace && P.polePlace.uncovered) || [];
+  if (!miss.length) { v194n = '① 没缺口，跳过'; return true; }
+  const size = A.LO.size, K = (x, y) => x + ',' + y;
+  const occ = {};
+  (A.LO.objs || []).forEach(o => { for (let j = 0; j < o.d; j++) for (let i = 0; i < o.w; i++) occ[K(o.x + i, o.y + j)] = 1; });
+  const freeAny = t => {
+    for (let py = 1; py <= size - 3; py++) for (let px = 1; px <= size - 3; px++) {
+      if (!v194covers({ x: px, y: py }, t)) continue;
+      let ok = true;
+      for (let j = 0; j < 2 && ok; j++) for (let i = 0; i < 2; i++) if (occ[K(px + i, py + j)]) { ok = false; break; }
+      if (ok) return true;
+    }
+    return false;
+  };
+  const bad = miss.filter(t => freeAny(t));
+  v194n = '缺口 ' + miss.length + ' 台 · 其中「其实有解却没盖」 ' + bad.length + ' 台'
+    + (bad.length ? ('（例 ' + bad[0].name + '@' + bad[0].x + ',' + bad[0].y + '）') : '');
+  return bad.length === 0;
+})(), () => v194n || '(空)');
+
+/* ④ 源码锁：目标上必须带 id / name —— 报告点名就靠它（v190 的 tgt 只有坐标，点不出名字） */
+chk('v194 供电目标带 id/name（点名依据，v190 只有坐标）', (() => {
+  const i = rawCode.indexOf('function RplacePoles');
+  if (i < 0) return false;
+  const seg = rawCode.slice(i, rawCode.indexOf('\nfunction ', i + 10));
+  return /tgt\.push\(\{x:o\.x, y:o\.y, w:o\.w, d:o\.d, id:o\.id, name:b\.name/.test(seg);
+})(), () => {
+  const i = rawCode.indexOf('function RplacePoles');
+  const seg = i < 0 ? '' : rawCode.slice(i, rawCode.indexOf('\nfunction ', i + 10));
+  return '带 id/name=' + /tgt\.push\(\{x:o\.x, y:o\.y, w:o\.w, d:o\.d, id:o\.id, name:b\.name/.test(seg);
+});
+
+/* ═══ v195（2026-10-06 晚）供电覆盖失败驱动重排 —— 作者选的方案 1 ═══
+   起因：作者截图「这个都没覆盖上供电桩啊」。侦察：全库 102 条链 1048 台耗电设备里 11 台没盖到，
+   这 11 台其 12×12 内**一个能与它相交的 2×2 空地都没有**（紧凑布局里桩位稀缺）。
+   修法（两层）：① `LawRun` 落盘后若仍有缺口 → 按 `RW_POLE_PLAN` **逐组换参数重跑**（宽间距 +
+     整链起摆偏移 `LawPlan opts.off`），取「没盖到最少」的一版（并列早试者优先）；
+     ② 后勤件（销毁池 / 协议储存箱）选位时，前 24 个候选里优先选「自己 12×12 内留得出 2×2 桩位」的
+     （`RwPoleSpot`，口径与 RplacePoles 同源）。
+   结果：**11 台 → 5 台**（9 条链 → 3 条链），剩下的 5 台是「贴死画布角 / 池子群内外全被占」的几何顽疾。 */
+let v195n = null;
+
+/* ① 行为锁：v194 体检里「没盖到 1 台」的赤铜装备原件 @70，现在**清零** */
+chk('v195 失败驱动重排：赤铜装备原件 @70 供电缺口清零（重排后全盖上）', (() => {
+  loReset(70); A.LawRun('item_equip_script_4_1', 10);
+  const P = A.LO.plan;
+  const miss = (P && P.polePlace && P.polePlace.uncovered) || [];
+  v195n = '没盖到 ' + miss.length + (miss.length ? ('（' + miss.map(u => u.planRole + '@' + u.x + ',' + u.y).join(' · ') + '）') : '');
+  return !!P && miss.length === 0;
+})(), () => v195n || '(空)');
+
+/* ② 反向锁：无缺口的小链**不触发重排**（参数仍是第一遍那套：间 4/3/2，不会冒出间 6/8） */
+chk('v195 反向：无缺口的链不触发重排（参数不变成宽间距）', (() => {
+  loReset(50); A.LawRun('item_iron_cmpt', 10);
+  const msg = String(A.LO.msg || '');
+  const miss = (A.LO.plan && A.LO.plan.polePlace && A.LO.plan.polePlace.uncovered) || [];
+  const wide = /间(6|8)\//.test(msg);
+  v195n = '缺口 ' + miss.length + ' · 用了宽间距=' + wide;
+  return miss.length === 0 && !wide;
+})(), () => v195n || '(空)');
+
+/* ③ 撤销点锁（关键）：会走重试的链，生成一次**只占一个撤销点**（重试遍 noPush） */
+chk('v195 撤销点：走重试的链「一次生成 = 一个撤销点」', (() => {
+  loReset(70);
+  const u0 = A.LO.undo.length;
+  A.LawRun('item_proc_battery_5', 10);
+  const d = A.LO.undo.length - u0;
+  const u = (A.LO.plan && A.LO.plan.polePlace && A.LO.plan.polePlace.uncovered.length) || 0;
+  v195n = '撤销栈增量 ' + d + ' · 重试后仍缺口 ' + u + ' 台';
+  return d === 1;
+})(), () => v195n || '(空)');
+
+/* ④ 源码锁：LawPlan 的起摆偏移 / 重试计划 / 重试遍不压撤销点 / 后勤件让位函数都在 */
+chk('v195 源码：LawPlan opts.off + RW_POLE_PLAN + noPush + RwPoleSpot 让位', (() => {
+  const i = rawCode.indexOf('function LawPlan');
+  const seg = rawCode.slice(i, i + 2600);
+  return /const OFF=\(opts\.off\|0\)/.test(seg) && /const MG=RW_MARGIN\+OFF/.test(seg)
+    && /const RW_POLE_PLAN=\[/.test(rawCode)
+    && /const retryIdx=\(opts&&opts\.retryIdx!=null\)/.test(rawCode)
+    && /if\(!\(opts&&opts\.noPush\)\) Lpush\(\);/.test(rawCode)
+    && /function RwPoleSpot\(/.test(rawCode) && /RwPoleSpot\(cands\[i\]\.x/.test(rawCode);
+})(), () => {
+  const i = rawCode.indexOf('function LawPlan');
+  const seg = rawCode.slice(i, i + 2600);
+  return 'opts.off=' + /const OFF=\(opts\.off\|0\)/.test(seg) + ' 计划=' + /const RW_POLE_PLAN=\[/.test(rawCode)
+    + ' noPush=' + /if\(!\(opts&&opts\.noPush\)\) Lpush\(\);/.test(rawCode)
+    + ' 让位=' + /RwPoleSpot\(cands\[i\]\.x/.test(rawCode);
+});
+
+/* ⑤ 口径锁：重试**取缺口最少的一版**（不是按分数选，也不是「一有改善就停」） */
+chk('v195 口径：重试取「没盖到最少」的一版（并列早试者优先）', (() => {
+  return /uNow < RW_POLE_CTX\.best\.u/.test(rawCode) && /RW_POLE_CTX\.best=\{u:uNow/.test(rawCode);
+})(), () => '取最优=' + /uNow < RW_POLE_CTX\.best\.u/.test(rawCode));
+
 loReset(50); A.render();
 
 report();
