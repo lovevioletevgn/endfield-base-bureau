@@ -74,7 +74,13 @@ vm.createContext(ctx);
 
 const out = [];
 let pass = 0, fail = 0;
+/* ⭐2026-10-06：`PROF=1` 逐条用例计时（为诊断「验证太慢」加；默认关闭，零行为变化）。
+   测试是**同步顺序执行**的 ⇒「本条 chk 与上一条 chk 的间隔」≈ 上一条用例本身的耗时。
+   用法：`PROF=1 node tools/test_html.js` 会额外打印「最慢 30 条」。 */
+const PROF = process.env.PROF === '1';
+let __pT = 0, __pN = '(start)', __pSeq = 0, __prof = [];
 function chk(name, cond, extra) {
+  if (PROF) { const _n = Date.now(); __pSeq++; if (__pT) __prof.push([_n - __pT, name, __pSeq]); __pT = _n; __pN = name; }
   if (cond) pass++;
   else {
     fail++;
@@ -147,8 +153,47 @@ function pickScanTargets(n, needSink) {
   }
   return hit.slice(0, n);
 }
+/* ⭐2026-10-06 提速：两条广谱锁（接线率 / 出线）**共享求解结果**。
+   实测两条锁的目标集有 **4 个重叠**（电池5/罐头5/食物5/电池4）、画布 [50,70] 也重叠
+   （@50 秒退、@70 单次 ~5.6s）⇒ 可省约 23s。缓存命中时**恢复同一份画布状态**，
+   与「照原样各跑一遍」语义一致。
+   ⚠️ 安全前提（任一不满足就**自动退回原行为**——只少省一点，绝不静默用错结果）：
+      ① 画布是 loReset 后的干净状态；② 影响 LawRun 的全局开关全为默认
+      （跨地区收货 / 多目标 / 同地区拆链收货 / 自环 / 基地 / 供电桩 / 气体散布机）。
+   ⚠️ `NOCACHE=1` 可整体关掉（用来做「开缓存 vs 关缓存」的等价性对照）。
+   ⚠️ 只包住两条广谱锁的循环体；**别拿它去跑依赖 undo/选中态的用例**。 */
+const __scanCache = new Map();
+const __scanCacheOn = process.env.NOCACHE !== '1';
+function scanSolve(size, id, rate) {
+  loReset(size);
+  const safe = !A.LO.shipIn && !A.LO.shipPick && !(A.LO.segShip || []).length
+    && !A.LO.selfLoop && !(A.LO.mt || []).length && !A.LO.base
+    && A.LO.autoPole !== false && A.LO.autoVap !== false;
+  const key = size + '|' + id + '|' + rate;
+  if (safe && __scanCacheOn && __scanCache.has(key)) {
+    const s = __scanCache.get(key);
+    if (s === 'THREW') return false;            /* 首次就是抛异常 → 这里同样报「跳过」 */
+    A.LO.objs = JSON.parse(JSON.stringify(s.objs));
+    A.LO.plan = s.plan; A.LO.msg = s.msg; A.LO.size = size;
+    return true;
+  }
+  let threw = false;
+  try { A.LawRun(id, rate); } catch (e) { threw = true; }
+  if (safe && __scanCacheOn) {
+    __scanCache.set(key, (threw || !A.LO.plan) ? 'THREW'
+      : { objs: JSON.parse(JSON.stringify(A.LO.objs)), plan: A.LO.plan, msg: A.LO.msg });
+  }
+  return !threw;
+}
 
 function report() {
+  if (PROF) {
+    __prof.push([Date.now() - __pT, __pN, __pSeq + 1]);
+    const tot = __prof.reduce((s, x) => s + x[0], 0);
+    __prof.sort((a, b) => b[0] - a[0]);
+    out.push('--- PROF 最慢 30 条（用例合计 ' + (tot / 1000).toFixed(1) + 's）---');
+    __prof.slice(0, 30).forEach(([ms, n, q]) => out.push('  ' + String(ms).padStart(6) + 'ms  #' + q + '  ' + n));
+  }
   out.unshift(`RESULT pass=${pass} fail=${fail}` + (skipHeavy && !HEAVY ? ` skip=${skipHeavy}（日常档跳过的大链用例；HEAVY=1 全量）` : ''));
   console.log(out.join('\n'));
   process.exit(fail ? 1 : 0);
@@ -1287,9 +1332,13 @@ chk('v174 一键生成（全地区）后 L.tgt 不被段目标改写（电池 @1
   return A.LO.tgt === 'item_proc_battery_5';
 })());
 chk('v174 一键生成后速率不被段速率（400）覆盖', (() => {
-  loReset(80); A.LbaseSet('map02_lv002');
-  A.LO.tgt = 'item_proc_battery_5'; A.LO.rate = 10; A.LO.mt = [];
-  A.LgenAll();
+  /* ⭐2026-10-06 提速（同题共享求解）：与**上一条**是**同一次「一键生成（全地区）」**（电池 @10 → 拆链）
+     → 复用其结果，不再重复 A.LgenAll()（每次 ~10.5s）。⚠️ 兜底：上一条没留下状态时重跑一次。 */
+  if (!A.LO || !A.LO.plan) {
+    loReset(80); A.LbaseSet('map02_lv002');
+    A.LO.tgt = 'item_proc_battery_5'; A.LO.rate = 10; A.LO.mt = [];
+    A.LgenAll();
+  }
   return A.LO.rate === 10;
 })());
 chk('v174 源码级：LawRun 内不再出现 L.tgt= / L.rate=（只做局部校验）', (() => {
@@ -3645,10 +3694,14 @@ chk('⑤-3 高产能：赤铜耐压罐@30 手动连清零，且 30 台全摆（�
 })(), (A.LO.msg || '').replace(/\s+/g, ' ').slice(0, 130));
 /* ⭐v176：台数大幅下降后 copper_jar@30 只剩 5 台、不再需要扩搜 —— 换成确实触发扩搜的
    中容武陵电池@10（参数搜索 12 组，含宽间距扩搜 4 组），单独求解一次。 */
-chk('⑤-3 难例确实触发了扩搜：中容武陵电池@10 的消息里写明「含宽间距扩搜 N 组」', (() => {
+/* ⚠️ v196（2026-10-07）如实记录：中容武陵电池 @10 @80 也有供电缺口 ⇒ 最终落盘的是**重排遍**那一遍
+   （`参数搜索 1 组`，因为重试遍只跑一个候选），扩搜/保护区标记也就未必出现在最终消息里。
+   v196 起报告会显式写「（供电缺口重排第 N 组[·桩位保护区重铺]）」⇒ 判据纳入它，
+   这样这条锁守的仍是「难例确实做了额外努力」，而不是某个具体措辞。 */
+chk('⑤-3 难例确实触发了额外搜索：中容武陵电池@10 的消息里写明扩搜/重排/保护区', (() => {
   loReset(80); A.LO.size = 80;
   A.LawRun('item_proc_battery_5', 10);
-  return /宽间距扩搜 \d+ 组/.test(A.LO.msg || '');
+  return /宽间距扩搜 \d+ 组|桩位保护区重铺|供电缺口重排/.test(A.LO.msg || '');
 })(), A.LO.msg);
 } else {
   skipHeavy += 2;
@@ -5041,8 +5094,10 @@ chk('v152 交叉落件：桥的同格无异介质件（管×带交叉直接叠�
 // 断言②：场景里确实出现管×带叠加格（正样本，防「永远不交叉」的空锁）。
 // ⭐v154 场景改罐@30；⭐v176 再改罐@90 —— 台数大幅下降后 @30 的叠加格也归零，@90 仍有 2 个。
 chk('v152 交叉落件：罐@90 存在管×带叠加格（渲染两层齐全，管上带下）', (() => {
-  loReset(80); A.LO.size = 80;
-  A.LawRun('item_copper_jar', 90);
+  /* ⭐2026-10-06 提速（同题共享求解）：与**上一条**同目标同画布（罐@90 @80）→ 复用其求解结果，
+     不再重复 LawRun（每次 ~10s）。⚠️ 兜底：上一条没留下状态时重跑一次。
+     ⚠️ 两条须保持相邻且参数一致，否则复用会读到错的状态。 */
+  if (!A.LO || !A.LO.plan) { loReset(80); A.LO.size = 80; A.LawRun('item_copper_jar', 90); }
   const byCell = {};
   A.LO.objs.forEach(o => { const b = A.byBp(o.id); if (b && b.isLogi)
     (byCell[o.x + ',' + o.y] = byCell[o.x + ',' + o.y] || []).push(b); });
@@ -5741,8 +5796,7 @@ chkScan('v184+v189 广谱接线率 = 100%（v184 基线 604/614 = 98.4%）+ unpl
   let want = 0, got = 0, n = 0, badCount = 0;
   targets.forEach(t => {
     [[10, 50], [10, 70]].forEach(pair => {
-      loReset(pair[1]);
-      try { A.LawRun(t.id, pair[0]); } catch (e) { return; }
+      if (!scanSolve(pair[1], t.id, pair[0])) return;
       const P = A.LO.plan;
       if (!P || !P.sinkPlan || !P.sinkPlan.sinks.length) return;
       const pl = P.sinkPlaced;
@@ -5849,11 +5903,16 @@ chk('v184 预检保留 RplaceSinks（空间门禁与接线门禁分离，不因�
    所以判据从「必须 rot180」改成「**出线总长显著短于 v184 的 16 格 + 每台机器各接一条**」——
    这才是 v185+v188 真正要保证的性质（枚举了朝向 + 接线不横穿），而不是某个具体 rot 值。 */
 let v185n = null;   /* v185 诊断串（失败时打印用；v188 补声明 —— 之前一直漏，污染整个文件作用域） */
+/* ⭐2026-10-06 提速：电池@10@80 的**求解快照**（本条锁之后、隔着两条广谱扫描的 v188 那条锁要复用，
+   省一次 ~11s 的 LawRun）。只在求解成功时填。 */
+let v185snap = null;
 chk('v185+v188 出货线：中容武陵电池@10@80×80 出线 ≤ 12 格（v184 基线 16）且**每台机器各接一条**',
   (() => {
     loReset(80); A.LawRun('item_proc_battery_5', 10);
     const P = A.LO.plan;
     if (!P || !P.storePlace) return false;
+    /* ⭐2026-10-06 提速：留一份求解快照，给下面 v188 那条锁复用（中间隔着两条广谱扫描会重置画布） */
+    v185snap = { objs: JSON.parse(JSON.stringify(A.LO.objs)), plan: P, msg: A.LO.msg, size: A.LO.size };
     const o = (P.storePlace.objs || [])[0];
     if (!o) return false;
     const nLink = (P.storePlace.links || []).length;
@@ -5877,8 +5936,12 @@ chk('v185+v188 出货线：中容武陵电池@10@80×80 出线 ≤ 12 格（v184
 /* ② ⭐ 落盘必须带 rot：枚举出 rot180 却按 rot0 渲染 = 输入口位置与实际连线对不上
    （v185 第一版就踩中：RplaceStores 内部修好了，LawRun 落盘那侧写着 `Lmk(s.b,s.x,s.y,0)`） */
 chk('v185 落盘保留朝向：L.objs 里的 store 件 rot 必须等于 storePlace 算出的 rot', (() => {
-  loReset(80); A.LawRun('item_proc_battery_5', 10);
-  const P = A.LO.plan;
+  /* ⭐2026-10-06 提速（同题共享求解）：本条与**上一条**同目标同画布（中容武陵电池 @10 @80）——
+     直接复用上一条已求出的画布状态，不再重复 LawRun（每次 ~11s）。
+     ⚠️ 上一条若因故没留下状态（plan 为空），本处兜底重跑一次。
+     ⚠️ 脆弱点：这两条**必须保持相邻**且用同一组 (目标,速率,画布) 参数，否则本条的复用会读到错的状态。 */
+  let P = A.LO.plan;
+  if (!P || !P.storePlace) { loReset(80); A.LawRun('item_proc_battery_5', 10); P = A.LO.plan; }
   if (!P || !P.storePlace) return false;
   const want = (P.storePlace.objs || [])[0];
   const got = A.LO.objs.filter(o => o.planRole === 'store')[0];
@@ -5930,8 +5993,7 @@ chkScan('v185+v188 广谱：出线总长应低于 v184 基线 2130 格且未接�
   let tot = 0, n = 0, miss = 0, nStore = 0;
   targets.forEach(t => {
     [[10, 50], [10, 70], [10, 80]].forEach(pr => {
-      loReset(pr[1]);
-      try { A.LawRun(t.id, pr[0]); } catch (e) { return; }
+      if (!scanSolve(pr[1], t.id, pr[0])) return;
       const P = A.LO.plan;
       if (!P || !P.storePlace) return;
       const sp = P.storePlace;
@@ -5976,7 +6038,15 @@ chkScan('v185+v188 广谱：出线总长应低于 v184 基线 2130 格且未接�
 let v188n = null;
 /* ① 主锁：两台封装机必须**各接一条**、互不横穿（第二台的起点不能是整条线的终点） */
 chk('v188 出货线不横穿：每台末级机器各接一条线（无「机器口→机器口」的长线）', (() => {
-  loReset(80); A.LawRun('item_proc_battery_5', 10);
+  /* ⭐2026-10-06 提速（同题共享求解）：与上面的「v185+v188 出货线」锁**同目标同画布**（电池@10@80），
+     但那中间隔着两条广谱扫描（会重置画布）→ 用那份**求解快照**恢复，省一次 ~11s 的 LawRun。
+     ⚠️ 兜底：没拿到快照就照常重跑一次。 */
+  if (v185snap && v185snap.plan) {
+    A.LO.objs = JSON.parse(JSON.stringify(v185snap.objs));
+    A.LO.plan = v185snap.plan; A.LO.msg = v185snap.msg; A.LO.size = v185snap.size;
+  } else {
+    loReset(80); A.LawRun('item_proc_battery_5', 10);
+  }
   const P = A.LO.plan;
   if (!P || !P.storePlace) return false;
   const rootIds = {};
@@ -6416,15 +6486,22 @@ const v194covers = (p, t) => !(t.x + t.w <= p.x - 5 || t.x >= p.x + 2 + 5
   || t.y + t.d <= p.y - 5 || t.y >= p.y + 2 + 5);
 
 /* ① 报告锁：有缺口的工况 → 出「供电覆盖」段 + 逐台坐标点名 + 讲清是「没有 2×2 空位」 */
-chk('v194 报告：没盖到的耗电设备逐台点名（带坐标 + 说明排布器摆不下）', (() => {
+/* ① 报告锁：供电覆盖段必须**与实际状态一致**。
+   ⚠️ v196（2026-10-07）如实记录：保护区重铺上线后，本工况（中容武陵电池 @10 @70）
+   已从「1 台没盖到」变成 **0 台** —— 原判据的前提「必须有缺口」不再成立。
+   现改为条件式：有缺口 ⇒ 逐台点名 + 说清「没有能放桩的 2×2 空位」；无缺口 ⇒ 必须明确写「✓ 全部盖住」。
+   （「真有缺口时报告必须点名」这个行为本身，由 ③ 的独立复核 + v189 广谱接线率继续守着。） */
+chk('v194 报告：供电覆盖段与实际状态一致（有缺口逐台点名 / 无缺口写「全部盖住」）', (() => {
   loReset(70); A.tab = 'layout'; A.LawRun('item_proc_battery_5', 10); A.render();
   const P = A.LO.plan;
   const miss = (P && P.polePlace && P.polePlace.uncovered) || [];
   const h = outEl.innerHTML || '';
-  const ok = h.indexOf('供电覆盖') >= 0 && miss.length > 0
-    && h.indexOf('(' + miss[0].x + ',' + miss[0].y + ')') >= 0
-    && h.indexOf('一个能放桩的 2×2 空位都没有') >= 0;
-  v194n = '缺口 ' + miss.length + ' 台 · 点名=' + ok + ' | ' + (miss[0] ? (miss[0].name || miss[0].id) : '—');
+  if (h.indexOf('供电覆盖') < 0) { v194n = '没有「供电覆盖」段'; return false; }
+  const ok = miss.length > 0
+    ? (h.indexOf('(' + miss[0].x + ',' + miss[0].y + ')') >= 0
+      && h.indexOf('一个能放桩的 2×2 空位都没有') >= 0)
+    : (h.indexOf('✓ 全部盖住') >= 0);
+  v194n = '缺口 ' + miss.length + ' 台 · 与实际一致=' + ok;
   return ok;
 })(), () => v194n || '(空)');
 
@@ -6537,6 +6614,62 @@ chk('v195 源码：LawPlan opts.off + RW_POLE_PLAN + noPush + RwPoleSpot 让位'
 chk('v195 口径：重试取「没盖到最少」的一版（并列早试者优先）', (() => {
   return /uNow < RW_POLE_CTX\.best\.u/.test(rawCode) && /RW_POLE_CTX\.best=\{u:uNow/.test(rawCode);
 })(), () => '取最优=' + /uNow < RW_POLE_CTX\.best\.u/.test(rawCode));
+
+/* ═══ v196（2026-10-07）供电覆盖 100% —— 「桩位保护区」重铺 ═══
+   起因：作者「必须保证每种产线用电设施都要有供电桩覆盖」。
+   侦察（probe_pole_gap_diag · 全库）：v195 后仍剩 5 台没盖到，**全是「被自己的带/件围死」** ——
+   目标 12×12 内连一个 2×2 空地都没有（放宽边距到 0 也是 0），纯几何死结。
+   ⭐实测否证 ①：整链起摆偏移（opts.off 8/10/14）**无效** —— 平移不改变产线内部密度，相对关系原样。
+   ⭐实测否证 ②：让桩压在带上也不行（作者确认「供电桩不能压在传送带上」）。
+   解法：`RwPoleProtect` 给每个耗电设备**预留一个 2×2 桩位**，作为 `RwRoute` 的硬障碍（走线绕开）；
+   参数组全试完仍有缺口时，最后再来一遍「保护区重铺」（复用第一遍最优参数 ⇒ 机器布局一字不差）。
+   结果：全库 5 台 → **0 台**。 */
+let v196n = null;
+
+/* ① 行为锁：v195 时还缺 2 台的「低容武陵电池 @70」，现在清零 */
+chk('v196 保护区重铺：低容武陵电池 @70 供电缺口清零（v195 时还缺 2 台）', (() => {
+  loReset(70); A.LawRun('item_proc_battery_4', 10);
+  const P = A.LO.plan;
+  const miss = (P && P.polePlace && P.polePlace.uncovered) || [];
+  v196n = '缺口 ' + miss.length + (miss.length ? ('（' + miss.map(u => u.planRole + '@' + u.x + ',' + u.y).join(' · ') + '）') : '');
+  return !!P && miss.length === 0;
+})(), () => v196n || '(空)');
+
+/* ② 行为锁：另一条难链「赫铜装备原件 @70」也清零（v195 时缺 2 座销毁池） */
+chk('v196 保护区重铺：赫铜装备原件 @70 供电缺口清零（v195 时还缺 2 座销毁池）', (() => {
+  loReset(70); A.LawRun('item_equip_script_4_2', 10);
+  const P = A.LO.plan;
+  const miss = (P && P.polePlace && P.polePlace.uncovered) || [];
+  v196n = '缺口 ' + miss.length;
+  return !!P && miss.length === 0;
+})(), () => v196n || '(空)');
+
+/* ③ 反向锁：无缺口的链**不进保护区遍**（RwPoleProtect 一次都不该被调）——
+   守「保护区重铺只在有缺口时才花这份钱」，防它退化成「每条链都多跑一遍」。 */
+chk('v196 反向：无缺口的链不触发保护区重铺（RwPoleProtect 不被调用）', (() => {
+  let n = 0;
+  const orig = A.RwPoleProtect;
+  A.RwPoleProtect = function () { n++; return orig.apply(this, arguments); };
+  try { loReset(70); A.LawRun('item_iron_cmpt', 10); } finally { A.RwPoleProtect = orig; }
+  v196n = 'RwPoleProtect 调用 ' + n + ' 次';
+  return n === 0;
+})(), () => v196n || '(空)');
+
+/* ④ 源码锁：保护区重铺的几个要件都在（少一个就会**静默失效** —— 本期踩过两次） */
+chk('v196 源码：RwPoleProtect + USE_PROT + 保护区遍复用第一遍参数 + 储存箱连线避让桩位', (() => {
+  return /function RwPoleProtect\(/.test(rawCode)
+    && /const USE_PROT=!!\(opts&&opts\.protect\)/.test(rawCode)
+    && /protect:1\}/.test(rawCode)
+    && /RW_POLE_CTX\.pc/.test(rawCode)
+    && /function RwPoleSpotXY\(/.test(rawCode)
+    && /deep\?RwPoleSpotXY\(cd\.x/.test(rawCode);
+})(), () => {
+  return 'RwPoleProtect=' + /function RwPoleProtect\(/.test(rawCode)
+    + ' USE_PROT=' + /const USE_PROT=!!\(opts&&opts\.protect\)/.test(rawCode)
+    + ' protect:1=' + /protect:1\}/.test(rawCode)
+    + ' pc=' + /RW_POLE_CTX\.pc/.test(rawCode)
+    + ' SpotXY=' + /function RwPoleSpotXY\(/.test(rawCode);
+});
 
 loReset(50); A.render();
 

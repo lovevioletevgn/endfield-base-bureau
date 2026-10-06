@@ -4167,6 +4167,21 @@ const RW_SINK_ROTS=[0,90,270,180];   /* 试朝向的优先序（0 最常见：�
    这里的判据与 `RplacePoles` **同源**：桩本体 2×2、`rangeExtend` 外扩 5 → 12×12、**与件有交集即通电**。
    ⇒ 后勤件（销毁池 / 协议储存箱）选位时，用它做**同距离档内的偏好**：能留出桩位的候选先用。
    `blocked(x,y)` 由调用方传（各函数自己的占用图口径，含 outProt 之类保护表）。 */
+/* ⭐v196：与 RwPoleSpot 同口径，但返回**坐标**（供 RplaceStores 把桩位当硬障碍传给 RwPath）。
+   为什么需要：储存箱**自己也要铺连线**，而 `RwPoleSpot` 的布尔检查发生在铺线**之前** ——
+   实测低容武陵电池 @10 @70 的箱子 @(7,1)：RwPoleSpot 说「留得出桩位」，可它的 storelink 随后
+   把周围 55 个候选位**全压成了带**，最后一座桩照样放不下。⇒ 必须让**它自己的线**也避开桩位。 */
+function RwPoleSpotXY(cx, cy, w, d, size, blocked){
+  const R=RW_POLE_RANGE, PW=2;
+  for(let py=cy-R; py<=cy+d+R-1; py++)
+    for(let px=cx-R; px<=cx+w+R-1; px++){
+      if(px<RW_MARGIN||py<RW_MARGIN||px+PW>size-RW_MARGIN||py+PW>size-RW_MARGIN) continue;
+      let ok=true;
+      for(let j=0;j<PW&&ok;j++) for(let i=0;i<PW;i++){ if(blocked(px+i,py+j)){ ok=false; break; } }
+      if(ok) return {x:px, y:py};
+    }
+  return null;
+}
 function RwPoleSpot(cx, cy, w, d, size, blocked){
   const R=RW_POLE_RANGE, PW=2;
   for(let py=cy-R; py<=cy+d+R-1; py++)
@@ -4177,6 +4192,57 @@ function RwPoleSpot(cx, cy, w, d, size, blocked){
       if(ok) return true;
     }
   return false;
+}
+/* ⭐v196（2026-10-07 博士「必须保证每种产线用电设施都要有供电桩覆盖」）：**桩位保护区**。
+   【为什么需要】实测剩下 5 台缺口（中容武陵电池 1 座销毁池 · 赫铜装备原件 2 座销毁池 ·
+   低容武陵电池的封装机 + 协议储存箱）**全是「被自己的带/件围死」** —— 目标 12×12 内
+   连一个 2×2 空地都没有（放宽边距到 0 也还是 0），属**纯几何死结**。
+   ⭐整链平移（`opts.off` 8/10/14）实测**无效**：平移不改变产线内部密度，相对关系原样。
+   ⇒ 唯一出路是**主动把桩位留出来**：给每个耗电设备预留一个 2×2 空位，
+     交给 `RwRoute` 当**硬障碍**（走线绕开）、交给后勤件当占用（不放东西），
+     最后由 `RplacePoles` 在这些位子上放桩。
+   【口径】与 `RplacePoles` 同源：桩 2×2、外扩 5 → 覆盖 12×12、**与目标有交集即通电**。
+   【算法】贪心集合覆盖：每轮挑「新覆盖耗电设备最多」的 2×2 位（只要求不与**建筑**重叠 ——
+     传送带不算，它们正是要靠保护区挡开的东西）。返回虚拟件数组，可直接当 `RwRoute` 的 `extraBusy`。
+   ⚠️ 只对**装了发电设备以外的**耗电件（`powerConsume>0`）算 —— 与 `RplacePoles` 的目标口径一字不差。
+   ⚠️ 开销 O(轮数 × size² × 目标数)，只在本函数的调用者（有缺口时的最后一遍）跑。 */
+function RwPoleProtect(objs, size){
+  const K=(x,y)=>x+','+y;
+  const occ={};
+  (objs||[]).forEach(o=>{ if(o.x==null||!o.w||!o.d) return;
+    for(let j=0;j<o.d;j++) for(let i=0;i<o.w;i++) occ[K(o.x+i,o.y+j)]=1; });
+  /* ⚠️ 兼容两种对象结构（首版只认 `o.id` ⇒ 传 LawPlan 产出时目标恒为 0、保护区恒为空 —— 实测踩中）：
+     · `L.objs` 里的件是 `Lmk` 产出，**带 `id`**，建筑要 `byBp(o.id)` 回查；
+     · `LawPlan` 的产出是 `{node,b,x,y,w,d,k}`，**没有 `id`，但直接带 `b`（建筑对象）**。
+     `RwPoleProtect` 两个地方都传得到（候选评估传 plan.objs、落盘时也传 plan.objs），所以必须两种都认。 */
+  const tgt=[];
+  (objs||[]).forEach(o=>{
+    const b=(o.b&&o.b.powerConsume!=null)?o.b:(o.id?byBp(o.id):null);
+    if(b&&(+b.powerConsume>0)) tgt.push({x:o.x,y:o.y,w:o.w,d:o.d});
+  });
+  if(!tgt.length) return [];
+  const covers=(px,py,t)=> !(t.x+t.w<=px-RW_POLE_RANGE || t.x>=px+2+RW_POLE_RANGE
+    || t.y+t.d<=py-RW_POLE_RANGE || t.y>=py+2+RW_POLE_RANGE);
+  const out=[], done=[];
+  for(let guard=0; guard<200; guard++){
+    let best=null;
+    for(let py=RW_MARGIN; py<size-RW_MARGIN-1; py++){
+      for(let px=RW_MARGIN; px<size-RW_MARGIN-1; px++){
+        let freeOk=true;
+        for(let j=0;j<2&&freeOk;j++) for(let i=0;i<2;i++) if(occ[K(px+i,py+j)]){ freeOk=false; break; }
+        if(!freeOk) continue;
+        let hit=0;
+        for(let i=0;i<tgt.length;i++){ if(done[i]) continue; if(covers(px,py,tgt[i])) hit++; }
+        if(!hit) continue;
+        if(!best||hit>best.hit) best={px:px, py:py, hit:hit};
+      }
+    }
+    if(!best) break;
+    for(let i=0;i<tgt.length;i++) if(!done[i]&&covers(best.px,best.py,tgt[i])) done[i]=1;
+    for(let j=0;j<2;j++) for(let i=0;i<2;i++) occ[K(best.px+i,best.py+j)]=1;
+    out.push({x:best.px, y:best.py, w:2, d:2});
+  }
+  return out;
 }
 function RplaceSinksLinked(plan, rt, res, size, occObjs, sinkPlan){
   const out=[], links=[], unplaced=[];
@@ -4410,7 +4476,7 @@ const RW_STORE_CAND_MAX=3;
      储存箱只要 9 格且**不依赖存取线** —— 博士原话「用协议储存箱更少占地」。
    摆位口径与 RplaceSinks 一致（**从右下角往左上扫**）：只捡剩余空位、不挤产线，宁可线长一点。
    返回 {objs, links, unplaced}；任何一步失败只记 unplaced，**不阻断生成**。 */
-function RplaceStores(plan, rt, res, size, occObjs){
+function RplaceStores(plan, rt, res, size, occObjs, deep){
   const out=[], links=[], unplaced=[];
   const sb=byBp('storager_1');
   if(!sb) return {objs:out, links:links, unplaced:unplaced};
@@ -4537,7 +4603,11 @@ function RplaceStores(plan, rt, res, size, occObjs){
       /* ⭐v195：前 K 个候选里优先挑「回头放得下供电桩」的位置（与销毁池同一口径，
          见 RwPoleSpot 注释）—— 储存箱也是耗电设备，被挤在角上时桩同样盖不到它。 */
       (function(){
-        const KN=Math.min(24, cands.length);
+        /* ⭐v196：`deep`（保护区遍）时**扫全部候选**。默认只扫前 24 个 —— 实测低容武陵电池 @10 @70
+           的储存箱前 24 个候选**一个都留不出桩位**（全都贴画布顶边/被机器带子夹住），
+           于是退回默认的贴边位 ⇒ 12×12 内 0 个空桩位、永远点不到。扫全部候选就能找到
+           离机器远一点、但四周有 2×2 空地的位置。⚠️ 只在保护区遍开（有缺口才跑，代价可接受）。 */
+        const KN=deep?cands.length:Math.min(24, cands.length);
         const blocked=(x,y)=>!!busyAll[K(x,y)];
         let hit=-1;
         for(let i=0;i<KN;i++){ if(RwPoleSpot(cands[i].x, cands[i].y, sw, sd, size, blocked)){ hit=i; break; } }
@@ -4568,6 +4638,9 @@ function RplaceStores(plan, rt, res, size, occObjs){
              通常第一个朝向就通。⭐旋转后 footprint 会转（3×3 是正方形，本例不变；
              若将来换非正方形建筑，必须用 Ldims 取旋转后的 w/d，见下方 dm）。 */
         let bestRot=0, bestHit=null;
+        /* ⭐v196（仅保护区遍）：先给这个候选位挑一个桩位，铺线时当**硬障碍**避开 ——
+           否则箱子自己的 storelink 会把周围占满，最后一座桩无处可放（见 RwPoleSpotXY 注释）。 */
+        const spot=deep?RwPoleSpotXY(cd.x, cd.y, sw, sd, size, (x,y)=>!!busyAll[K(x,y)]):null;
         /* 朝向按「输入口外侧格离起点多近」升序（通常第一个就通） */
         const rots=RW_STORE_ROTS.slice().sort((r1,r2)=>{
           const dmin=rr=>{
@@ -4605,7 +4678,8 @@ function RplaceStores(plan, rt, res, size, occObjs){
               const q2=LportXY(sp[pi], rr, dd.w, dd.d);
               const dr2=LportDirRot(sp[pi], rr, dd.w, dd.d);
               const t={x:cd.x+q2.x+(dr2==='l'?-1:dr2==='r'?1:0), y:cd.y+q2.z+(dr2==='u'?-1:dr2==='d'?1:0)};
-              const block=(x,y)=>Rwedge(size)(x,y)||!!busy2[K(x,y)];
+              const block=(x,y)=>Rwedge(size)(x,y)||!!busy2[K(x,y)]
+                ||(!!spot&&x>=spot.x&&x<spot.x+2&&y>=spot.y&&y<spot.y+2);
               const pth=RwPath(s, t, busyB, size, block, axis);
               if(pth){ hit={s:s, t:t, path:pth}; }
             }
@@ -5977,7 +6051,15 @@ function RwPoleRetryNext(){
   const c=RW_POLE_CTX;
   if(!c) return RwPoleRetryFinish();
   c.idx++;
-  if(c.idx>=RW_POLE_PLAN.length) return RwPoleRetryFinish();
+  if(c.idx>=RW_POLE_PLAN.length){
+    /* ⭐v196：参数组全试完**仍有缺口** → 最后再来一遍「桩位保护区」重铺（走线绕开预留的桩位）。
+       ⚠️ retryIdx 传 RW_POLE_PLAN.length（越界值）⇒ 复用最后一组参数，**且不会再触发重排**（retryIdx>=0）。 */
+    if(c.best.u>0 && !c.protDone){
+      c.protDone=true; RW_POLE_INWIDE=true;
+      return LawRun(c.targetId, c.perMin, {retryIdx:RW_POLE_PLAN.length, noPush:1, protect:1});
+    }
+    return RwPoleRetryFinish();
+  }
   RW_POLE_INWIDE=true;
   return LawRun(c.targetId, c.perMin, {retryIdx:c.idx, noPush:1});
 }
@@ -6093,6 +6175,8 @@ function LawRun(targetId, perMin, opts){
      只在「落盘后还有耗电设备没被桩盖到」时，用 `opts.widePole` 递归跑第二遍 ——
      机器间距 8/6、通道 +6/+10，机器之间腾出 2×2 桩位的机会大得多（同 v66/⑤-3 的失败驱动扩搜思路）。 */
   const retryIdx=(opts&&opts.retryIdx!=null)?opts.retryIdx:-1;   /* ⭐v195：供电缺口重试的第几组（-1 = 正常第一遍） */
+  /* ⭐v196：**桩位保护区**开关 —— 只有「参数组全试完仍有缺口」的最后一遍才开（见 RwPoleRetryNext） */
+  const USE_PROT=!!(opts&&opts.protect);
   if(retryIdx>=0) RW_POLE_INWIDE=true;
   const wideBase=Math.min(14, Math.ceil(depLines/2)+2);
   /* ── [5] 参数网格候选（含 wide 换行档）──────────────── */
@@ -6106,10 +6190,19 @@ function LawRun(targetId, perMin, opts){
     if(cntByDepth[dks[wi]] > (cntByDepth[dks[wi-1]]||0)*1.6){ wide=true; break; }
   }
   if(retryIdx>=0){
+    if(USE_PROT && RW_POLE_CTX && RW_POLE_CTX.pc){
+      /* ⭐v196 保护区遍：复用第一遍最优参数。⚠️ 首版用了 RW_POLE_PLAN 的最后一组（gapX6/off5），
+         那组往往**越界**（`pl.over` 一票否决）→ 直接 return，压根走不到铺线 ⇒ 保护区静默失效。
+         复用同一组参数 ⇒ 机器布局一字不差 ⇒ 基于它算的桩位必然落空位。 */
+      const pc=RW_POLE_CTX.pc;
+      cands.push({gapX:pc.gapX, align:pc.align, corrBase:pc.corrBase, swap:pc.swap||null,
+                  mode:pc.mode, off:pc.off||0});
+    }else{
     /* 重试遍：**只**跑 RW_POLE_PLAN 里指定的那一组（每组都完整落盘 → 数出「没盖到几台」再决定去哪） */
     const rp=RW_POLE_PLAN[Math.min(retryIdx, RW_POLE_PLAN.length-1)];
     cands.push({gapX:rp.gapX, align:false, corrBase:Math.min(20, wideBase+rp.corrAdd),
                 swap:null, mode:rp.mode, off:rp.off});
+    }
   }else{
   (small?[4,3,2]:[4,3,2]).forEach(gx=>{
     (small?[false,true]:[false,true]).forEach(al=>{
@@ -6132,7 +6225,7 @@ function LawRun(targetId, perMin, opts){
     const pl=LawPlan(res, L.size, corr, {gapX:c.gapX, align:c.align, mode:c.mode, off:c.off});
     if(pl.over.length) return;
     overAll=false;
-    const rt=RwRoute(pl.objs, res, L.size, corr);
+    const rt=RwRoute(pl.objs, res, L.size, corr, USE_PROT?RwPoleProtect(pl.objs, L.size):null);
     const sc=pickScore(pl, rt);
     tried++;
     if(!best || sc.v>best.sc.v) best={c:c, sc:sc, plan:pl, route:rt, corr:corr};
@@ -6167,7 +6260,7 @@ function LawRun(targetId, perMin, opts){
       const corr=Math.max(c.corrBase, corrAuto);
       const pl=LawPlan(res, L.size, corr, {gapX:c.gapX, align:c.align, mode:c.mode});
       if(pl.over.length) return;
-      const rt=RwRoute(pl.objs, res, L.size, corr);
+      const rt=RwRoute(pl.objs, res, L.size, corr, USE_PROT?RwPoleProtect(pl.objs, L.size):null);
       const sc=pickScore(pl, rt);
       tried++; wideTried++;
       if(sc.v>best.sc.v) best={c:c, sc:sc, plan:pl, route:rt, corr:corr};
@@ -6186,7 +6279,7 @@ function LawRun(targetId, perMin, opts){
         const corr2=Math.max(c2.corrBase, Math.min(14, Math.ceil(depLines/2)+2));
         const pl2=LawPlan(res, L.size, corr2, {gapX:c2.gapX, align:c2.align, swap:c2.swap, mode:c2.mode});
         if(pl2.over.length) continue;
-        const rt2=RwRoute(pl2.objs, res, L.size, corr2);
+        const rt2=RwRoute(pl2.objs, res, L.size, corr2, USE_PROT?RwPoleProtect(pl2.objs, L.size):null);
         const sc2=pickScore(pl2, rt2);
         tried++; swaps++;
         if(sc2.v>best.sc.v) best={c:c2, sc:sc2, plan:pl2, route:rt2, corr:corr2};
@@ -6200,7 +6293,7 @@ function LawRun(targetId, perMin, opts){
     if(corrUp>best.corr){
       const plUp=LawPlan(res, L.size, corrUp, {gapX:best.c.gapX, align:best.c.align, swap:best.c.swap, mode:best.c.mode});
       if(!plUp.over.length){
-        const rtUp=RwRoute(plUp.objs, res, L.size, corrUp);
+        const rtUp=RwRoute(plUp.objs, res, L.size, corrUp, USE_PROT?RwPoleProtect(plUp.objs, L.size):null);
         const scUp=pickScore(plUp, rtUp);
         tried++;
         if(scUp.v>best.sc.v){ best={c:{gapX:best.c.gapX, align:best.c.align, corrBase:corrUp, swap:best.c.swap}, sc:scUp, plan:plUp, route:rtUp, corr:corrUp}; }
@@ -6209,8 +6302,18 @@ function LawRun(targetId, perMin, opts){
   }
   /* ── [8] 落盘：写 L.objs / L.plan / L.msg → render() ── */
   const plan=best.plan, route=best.route, corr=best.corr;
+  /* ⭐v196：保护区重铺遍的桩位保护区（与候选评估同源，基于最终机器布局再算一次）。
+     ⚠️ **只给销毁池用**（候选多、退让得起）；储存箱 / 气体散布机**不避让** ——
+        实测它们只试 3 个（甚至 1 个）候选位，一避让就整个摆不出来，
+        连带 8 条出货线 / 环境圈回归锁全红（比缺 2 台桩糟糕得多）。 */
+  const PROT=USE_PROT?RwPoleProtect(plan.objs, L.size):null;
+  const OCC=PROT?L.objs.concat(PROT):L.objs;
   const st0=route && route.stats;
   const pickNote='参数搜索 '+tried+' 组'+(wideTried?('（含宽间距扩搜 '+wideTried+' 组）'):'')+(swaps?('（含相邻交换 '+swaps+' 次）'):'')
+    /* ⭐v196：为重排/保护区遍在报告里点名（用户能看出「这一版是为供电覆盖多花了一道」）。
+       ⚠️ 重试遍的 `tried` 只有 1（只跑那一个候选），不加标记的话报告会显示成「参数搜索 1 组」，
+       看不出做过重排 —— 回归锁 ⑤-3 也正是因此在 80×80 上误报。 */
+    +(retryIdx>=0?('（供电缺口重排第 '+(Math.min(retryIdx, RW_POLE_PLAN.length-1)+1)+' 组'+(USE_PROT?'·桩位保护区重铺':'')+'）'):'')
     +' —— 用了 间'+best.c.gapX+'/通道'+corr+(best.c.mode==='down'?'/分层对齐':'/对齐'+(best.c.align?'开':'关'))
     +'（连通 '+best.sc.ok+' 段 · 手动连 '+best.sc.manual+' · 线 '+best.sc.belts+' 格'
     +(st0&&(st0.merge||st0.split)?(' · 汇流 '+st0.merge+' / 分流 '+st0.split):'')+'）';
@@ -6224,6 +6327,7 @@ function LawRun(targetId, perMin, opts){
   if(sinkPlan.sinks.length){
     const preOcc=[];
     plan.objs.forEach(o=>preOcc.push({x:o.x,y:o.y,w:o.w,d:o.d}));
+    if(PROT) PROT.forEach(p=>preOcc.push({x:p.x,y:p.y,w:p.w,d:p.d}));
     (rt.bldgs||[]).forEach(b=>{ const bb=byBp(b.id); if(bb){ const f=Lfp(bb); preOcc.push({x:b.x,y:b.y,w:f[0],d:f[1]}); } });
     const beltSet={}; rt.belts.forEach(bl=>{ beltSet[bl.x+','+bl.y]=1; });
     const preSink=RplaceSinks(sinkPlan, L.size, function(x,y){
@@ -6274,7 +6378,7 @@ function LawRun(targetId, perMin, opts){
         原因：作者 2026-10-02 截图里 7 个池子一字排在画布左下角、**一根带子都没连**；
         而销毁的机制是「扩容反应池堵塞清空」，料送不进去就永远不堵 → 池子等于白摆。
      开销：无必爆项时 sinkPlan.sinks 为空 → 一行都不多跑（老路径零影响）。 */
-  const sinkPlaced=RplaceSinksLinked(plan, rt, res, L.size, L.objs, sinkPlan);
+  const sinkPlaced=RplaceSinksLinked(plan, rt, res, L.size, OCC, sinkPlan);
   (sinkPlaced.links||[]).forEach(l=>{
     const pb=byBp(l.isPipe?'log_pipe_01':'grid_belt_01'); if(!pb) return;
     const obj=Lmk(pb, l.x, l.y, l.rot);
@@ -6321,7 +6425,7 @@ function LawRun(targetId, perMin, opts){
   if(L.autoStore!==false){
     /* ⚠️ 第 5 参传的是**对象数组**（L.objs），不是回调 —— 函数内部一次栅格化，
        避免「每个格子回调遍历 2000 个对象」把测试拖慢 8 倍（见 RplaceStores 头部的性能注释）。 */
-    storePlace=RplaceStores(plan, rt, res, L.size, L.objs);
+    storePlace=RplaceStores(plan, rt, res, L.size, L.objs, USE_PROT);
     (storePlace.links||[]).forEach(l=>{
       const pb=byBp('grid_belt_01'); if(!pb) return;
       const obj=Lmk(pb, l.x, l.y, l.rot);
@@ -6465,6 +6569,8 @@ function LawRun(targetId, perMin, opts){
     if(retryIdx<0){
       if(uNow===0){ RW_POLE_CTX=null; RW_POLE_INWIDE=false; render(); return; }
       RW_POLE_CTX={targetId:targetId, perMin:perMin, idx:-1,
+                   /* ⭐v196：保护区遍复用这组参数 —— 保证机器布局与第一遍一字不差，预留的桩位才对得上 */
+                   pc:best.c,
                    best:{u:uNow, objs:JSON.parse(JSON.stringify(L.objs)), plan:L.plan, msg:L.msg}};
       RW_POLE_INWIDE=true;
       return LawRun(targetId, perMin, {retryIdx:0, noPush:1});
