@@ -5653,10 +5653,15 @@ chk('v184 销毁线材质：壤晶废液是液态 → 销毁线必须落 log_pip
     if (!P || !P.sinkPlaced) return false;
     const links = (P.sinkPlaced.objs || []).map(o => o.isPipe);
     if (!links.length || links.some(v => v !== true)) return false;
-    /* 落盘那一层也必须是管道：按材质回查 L.objs */
+    /* 落盘那一层也必须是管道：按材质回查 L.objs
+       ⭐v199 改锁（如实记录）：原断言 `o.id === 'log_pipe_01'` 在 v199 精细桥接上线后挂掉 ——
+          池线正交穿越已有管道时改为叠 **管道桥 `log_pipe_connector`**（对齐 RwRoute v152 口径），
+          它是**管道系**的立体跨线件（游戏里就是管道，只是上跨形态），不违反本锁「销毁线必须走管道
+          而非传送带」的本意。⇒ 允许集放宽为「管道 + 管道桥」，**传送带系（log_connector /
+          grid_belt_01）仍被拒**，锁的鉴别力不减。 */
     const objs = A.LO.objs.filter(o => o.planRole === 'sinklink');
     if (!objs.length) return false;
-    return objs.every(o => o.id === 'log_pipe_01');
+    return objs.every(o => o.id === 'log_pipe_01' || o.id === 'log_pipe_connector');
   })(), (() => {
     const os = A.LO.objs.filter(o => o.planRole === 'sinklink');
     return 'sinklink ' + os.length + ' 格，材质=' + [...new Set(os.map(o => o.id))].join(',');

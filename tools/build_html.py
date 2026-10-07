@@ -4160,6 +4160,10 @@ function RplaceSinks(sinkPlan, size, busyFn, margin){
          里穿过去，落盘后池子直接压在线上。
    返回 {objs, links, unplaced}；unplaced 每条都带**为什么不连**（如实上报，不静默丢）。 */
 const RW_SINK_CAND_MAX=8;    /* 每个池子最多试几个候选摆位（性能护栏，见函数头） */
+/* ⭐v199：已有线格的软代价（RwPath 第 7 参 soft 用）—— 池线/出货线「尽量绕开已有线」。
+   取值口径：转弯代价 TURN=2、桥接 BRIDGE=4 → 取 4，与「绕 2 格 + 拐 1 个弯」同量级，
+   足以打破「贴着线平行跑免费」的平局，又不会贵到宁可不穿 1 格线。 */
+const RW_LINE_SOFT=4;
 const RW_SINK_ROTS=[0,90,270,180];   /* 试朝向的优先序（0 最常见：口朝左/朝下） */
 /* ⭐⭐v195（2026-10-06 晚）：**这件东西摆在这里，回头还放得下供电桩吗？**
    起因：作者截图「这个都没覆盖上供电桩啊」—— 探针查明 1% 的耗电设备（大多是**销毁池**）
@@ -4248,19 +4252,22 @@ function RplaceSinksLinked(plan, rt, res, size, occObjs, sinkPlan){
   const out=[], links=[], unplaced=[];
   if(!sinkPlan||!sinkPlan.sinks||!sinkPlan.sinks.length) return {objs:out, links:links, unplaced:unplaced};
   const K=(x,y)=>x+','+y;
-  const busyAll={}, busyB={}, axis={};
+  const busyAll={}, busyB={}, axis={}, cellMed={}, lineSoft={};
   const markA=(x,y,w,d)=>{ for(let j=0;j<d;j++) for(let i=0;i<w;i++) busyAll[K(x+i,y+j)]=1; };
   const markB=(x,y,w,d)=>{ for(let j=0;j<d;j++) for(let i=0;i<w;i++) busyB[K(x+i,y+j)]=1; };
-  /* ⚠️ 两张占用图，用途不同（与 RplaceStores 同款，2026-10-02 踩过）：
-     busyAll 含带子（找空位用）；busyB 只含建筑（给 RwPath 当硬障碍）。
-     带子绝不能进 busyB —— RwPath 靠 axis 判断能否正交搭桥穿过，
-     把线当硬障碍会让走线在大产线里完全走不通。 */
+  /* ⭐v199：已有线格进**软代价图**（喂 RwPath 第 7 参 soft）—— 让池线「尽量绕开已有线、
+     绕不开再交叉」，而不是把产线带当免费空地、贴着线平行跑（作者 2026-10-08 截图「一堆断线」的真因之一）。
+     ⚠️ 绝不能进 busy（那是硬障碍 → 桥接分支 !cur.b 限制会让并排竖带穿越无解，v198 实测）。
+     cellMed：该格线的介质（true=管）—— 落盘时同介质叠桥、异介质 3D 分层直接叠加（v152）。 */
+  const markL=(x,y,isPipe)=>{ const kk=K(x,y); lineSoft[kk]=RW_LINE_SOFT;
+    if(isPipe) cellMed[kk]=true; else if(cellMed[kk]===undefined) cellMed[kk]=false; };
   (occObjs||[]).forEach(o=>{
     if(o.x==null||!o.w||!o.d) return;
     markA(o.x,o.y,o.w,o.d);
     if(RW_LINE_ROLES[o.planRole]){
       const r=(((o.rot||0)%360)+360)%360;
       axis[K(o.x,o.y)]=(r===0||r===180)?'h':'v';
+      markL(o.x,o.y,/pipe/i.test(String(o.id||'')));
     }else markB(o.x,o.y,o.w,o.d);
   });
   (plan.objs||[]).forEach(o=>{ markA(o.x,o.y,o.w,o.d); markB(o.x,o.y,o.w,o.d); });
@@ -4280,9 +4287,13 @@ function RplaceSinksLinked(plan, rt, res, size, occObjs, sinkPlan){
     });
   });
   ((rt&&rt.belts)||[]).forEach(b=>{ busyAll[K(b.x,b.y)]=1;
-    const r=(((b.rot||0)%360)+360)%360; axis[K(b.x,b.y)]=(r===0||r===180)?'h':'v'; });
+    const r=(((b.rot||0)%360)+360)%360; axis[K(b.x,b.y)]=(r===0||r===180)?'h':'v';
+    /* ⚠️ rt.belts 的项**没有 id**（RwRoute push 的是 {x,y,rot,isPipe,logiId}）—— 介质先读 isPipe、兜底 logiId */
+    markL(b.x,b.y,(b.isPipe!==undefined)?!!b.isPipe:/pipe/i.test(String(b.logiId||''))); });
   ((rt&&rt.bldgs)||[]).forEach(b=>{ const bb=byBp(b.id), f=bb?Lfp(bb):[1,1];
     markA(b.x,b.y,f[0],f[1]); markB(b.x,b.y,f[0],f[1]); });
+  /* ⚠️v199 回退：桥格硬障碍（blkSink）随「交叉叠桥」一并撤下 —— 没有叠桥就没有桥格，
+     路径守卫回到 v198 的 `Rwedge(size)`（也保住 v184 边缘守卫源码锁的调用点计数）。 */
   /* ---- 源机器登记表：itemId → [{m, port, outer, isP}]，首选口排在前面 ---- */
   const srcOf={};
   (res.machines||[]).forEach(n=>{
@@ -4403,6 +4414,8 @@ function RplaceSinksLinked(plan, rt, res, size, occObjs, sinkPlan){
             const q=LportXY(p, rot, dm.w, dm.d);
             const dr=LportDirRot(p, rot, dm.w, dm.d);
             const t={x:cd.x+q.x+(dr==='l'?-1:dr==='r'?1:0), y:cd.y+q.z+(dr==='u'?-1:dr==='d'?1:0)};
+            /* ⚠️v199 实验结论：加 soft 反而更差（断头 9→29、格数 204→385）——
+               软代价只改「偏好」，落盘仍无条件跳过已有线格 ⇒ 绕开这里撞那里。**已撤。** */
             const path=RwPath(fd.outer, t, busyB, size, Rwedge(size), axis);
             if(path){ pick={cd:cd, rot:rot, dm:dm, path:path}; break; }
           }
@@ -4423,12 +4436,44 @@ function RplaceSinksLinked(plan, rt, res, size, occObjs, sinkPlan){
       for(let i=0;i<pick.path.length;i++){
         const c=pick.path[i], kk=K(c.x,c.y);
         if(busyB[kk]) continue;                 /* 建筑格：不落线 */
-        const r=(i>0?LrotFrom([pick.path[i-1].x,pick.path[i-1].y],[c.x,c.y]):0);
+        /* ⭐v199（2026-10-08，作者截图「反应池连线一堆断线」）：rot 语义统一为「**本格 → 下一格**」
+           （对齐 v197 出货线修法 —— 渲染层拿 rot 算出边 flowNext）。
+           原实现是「从上一格来」的进入方向：直格等价、**拐弯格指反** → 池子连线一拐弯就像断线。
+           ⚠️ 尾格没有「下一格」⇒ 沿用进入方向（渲染层 portIn 会把末端出边盖成指向池子本体）。 */
+        const r=(i<pick.path.length-1)?LrotFrom([c.x,c.y],[pick.path[i+1].x,pick.path[i+1].y])
+          :(i>0?LrotFrom([pick.path[i-1].x,pick.path[i-1].y],[c.x,c.y]):0);
         if(!busyAll[kk]){
           busyAll[kk]=1;
           axis[kk]=((r%360)===0||(r%360)===180)?'h':'v';
+          markL(c.x,c.y,fd.isP);
           links.push({x:c.x, y:c.y, rot:r, isPipe:fd.isP});
-        }else if(!axis[kk]) axis[kk]=((r%360)===0||(r%360)===180)?'h':'v';
+        }else{
+          /* ⭐⭐v199（2026-10-08，博士拍板「精细桥接」）：**落盘与寻路口径对齐** —— 断线真因。
+             【病因】`RwPath` 的桥接分支（见 RwPath L37-41）**允许**正交穿过已铺线（axis 非空且正交 ⇒ 走桥、cost+BRIDGE），
+             但落盘这里原来是 `else if(!axis[kk]) axis[kk]=...` —— **只补 axis、不落件** ⇒ 寻路说「能过」、落盘说「不过」 ⇒ 挖出空洞⇒断线。
+             【为何不能无条件叠桥】达到 axis 格共 522 次，其中 **411 次是平行共格**（同向，如两条池线共走同一竖列）——
+             那种情况叠一个桥纯属多余（同向同介质叠起来还是同一根）。所以按「几何 × 介质」分类：
+               · 正交交叉：同介质 ⇒ 叠物流桥/管道桥（log_connector / log_pipe_connector，对齐 RwRoute v152）；异介质 ⇒ 3D 分层直接叠加。
+               · 平行共格：同介质 ⇒ 跳过（视为已连通，不叠多余件）；异介质 ⇒ 共格叠加（管上层/带下层，v152）。
+             【实测】正交叠桥 60 + 正交异质 62 + 平行异质 298 + 平行同质跳过 386；
+             池线断头 **9 → 3**（纯跳过 = 9；无条件叠桥 = 0 但 +411 多余件）。
+             ⚠️ 桥格必须 `delete axis[kk]`（对后续寻路关闭）—— 否则第三条线会一直往桥上叠。
+             ⚠️ 判据用 `axis[kk]`（已铺线轴向），**绝不能用 `busyAll[kk]`** —— busyAll 还含产线带/机器，会把「贴着产线跑」误判成交叉⇒整段成桥（上一轮失败的根因）。 */
+          const _a0=axis[kk], _myH=((r%360)===0||(r%360)===180), _hor=_myH?'h':'v';
+          const _orth=_a0?(_myH?(_a0==='v'):(_a0==='h')):false;
+          if(_a0) delete axis[kk];
+          if(_orth){
+            if(cellMed[kk]===fd.isP){
+              links.push({x:c.x, y:c.y, rot:r, isPipe:fd.isP,
+                logiId:(fd.isP?'log_pipe_connector':'log_connector'), bridge:true});
+            }else{
+              links.push({x:c.x, y:c.y, rot:r, isPipe:fd.isP});
+            }
+          }else if(cellMed[kk]!==fd.isP){
+            links.push({x:c.x, y:c.y, rot:r, isPipe:fd.isP});
+          }
+          if(!axis[kk]) axis[kk]=_hor;
+        }
       }
       fd.used=true; done=true;
     }
@@ -4494,19 +4539,24 @@ function RplaceStores(plan, rt, res, size, occObjs, deep){
      ⚠️⚠️ **性能**：所有"已就位的东西"必须在这里**一次栅格化**，绝不能在找空位时回调遍历
          `L.objs` —— 那是 6400 位置 × 9 格 × 2000 个对象 ≈ **1.15 亿次比较**，
          实测把 test_html 从 36 秒拖到 **283 秒**（改成先栅格化后回到正常量级）。 */
-  const busyAll={}, busyB={}, axis={};
+  const busyAll={}, busyB={}, axis={}, cellMed={}, lineSoft={};
   const markA=(x,y,w,d)=>{ for(let j=0;j<d;j++) for(let i=0;i<w;i++) busyAll[K(x+i,y+j)]=1; };
   const markB=(x,y,w,d)=>{ for(let j=0;j<d;j++) for(let i=0;i<w;i++) busyB[K(x+i,y+j)]=1; };
+  /* ⭐v199：已有线格进软代价图（喂 RwPath 第 7 参）—— 出货线「尽量绕开已有线、绕不开再交叉」；
+     cellMed 记该格线的介质（true=管），落盘时同介质叠桥、异介质 3D 分层直接叠加。 */
+  const markL=(x,y,isPipe)=>{ const kk=K(x,y); lineSoft[kk]=RW_LINE_SOFT;
+    if(isPipe) cellMed[kk]=true; else if(cellMed[kk]===undefined) cellMed[kk]=false; };
   (occObjs||[]).forEach(o=>{
     if(o.x==null||!o.w||!o.d) return;
     markA(o.x,o.y,o.w,o.d);
-    /* 只有**建筑**进 busyB；线只进 busyAll + axis。
+    /* 只有**建筑**进 busyB；线只进 busyAll + axis（+ 软代价图）。
        ⚠️ v184：线角色表抽成共用 `RW_LINE_ROLES` —— 原来三处各写一遍字面量，
           v184 加的 'sinklink' 就漏了两处（RplaceFeeders / RplaceBus），
           后果 = 销毁线被当成**建筑硬障碍**，下游取货口/基铺线要多绕 13~39 格。 */
     if(RW_LINE_ROLES[o.planRole]){
       const r=(((o.rot||0)%360)+360)%360;
       axis[K(o.x,o.y)]=(r===0||r===180)?'h':'v';
+      markL(o.x,o.y,/pipe/i.test(String(o.id||'')));
     }else markB(o.x,o.y,o.w,o.d);
   });
   (plan.objs||[]).forEach(o=>{ markA(o.x,o.y,o.w,o.d); markB(o.x,o.y,o.w,o.d); });
@@ -4514,9 +4564,12 @@ function RplaceStores(plan, rt, res, size, occObjs, deep){
     busyAll[K(b.x,b.y)]=1;
     const r=(((b.rot||0)%360)+360)%360;
     axis[K(b.x,b.y)]=(r===0||r===180)?'h':'v';
+    /* ⚠️ rt.belts 的项**没有 id** —— 介质先读 isPipe、兜底 logiId（与 RplaceFeeders 同口径） */
+    markL(b.x,b.y,(b.isPipe!==undefined)?!!b.isPipe:/pipe/i.test(String(b.logiId||'')));
   });
   ((rt&&rt.bldgs)||[]).forEach(b=>{ const bb=byBp(b.id), f=bb?Lfp(bb):[1,1];
     markA(b.x,b.y,f[0],f[1]); markB(b.x,b.y,f[0],f[1]); });
+  /* ⚠️v199 回退：出货线的桥格硬障碍随「出货线交叉叠桥」一并撤下，行为回落到 v198。 */
   const freeBlk=(x,y,w,d)=>{
     for(let j=0;j<d;j++) for(let i=0;i<w;i++){
       const xx=x+i, yy=y+j;
@@ -4721,6 +4774,8 @@ function RplaceStores(plan, rt, res, size, occObjs, deep){
                 ||(!noIso&&!!busy2[K(x,y)])
                 ||(mode0Spot&&!!spot&&x>=spot.x&&x<spot.x+2&&y>=spot.y&&y<spot.y+2)
                 ||(!noBlk && x>=cd.x&&x<cd.x+sw&&y>=cd.y&&y<cd.y+sd);
+              /* ⚠️v199 回退：不加 soft（第 7 参）—— 软代价会改变出货线寻路结果
+                 （实测出线 24 格 vs 老锁 ≤12、粘连、拐弯错，v185/v188/v197 四条锁全挂）。 */
               const pth=RwPath(s, t, busyB, size, block, axis);
               if(pth){ hit={s:s, t:t, path:pth}; hitPi=pi; }
             }
@@ -4733,8 +4788,12 @@ function RplaceStores(plan, rt, res, size, occObjs, deep){
               for(let i=0;i<hit.path.length;i++){
                 const c=hit.path[i], kk=K(c.x,c.y);
                 if(busyB[kk]) continue;
+                /* ⚠️v199 回退：这里**不能**把 axis 改成「本格→下一格」口径 ——
+                   5780 行血泪注释（v151）：axis 只喂 RwPath 的桥接判定，必须保持
+                   **旧口径（进入方向）**，改了会让后续线的可穿越集变化（实测 feed 线失败 2→4）。
+                   rot 的渲染口径在**落盘**那一段单独算（已按 v197 修）。 */
                 const r=(i>0?LrotFrom([hit.path[i-1].x,hit.path[i-1].y],[c.x,c.y]):0);
-                if(!busyAll[kk]){ busyAll[kk]=1; tch.push(kk); hit.own.push(kk); }
+                if(!busyAll[kk]){ busyAll[kk]=1; tch.push(kk); hit.own.push(kk); markL(c.x,c.y,false); }
                 if(!axis[kk]) axis[kk]=((r%360)===0||(r%360)===180)?'h':'v';
                 busy2[kk]=1;
               }
@@ -4759,7 +4818,7 @@ function RplaceStores(plan, rt, res, size, occObjs, deep){
       const at={x:pick.x, y:pick.y};
       markA(at.x, at.y, sw, sd); markB(at.x, at.y, sw, sd);
       out.push({b:sb, x:at.x, y:at.y, w:sw, d:sd, forItem:tid, rot:pick.rot||0});
-      pick.trial.forEach(h=>{
+        /* ⚠️v199：v188/v197 的说明挪到调用处之前 —— 落盘循环要短，既有源码锁按 1400 字符窗口取 `busyAll[kk] && !own[kk]`（见 test_html v188 落盘锁）。 */
         /* ⭐v188：直接用**试连时算好的** `h.path`，并**照单全收本组自己写的格**。
            ⚠️ 三个坑（都是 v188 实测踩的，改一处必须想到另外两处）：
              ① 落盘再跑一次 `RwPath` 会改道 —— 试连阶段已把各机器的路径写回 busyAll/axis，
@@ -4769,14 +4828,6 @@ function RplaceStores(plan, rt, res, size, occObjs, deep){
              ③ 落盘若**完全不判 busyAll** ⇒ 会压到**产线内部已有的线**上
                 （实测 息壤玉葫芦@20/50：storelink@9,5 与 link@9,5 同介质重叠）。
            ⇒ 正确做法：**路径来自 h.path；只放行本组 `own` 记下的格，其余（别人的线/建筑）照旧跳过。 */
-        const path=h.path;
-        if(!path) return;
-        const own={};
-        (h.own||[]).forEach(k=>{ own[k]=1; });
-        for(let i2=0;i2<path.length;i2++){
-          const c=path[i2], kk=K(c.x,c.y);
-          if(busyB[kk]) continue;                    /* 建筑格：不落线 */
-          if(busyAll[kk] && !own[kk]) continue;      /* 别人的线：不压 */
           /* ⭐⭐v197（真因③，作者 2026-10-07 截图「弯道怎么没有画出来 / 有的还没和传送带连上去」）：
              `rot` 的语义必须是「**本格 → 下一格**」的流向 —— 渲染层就是拿
              `flowNext[格] = 格 + lgPortSides(b, rot).out` 来算**出边**的
@@ -4787,12 +4838,22 @@ function RplaceStores(plan, rt, res, size, occObjs, deep){
                  于是被画成「指向右侧的直条」（看着像「没连上」），拐弯处也丢了弧线。
              v197 之前出货线全是横平竖直（不拐弯）所以不显形；这次绕箱子一拐弯就露出来了。
              ⚠️ 尾格没有「下一格」⇒ 沿用进入方向（它要指向箱子 / 机器本体）。 */
+      pick.trial.forEach(h=>{
+        const path=h.path;
+        if(!path) return;
+        const own={};
+        (h.own||[]).forEach(k=>{ own[k]=1; });
+        for(let i2=0;i2<path.length;i2++){
+          const c=path[i2], kk=K(c.x,c.y);
+          if(busyB[kk]) continue;                    /* 建筑格：不落线 */
           let rot;
           if(i2<path.length-1) rot=LrotFrom([c.x,c.y],[path[i2+1].x,path[i2+1].y]);
           else rot=(i2>0?LrotFrom([path[i2-1].x,path[i2-1].y],[c.x,c.y]):0);
+          if(busyAll[kk] && !own[kk]) continue;      /* 别人的线：不压 */
           links.push({x:c.x, y:c.y, rot:rot});
           busyAll[kk]=1;
           axis[kk]=((rot%360)===0||(rot%360)===180)?'h':'v';
+          markL(c.x,c.y,false);
         }
       });    }
   });
@@ -4961,7 +5022,11 @@ function RplaceFeeders(plan, rt, res, size, occObjs, regionName){
         for(let i=0;i<path.length;i++){
           const c=path[i], kk=K(c.x,c.y);
           if(busyB[kk]) continue;
-          const rot=(i>0?LrotFrom([path[i-1].x,path[i-1].y],[c.x,c.y]):0);
+          /* ⭐v199（2026-10-08）：同 v197 —— rot =「**本格 → 下一格**」。
+             原来写的是「从上一格来」：直格等价、拐弯格指反 → 进料线一拐弯就像断线（桥格同病）。
+             尾格沿用进入方向（渲染层 portIn 盖成指向机器本体）。 */
+          const rot=(i<path.length-1)?LrotFrom([c.x,c.y],[path[i+1].x,path[i+1].y])
+            :(i>0?LrotFrom([path[i-1].x,path[i-1].y],[c.x,c.y]):0);
           if(!busyAll[kk]){
             busyAll[kk]=1; busyPath[kk]=1;   /* 本函数铺的都是带 ⇒ cellMed 保持 undefined 即「带」 */
             axis[kk]=((rot%360)===0||(rot%360)===180)?'h':'v';
@@ -6225,6 +6290,17 @@ function LawRun(targetId, perMin, opts){
   opt1.shipInList=shipList;
   const res=Rexplode(targetId, perMin, opt1);
   if(!res.machines.length){ return LawFail('「'+res.targetName+'」没有机器配方，排不了产线'); }
+  /* ⭐v199（2026-10-08，博士实机确认「武陵电池产线不能在谷地」）：地区硬否决。
+     直跑路径原来**完全不做地区可行性检查**（那套在选点建议器 RxlAnalyze 里），
+     武陵电池在谷地基地也能照常生成 —— 与 RxlAnalyze 同源判据（RW_WULING_ONLY_TARGETS）。
+     多目标（＋ 目标）里只要有一个武陵电池同样拒。 */
+  { const __rg=Lregion();
+    if(__rg && !RwWulingRegion(__rg)){
+      const badT=[targetId].concat(mt.map(x=>x.id)).filter(id=>RW_WULING_ONLY_TARGETS.indexOf(id)>=0);
+      if(badT.length) return LawFail('「'+badT.map(RwItemName).join('、')
+        +'」的产线只能在武陵建 —— 当前基地在'+__rg+'，建不了。请把基地切到武陵再生成');
+    }
+  }
   if(res.totalMachines>RW_MAX_MACHINES){
     return LawFail('这条链展开要 '+res.totalMachines+' 台机器（超过上限 '+RW_MAX_MACHINES+'），先不生成 —— '
       +'多半是把野外采集的料也自己做了。把速率调小，或换一个更靠上游的目标物品试试'
@@ -6486,8 +6562,10 @@ function LawRun(targetId, perMin, opts){
      开销：无必爆项时 sinkPlan.sinks 为空 → 一行都不多跑（老路径零影响）。 */
   const sinkPlaced=RplaceSinksLinked(plan, rt, res, L.size, OCC, sinkPlan);
   (sinkPlaced.links||[]).forEach(l=>{
-    const pb=byBp(l.isPipe?'log_pipe_01':'grid_belt_01'); if(!pb) return;
+    /* ⭐v199：桥格落桥件（log_pipe_connector / log_connector）—— 同介质交叉必须立体跨线 */
+    const pb=byBp(l.bridge?(l.isPipe?'log_pipe_connector':'log_connector'):(l.isPipe?'log_pipe_01':'grid_belt_01')); if(!pb) return;
     const obj=Lmk(pb, l.x, l.y, l.rot);
+    if(l.bridge) obj.bridge=true;
     /* ⚠️ 独立 planRole（不是 'link'）—— 销毁线不该混进产线内部的连通率统计，
        也不受「产线内部走线一律向上」那条约束管（与 storelink 同理）。 */
     obj.planRole='sinklink';
@@ -6533,8 +6611,10 @@ function LawRun(targetId, perMin, opts){
        避免「每个格子回调遍历 2000 个对象」把测试拖慢 8 倍（见 RplaceStores 头部的性能注释）。 */
     storePlace=RplaceStores(plan, rt, res, L.size, L.objs, USE_PROT);
     (storePlace.links||[]).forEach(l=>{
-      const pb=byBp('grid_belt_01'); if(!pb) return;
+      /* ⭐v199：桥格落物流桥（同介质交叉立体跨线；异介质 3D 分层叠的是普通带） */
+      const pb=byBp(l.bridge?'log_connector':'grid_belt_01'); if(!pb) return;
       const obj=Lmk(pb, l.x, l.y, l.rot);
+      if(l.bridge) obj.bridge=true;
       /* ⚠️ 用**独立 planRole**（不是 'link'）—— 储存箱走线的方向不受「产线内部一律向上(270)」
          那条约束管（它有既有的回归锁守着），也不会混进产线的连通率统计。 */
       obj.planRole='storelink';
@@ -6815,8 +6895,10 @@ function Lreroll(){
   if(rerollSink.sinks.length){
     rerollSinkPlaced=RplaceSinksLinked(best.plan, best.route, P.res, L.size, L.objs, rerollSink);
     (rerollSinkPlaced.links||[]).forEach(l=>{
-      const pb=byBp(l.isPipe?'log_pipe_01':'grid_belt_01'); if(!pb) return;
+      /* ⭐v199：桥格落桥件（与主路径同源） */
+      const pb=byBp(l.bridge?(l.isPipe?'log_pipe_connector':'log_connector'):(l.isPipe?'log_pipe_01':'grid_belt_01')); if(!pb) return;
       const obj=Lmk(pb, l.x, l.y, l.rot);
+      if(l.bridge) obj.bridge=true;
       obj.planRole='sinklink';
       L.objs.push(obj);
     });
@@ -7216,6 +7298,13 @@ function RxlSlots(side){ return Math.floor(((side||0)-1)/3); }
         而息壤 ← 天有洪炉 是这几件的上游（machine_recipes 可查：息壤→液化息壤→壤晶废液→壤晶/惰性壤晶废液）。*/
 const RW_WULING_ONLY_MATS=['item_xiranite_powder','item_xiranite_enr_powder','item_muck_xiranite',
   'item_xiranite_poly','item_liquid_xiranite','item_liquid_xiranite_poly','item_liquid_xiranite_lowpoly'];
+/* ⭐⭐v199（2026-10-08，博士实机确认）：**武陵电池产线只能在武陵建** —— 四号谷地建不了。
+   【为什么显式登记】配置表推不出来：`items.domains` 两地都有、封装机也是 universal 机器
+     （与 v191 息壤家族同一个坑）。按项目规矩「配置表与游戏实测冲突时以实测为准」登记。
+   ⚠️ 口径要**窄**：只否决「目标本身是武陵电池」，**不**扩张成「链上用了壤晶就否决」——
+     后者会误杀「罐@谷地」这类合法跨区收货链（v191 首版的教训）。
+   低容/中容都登记（item_proc_battery_1~3 是谷地电池，不在此列）。 */
+const RW_WULING_ONLY_TARGETS=['item_proc_battery_4','item_proc_battery_5'];
 function RwWulingRegion(r){ return /武陵/.test(String(r||'')); }   /* regionName 就是中文地区名（与 RwMade/domainNames 同口径） */
 function RxlAnalyze(iid, perMin, regionName){
   RxlAnalyze._c=RxlAnalyze._c||{};
@@ -7226,6 +7315,9 @@ function RxlAnalyze(iid, perMin, regionName){
   const out={id:iid, name:RwItemName(iid), rate:perMin, region:(regionName||''),
     totalMachines:res.totalMachines||0, blocked:[], ores:{}, recvNeed:{}, other:[],
     manual:[], localRisk:[], area:0, areaEst:0, nodeSet:{}, ok:true};
+  /* ⭐v199：武陵电池产线只能在武陵（判据说明见 RW_WULING_ONLY_TARGETS 注释） */
+  if(regionName && !RwWulingRegion(regionName) && RW_WULING_ONLY_TARGETS.indexOf(iid)>=0)
+    out.blocked.push('「'+RwItemName(iid)+'」产线只能在武陵建（实机确认）—— '+(regionName||'当地')+'建不了');
   (res.machines||[]).forEach(n=>{
     out.nodeSet[n.itemId]=1;
     const b=bmap[n.machineId];
