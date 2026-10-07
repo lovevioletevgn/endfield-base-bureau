@@ -6743,6 +6743,41 @@ chk('v197 行为：中容武陵电池@10@80 两条出货线**不粘连**（连�
   return machN >= 2 && comps >= machN;
 })(), () => v196n || '(空)');
 
+/* ═══ v197 续（同日）落盘 `rot` 语义修正：必须是「本格 → 下一格」 ═══
+   作者截图「弯道怎么没有画出来 / 有的还没和传送带连上去」。
+   真因③（第三层，也是真凶）：渲染层 `flowNext[格] = 格 + lgPortSides(b, rot).out` —— 拿 `rot`
+   算**出边**；而落盘写的是 `LrotFrom(上一格, 本格)`（**进入**方向）。直格上两者恰好相等，
+   **拐弯格就指反**：实测 (7,0) 被算成「进左 / **出右**」，右边其实是空的 ⇒ 画成指向空处的直条、
+   拐弯弧线也丢了。v197 之前出货线全是横平竖直（不拐弯）所以一直没显形。
+   修法：中间格用 `LrotFrom(本格, 下一格)`；尾格（没有下一格）沿用进入方向。 */
+chk('v197 源码：落盘 rot 用「本格→下一格」（流向），尾格才沿用进入方向', (() => {
+  return /if\(i2<path\.length-1\) rot=LrotFrom\(\[c\.x,c\.y\],\[path\[i2\+1\]\.x,path\[i2\+1\]\.y\]\)/.test(rawCode)
+    && /else rot=\(i2>0\?LrotFrom/.test(rawCode)
+    && /const _outD=outDirTo\(o\.x, o\.y/.test(rawCode)
+    && /_outD\?LGNAME\[_outD\]/.test(rawCode);
+})(), () => {
+  return '流向rot=' + /if\(i2<path\.length-1\) rot=LrotFrom\(\[c\.x,c\.y\],\[path\[i2\+1\]\.x,path\[i2\+1\]\.y\]\)/.test(rawCode)
+    + ' 尾格兜底=' + /else rot=\(i2>0\?LrotFrom/.test(rawCode)
+    + ' tooltip出边=' + /const _outD=outDirTo\(o\.x, o\.y/.test(rawCode);
+});
+
+/* 行为锁：拐弯格的「出边」必须指向**实际存在下一格**的方向（不是指向空处） */
+chk('v197 行为：出货线的拐弯格出边指向真实下一格（(7,0) 出下，指向 (7,1)）', (() => {
+  loReset(80); A.tab = 'layout'; A.LawRun('item_proc_battery_5', 10); A.render();
+  const P = A.LO.plan;
+  if (!P || !P.storePlace) return false;
+  const sl = A.LO.objs.filter(x => x.planRole === 'storelink');
+  const at = (x, y) => sl.some(q => q.x === x && q.y === y);
+  /* 找出所有「出边方向 ≠ 该方向有下一格」的格 —— 排除尾格（进本体那侧算合法终止） */
+  const h = outEl.innerHTML || '';
+  const i = h.indexOf('data-uid="' + ((sl.find(q => q.x === 7 && q.y === 0) || {}).uid) + '"');
+  if (i < 0) { v196n = '(7,0) 不在 DOM'; return false; }
+  const ttl = (h.slice(i, i + 900).match(/title="([^"]*)"/) || [])[1] || '';
+  v196n = '(7,0) 的 title = ' + ttl.slice(0, 80);
+  /* (7,0) 的实际下一格是 (7,1)（下方）⇒ 出边必须是「下」 */
+  return ttl.indexOf('出 下') >= 0 && at(7, 1);
+})(), () => v196n || '(空)');
+
 loReset(50); A.render();
 
 report();

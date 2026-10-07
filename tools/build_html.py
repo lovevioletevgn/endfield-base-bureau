@@ -4777,7 +4777,19 @@ function RplaceStores(plan, rt, res, size, occObjs, deep){
           const c=path[i2], kk=K(c.x,c.y);
           if(busyB[kk]) continue;                    /* 建筑格：不落线 */
           if(busyAll[kk] && !own[kk]) continue;      /* 别人的线：不压 */
-          const rot=(i2>0?LrotFrom([path[i2-1].x,path[i2-1].y],[c.x,c.y]):0);
+          /* ⭐⭐v197（真因③，作者 2026-10-07 截图「弯道怎么没有画出来 / 有的还没和传送带连上去」）：
+             `rot` 的语义必须是「**本格 → 下一格**」的流向 —— 渲染层就是拿
+             `flowNext[格] = 格 + lgPortSides(b, rot).out` 来算**出边**的
+             （`renderLayout` 里 flowNext/flowIn 那一段）。
+             原实现写的是 `LrotFrom(上一格, 本格)`（**进入**方向）：
+               · 直格上「进」与「出」恰好相等 ⇒ 一直没暴露；
+               · **拐弯格就指反了** —— 实测 (7,0) 被算成「进左 / 出右」，而右边 (8,0) 其实是空的，
+                 于是被画成「指向右侧的直条」（看着像「没连上」），拐弯处也丢了弧线。
+             v197 之前出货线全是横平竖直（不拐弯）所以不显形；这次绕箱子一拐弯就露出来了。
+             ⚠️ 尾格没有「下一格」⇒ 沿用进入方向（它要指向箱子 / 机器本体）。 */
+          let rot;
+          if(i2<path.length-1) rot=LrotFrom([c.x,c.y],[path[i2+1].x,path[i2+1].y]);
+          else rot=(i2>0?LrotFrom([path[i2-1].x,path[i2-1].y],[c.x,c.y]):0);
           links.push({x:c.x, y:c.y, rot:rot});
           busyAll[kk]=1;
           axis[kk]=((rot%360)===0||(rot%360)===180)?'h':'v';
@@ -10262,9 +10274,15 @@ function renderLayout(){
         if(_vbad) _vwhy='【⚠️ 位置不合规：'+b.name+'必须放在'+(b.lgMedium==='管道'?'管道':'传送带')+'上，且要顺着物流方向 —— '
           +_why+'，请挪到直线段上】';
       }
+      /* ⭐v197：tooltip 的「出」要优先用**真实出边**（`outDirTo`）。
+         为什么：走向 `rot` 在**线尾格**上落的是「进入方向」（尾格没有下一格），
+         而尾格的真实出边是「进本体」（`portIn` 那侧）——两者不一定同向。
+         实测 (7,1)：rot=90 ⇒ 显示「出 下」，但它实际是向右进储存箱 ⇒ 文案与画面矛盾
+         （`lgSvg` 画的是对的弧线，只有 tooltip 文字错）。 */
+      const _outD=outDirTo(o.x, o.y, b.lgMedium==='管道');
       const ttl=esc(b.name)+' · 走向 '+o.rot+'°（'+LdirName(o.rot)+'） · '+esc(b.lgMedium)
         +' '+b.lgPerMin+' 个/分钟'
-        +' · 接口：进 '+(_fin?LGNAME[_fin]:lgSideNames(b,o.rot,'in'))+' / 出 '+lgSideNames(b,o.rot,'out');
+        +' · 接口：进 '+(_fin?LGNAME[_fin]:lgSideNames(b,o.rot,'in'))+' / 出 '+(_outD?LGNAME[_outD]:lgSideNames(b,o.rot,'out'));
       return `<div class="lo-cell ${b.lgMedium==='管道'?'lgp':'lgb'} ${on?'sel':''}${o.lock?' lock':''}${_vbad?' vbad':''}" data-uid="${o.uid}"
           style="left:${px}px;top:${py}px;width:${w-2}px;height:${d-2}px"
           title="${o.lock?'【已锁定】':''}${_vwhy}${ttl}"
