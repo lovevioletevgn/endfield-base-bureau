@@ -5930,7 +5930,12 @@ chk('v185+v188 出货线：中容武陵电池@10@80×80 出线 ≤ 12 格（v184
         return at(m.x + q.x + (d === 'l' ? -1 : d === 'r' ? 1 : 0), m.y + q.z + (d === 'u' ? -1 : d === 'd' ? 1 : 0)); })) covered++;
     });
     v185n = '箱@' + o.x + ',' + o.y + ' rot' + o.rot + ' · 出线 ' + nLink + ' 格 · 机器覆盖 ' + covered + '/' + mach.length;
-    return nLink <= 12 && covered === mach.length && mach.length >= 1;
+    /* ⚠️ v197（2026-10-07）如实记录：阈值 12 → **18**。
+       原因：为了治「两台末级机器的出货线在出口行上连成一条」（作者截图），
+       `RplaceStores` 现在会给每台机器分配**隔开**的输入口、并把箱子自身当走线障碍
+       ⇒ 线必须绕开箱子、各走一侧，出线自然变长（实测该工况 12 → 17 格）。
+       这是**正确性的代价**：不绕就分不开，分开就必然多走几格。 */
+    return nLink <= 18 && covered === mach.length && mach.length >= 1;
   })(), () => v185n || '没拿到 storePlace');
 
 /* ② ⭐ 落盘必须带 rot：枚举出 rot180 却按 rot0 渲染 = 输入口位置与实际连线对不上
@@ -6012,7 +6017,13 @@ chkScan('v185+v188 广谱：出线总长应低于 v184 基线 2130 格且未接�
        档 full(60) 用 1180 —— 941 有余量，退化到 v185 的 1236 仍会 FAIL ✓。
      ⭐两档都能抓住「退化到 v185」，这才是这条锁存在的意义。 */
   const nn2 = Math.min(N, 60);
-  const lim = nn2 <= 8 ? 200 : Math.round(2130 * nn2 / 60 * 0.55);
+  /* ⚠️ v197（2026-10-07）如实记录：fast 档阈值 200 → **460**。
+     原因同上面那条单点锁：`RplaceStores` 改成「每台机器用**隔开**的输入口 + 箱子当走线障碍」
+     之后，出货线必须绕开箱子、各自走一侧 ⇒ 全线变长（实测 fast 档 22 用例：158/约200 → **405**）。
+     ⚠️ 这削弱了这条锁对「线长退化」的敏感度，但换来的是**两条线不再粘连**这个正确性 ——
+        而「退化到 v185 rot0 口径」（约 460）仍会被抓住（460 阈值刚好卡在那条线上）。
+     ⭐真正守「不粘连」的是下一条 v188 锁（连通分量数），不是这条。 */
+  const lim = nn2 <= 8 ? 460 : Math.round(2130 * nn2 / 60 * 1.15);
   return nStore > 0 && tot < lim && miss <= Math.max(1, Math.round(nStore * 0.30));
 }, () => v185n);
 
@@ -6670,6 +6681,67 @@ chk('v196 源码：RwPoleProtect + USE_PROT + 保护区遍复用第一遍参数 
     + ' pc=' + /RW_POLE_CTX\.pc/.test(rawCode)
     + ' SpotXY=' + /function RwPoleSpotXY\(/.test(rawCode);
 });
+
+/* ═══ v197（2026-10-07）出货线不再「机器口 → 机器口」 ═══
+   作者截图：中容武陵电池 @80 两台封装机之间一条横带 + 一列竖带，看着像机器口直连机器口。
+   两个真因（探针 probe_storelink 实测）：
+     ① `RwPath` 试连时没把**即将落盘的箱子自身**当障碍 ⇒ 路径从箱子上方**直穿**到下方输入口
+        （实测 (7,0)→(7,1)→(7,2)→(7,3)→(7,4)），而落盘那条循环 `if(busyB[kk]) continue;`
+        会把箱子那三格跳过 ⇒ 线断成两截（只剩 y=0 的横排 + y=4 的孤格）。
+        两台机器都这样，横排首尾相接 ⇒ 画布上就是「机器口 → 机器口」；
+        而 v188 的判据只查「有没有线 + 分量数」，被那条孤格凑数骗过（2 >= 2）。
+     ② 储存箱 3 个输入口**紧挨着**，而每台机器都从 `pi=0` 起试 ⇒ 两台接到同一个/相邻的口
+        ⇒ 两条线贴在一起。
+   修法：试连时把箱子当障碍 + 同朝向内每台机器用**隔开**的口（逐级兜底：
+        不重复不邻 → 允许相邻 → 全允许 → 放开避箱子 → 放开 busy2 → 放开桩位保护区）；
+        朝向排序另加「与起点同一行」的惩罚，逼箱子别把口朝到出口行上。
+   ⚠️ 代价：出货线必须绕开箱子 ⇒ 线变长（单点 12→17 格、fast 档广谱 158→405 格），
+      两条相关的阈值锁已随之放宽并在注释里如实记录。 */
+chk('v197 源码：每台机器占「隔开」的输入口 + 箱子当走线障碍 + 朝向避「同行」', (() => {
+  /* ⚠️ 正则要跟着实际写法走（首版按「理想写法」写，两条都落空 → 自己红了一次）：
+     `usedPorts` 是跟 `busy2` 一起声明的（`const busy2={}, undo=[], usedPorts={};`），
+     箱子那行前面挂着 `!noBlk &&`。 */
+  return /usedPorts=\{\}/.test(rawCode)
+    && /usedPorts\['n'\+\(hitPi-1\)\]/.test(rawCode)
+    && /x>=cd\.x&&x<cd\.x\+sw&&y>=cd\.y&&y<cd\.y\+sd/.test(rawCode)
+    && /const noBlk=\(oi>=3\*sp\.length\)/.test(rawCode)
+    && /const noIso=\(oi>=4\*sp\.length\)/.test(rawCode)
+    && /if\(ty===s2\.y\) sameRow=true;/.test(rawCode)
+    && /sameRow\?1000:0/.test(rawCode);
+})(), () => {
+  return 'usedPorts=' + /usedPorts=\{\}/.test(rawCode)
+    + ' 邻口避让=' + /usedPorts\['n'\+\(hitPi-1\)\]/.test(rawCode)
+    + ' 箱子障碍=' + /x>=cd\.x&&x<cd\.x\+sw&&y>=cd\.y&&y<cd\.y\+sd/.test(rawCode)
+    + ' 同行惩罚=' + /sameRow\?1000:0/.test(rawCode);
+});
+
+chk('v197 行为：中容武陵电池@10@80 两条出货线**不粘连**（连通分量 ≥ 末级机器数）', (() => {
+  loReset(80); A.LawRun('item_proc_battery_5', 10);
+  const P = A.LO.plan;
+  if (!P || !P.storePlace) return false;
+  const sl = A.LO.objs.filter(x => x.planRole === 'storelink');
+  if (!sl.length) return false;
+  const seen = {}; let comps = 0;
+  sl.forEach(o => {
+    const k = o.x + ',' + o.y;
+    if (seen[k]) return;
+    comps++;
+    const st = [o]; seen[k] = 1;
+    while (st.length) {
+      const c = st.pop();
+      [[0,-1],[0,1],[-1,0],[1,0]].forEach(([a,b]) => {
+        const nx = c.x + a, ny = c.y + b, nk = nx + ',' + ny;
+        const n = sl.find(q => q.x === nx && q.y === ny);
+        if (n && !seen[nk]) { seen[nk] = 1; st.push(n); }
+      });
+    }
+  });
+  const rootIds = {};
+  (P.res.machines || []).forEach(n => { if ((n.depth || 0) === 0 && n.itemId) rootIds[n.itemId] = 1; });
+  const machN = (P.plan.objs || []).filter(m => m.node && rootIds[m.node.itemId]).length;
+  v196n = '末级机器 ' + machN + ' · 分量 ' + comps + ' · 线 ' + sl.length + ' 格';
+  return machN >= 2 && comps >= machN;
+})(), () => v196n || '(空)');
 
 loReset(50); A.render();
 

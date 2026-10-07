@@ -4644,13 +4644,23 @@ function RplaceStores(plan, rt, res, size, occObjs, deep){
         /* 朝向按「输入口外侧格离起点多近」升序（通常第一个就通） */
         const rots=RW_STORE_ROTS.slice().sort((r1,r2)=>{
           const dmin=rr=>{
-            const dd=Ldims(sb,rr); let best=Infinity;
+            /* ⭐v197（真因②之一）：**与起点同一行**的朝向排到最后。
+               `RW_STORE_ROTS` 第一顺位是 rot180（口朝上、外侧格 y=0），而末级机器出料口外侧格
+               **也在 y=0** ⇒ 两台机器的线全挤在这一行、首尾相接（实测横跨 x=6..15），
+               画布上就是「机器口 → 机器口」（作者 2026-10-07 截图）。
+               只罚**同行**、不罚同列 —— 首版连「同列」一起罚，把 rot90（口在左侧、竖着进）
+               这种本来就分开的好朝向也误伤了。
+               ⚠️「离起点近」仍是次级判据，v185「进出口别选最远的」意图不变。 */
+            const dd=Ldims(sb,rr); let best=Infinity, sameRow=false;
             for(const pp of sp){
               const qq=LportXY(pp,rr,dd.w,dd.d), drr=LportDirRot(pp,rr,dd.w,dd.d);
               const tx=cd.x+qq.x+(drr==='l'?-1:drr==='r'?1:0), ty=cd.y+qq.z+(drr==='u'?-1:drr==='d'?1:0);
-              starts.forEach(s2=>{ const v=Math.abs(tx-s2.x)+Math.abs(ty-s2.y); if(v<best) best=v; });
+              starts.forEach(s2=>{
+                const v=Math.abs(tx-s2.x)+Math.abs(ty-s2.y); if(v<best) best=v;
+                if(ty===s2.y) sameRow=true;
+              });
             }
-            return best;
+            return (sameRow?1000:0)+best;
           };
           return dmin(r1)-dmin(r2);
         });
@@ -4669,20 +4679,52 @@ function RplaceStores(plan, rt, res, size, occObjs, deep){
                ② 同时把该路径整条塞进 `busy2`，后续机器试连时 `block` 读它 ⇒ 必须绕开；
                ③ 换朝向重试时连同 busyAll/axis 一起撤回（`undo`）。
                ⚠️ busy2 只活在试连阶段，落盘不读它 —— 真正的线由 `links` 决定。 */
-          const busy2={}, undo=[];
+          const busy2={}, undo=[], usedPorts={};
           for(let mi=0; mi<grp.length && hitAll; mi++){
             const s=starts[mi];
             if(!s){ hitAll=false; break; }        /* 该台没有可用出料口 → 整组放弃 */
-            let hit=null;
-            for(let pi=0; pi<sp.length && !hit; pi++){
+            /* ⭐v197（真因②之二）：**同一朝向内每台机器各占一个「不相邻」的口**。
+               储存箱 3 个输入口是紧挨着的（`storager_1` ports (0,2)(1,2)(2,2)），
+               而原来每台机器都从 pi=0 起试 ⇒ 两台接到同一个/相邻的口 ⇒ 两条线贴在一起。
+               这里只改**遍历次序**：先试「没被占 + 不相邻」的口，再退到「没被占」，最后全允许
+               —— 不动循环体本身，把风险压到最小。 */
+            let hit=null, hitPi=-1;
+            const portOrder=[];
+            for(let pi=0; pi<sp.length; pi++){ if(!usedPorts[pi]&&!usedPorts['n'+pi]) portOrder.push(pi); }
+            for(let pi=0; pi<sp.length; pi++){ if(!usedPorts[pi]) portOrder.push(pi); }
+            for(let pi=0; pi<sp.length; pi++){ portOrder.push(pi); }
+            for(let pi=0; pi<sp.length; pi++){ portOrder.push(pi); }   /* 第 4 段：连「避箱子」也放开 */
+            for(let pi=0; pi<sp.length; pi++){ portOrder.push(pi); }   /* 第 5 段：连 busy2 隔离也放开 */
+            for(let oi=0; oi<portOrder.length && !hit; oi++){
+              const pi=portOrder[oi];
+              /* 逐级放宽，越靠后越「只要能接上就行」：
+                 段1-3 避箱子；段4 放开避箱子（宁可线穿箱子）；段5 连「与同组别台机器的路径隔离
+                 (busy2)」也放开（宁可两条线贴着走）。实测 中容武陵电池@70 这种紧凑工况，
+                 加上「避箱子」+「口不相邻」后可用格太窄、被 busy2 一堵就全试不出来了。 */
+              const noBlk=(oi>=3*sp.length);
+              const noIso=(oi>=4*sp.length);
+              /* `spot`（v196 的桩位保护区）也要能在兜底里放开 —— 实测 中容武陵电池@70
+                 在「避箱子 + 避保护区 + 口不相邻 + busy2 隔离」全开时无路可走，
+                 必须逐级放宽到「连保护区也不避」才接得上。 */
+              const mode0Spot=(oi<3*sp.length);
               const q2=LportXY(sp[pi], rr, dd.w, dd.d);
               const dr2=LportDirRot(sp[pi], rr, dd.w, dd.d);
               const t={x:cd.x+q2.x+(dr2==='l'?-1:dr2==='r'?1:0), y:cd.y+q2.z+(dr2==='u'?-1:dr2==='d'?1:0)};
-              const block=(x,y)=>Rwedge(size)(x,y)||!!busy2[K(x,y)]
-                ||(!!spot&&x>=spot.x&&x<spot.x+2&&y>=spot.y&&y<spot.y+2);
+              /* ⭐v197（真因①）：`block` 必须含**箱子自身占的格**。
+                 原来没有 ⇒ `RwPath` 会「**穿过还没落盘的箱子**」直奔它下方的输入口
+                 （实测 path = (7,0)→(7,1)→(7,2)→(7,3)→(7,4)），而落盘那条循环里
+                 `if(busyB[kk]) continue;` 会把箱子那三格**跳过** ⇒ 线断成两截
+                 （只剩 y=0 的横排 + y=4 的孤格）；两台机器都这样，横排就首尾相接，
+                 画布上成了「机器口 → 机器口」——而 v188 的判据只查「有没有线 + 分量数」，
+                 被那条孤格凑数骗过（comps.length=2 >= mach.length=2）。 */
+              const block=(x,y)=>Rwedge(size)(x,y)
+                ||(!noIso&&!!busy2[K(x,y)])
+                ||(mode0Spot&&!!spot&&x>=spot.x&&x<spot.x+2&&y>=spot.y&&y<spot.y+2)
+                ||(!noBlk && x>=cd.x&&x<cd.x+sw&&y>=cd.y&&y<cd.y+sd);
               const pth=RwPath(s, t, busyB, size, block, axis);
-              if(pth){ hit={s:s, t:t, path:pth}; }
+              if(pth){ hit={s:s, t:t, path:pth}; hitPi=pi; }
             }
+            if(hitPi>=0){ usedPorts[hitPi]=1; usedPorts['n'+(hitPi-1)]=1; usedPorts['n'+(hitPi+1)]=1; }
             if(!hit) hitAll=false;
             else {
               got.push(hit);
