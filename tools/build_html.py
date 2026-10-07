@@ -4814,6 +4814,9 @@ function RplaceStores(plan, rt, res, size, occObjs, deep){
    返回 {objs, links, unplaced}；任何一步失败只记录、**不阻断生成**。 */
 function RplaceFeeders(plan, rt, res, size, occObjs, regionName){
   const out=[], links=[], unplaced=[];
+  /* ⭐v198：每个取货口最多试几个候选位（「找位置 + 试连」合并后的上限）—— 控 Dijkstra 次数。
+     实测只有「第一个位连不通」时才多试，常见的成功链零额外开销。 */
+  const RW_FEED_TRY=4;
   const fb=byBp('unloader_1');
   if(!fb) return {objs:out, links:links, unplaced:unplaced};
   const fp=Lfp(fb), fw=fp[0]||3, fd=fp[1]||1;
@@ -4822,15 +4825,28 @@ function RplaceFeeders(plan, rt, res, size, occObjs, regionName){
   (res.nodes||[]).forEach(n=>{ if(n.raw && !n.recipeId && n.itemId) leaves.push(n); });
   if(!leaves.length) return {objs:out, links:links, unplaced:unplaced};
   const K=(x,y)=>x+','+y;
-  const busyAll={}, busyB={}, axis={};
+  const busyAll={}, busyB={}, busyLine={}, busyPath={}, cellMed={}, axis={};
   const markA=(x,y,w,d)=>{ for(let j=0;j<d;j++) for(let i=0;i<w;i++) busyAll[K(x+i,y+j)]=1; };
-  const markB=(x,y,w,d)=>{ for(let j=0;j<d;j++) for(let i=0;i<w;i++) busyB[K(x+i,y+j)]=1; };
+  const markB=(x,y,w,d)=>{ for(let j=0;j<d;j++) for(let i=0;i<w;i++){ const kk=K(x+i,y+j); busyB[kk]=1; busyPath[kk]=1; } };
+  /* ⭐⭐v198（2026-10-08）：**既有物流线**也喂给 RwPath（busyPath = busyB ∪ busyLine）。
+     【为什么必须有】原来 RwPath 的第 3 参只传 busyB（**不含线**）⇒ 产线带格对 RwPath 就是「空地」
+       ⇒ 它走「普通直穿」分支（代价 1），**压根不触发桥接器**；而落盘判 `!busyAll`（**含**线）
+       ⇒ 那些格被丢 ⇒ 进料线**断成两截**（作者报的 `中容武陵电池@80 (12,6)(13,6)(14,6)`）。
+     【为什么进 busy 而不是 block】RwPath 的桥接分支前置是 `axis && !block(nx,ny) && !cur.b`
+       —— 加进 **block（硬障碍）会把桥接一票否决**（这正是 2026-10-07「方案 A」全线崩的真因）；
+       加进 **busy（"已铺线"）** 才会走「正交直穿 + 铺物流桥」那条路。一字之差。
+     【cellMed】该格线的介质（true=管）—— 落盘时「同介质才叠桥、异介质直接叠加」（对齐 RwRoute L5670~5682）。 */
+  /* ⚠️ cellMed 是「该格**有没有管**」—— 管的优先级高于带，**不能被带覆盖**
+     （异介质叠加时同一格同时有管件与带件，遍历到谁就是谁 ⇒ 首版被带覆盖 ⇒ 判错介质 ⇒ v152 锁挂）。 */
+  const markL=(x,y,w,d,isPipe)=>{ for(let j=0;j<d;j++) for(let i=0;i<w;i++){ const kk=K(x+i,y+j); busyLine[kk]=1; busyPath[kk]=1;
+    if(isPipe) cellMed[kk]=true; else if(cellMed[kk]===undefined) cellMed[kk]=false; } };
   (occObjs||[]).forEach(o=>{
     if(o.x==null||!o.w||!o.d) return;
     markA(o.x,o.y,o.w,o.d);
     /* ⭐v184：'feedlink' 与 'sinklink' 原来各写一个分支、值完全相同（纯冗余），
        统一走 RW_LINE_ROLES。真正要防的是**漏**新角色 → 落进 else 变硬障碍。 */
     if(RW_LINE_ROLES[o.planRole]){
+      markL(o.x,o.y,o.w,o.d,/pipe/i.test(String(o.id||'')));   /* ★v198：让 RwPath 知道这里有线 */
       const r=(((o.rot||0)%360)+360)%360;
       axis[K(o.x,o.y)]=(r===0||r===180)?'h':'v';
     }else markB(o.x,o.y,o.w,o.d);   /* feeder（取货口）和其它建筑一律进 busyB */
@@ -4838,6 +4854,12 @@ function RplaceFeeders(plan, rt, res, size, occObjs, regionName){
   (plan.objs||[]).forEach(o=>{ markA(o.x,o.y,o.w,o.d); markB(o.x,o.y,o.w,o.d); });
   ((rt&&rt.belts)||[]).forEach(b=>{
     busyAll[K(b.x,b.y)]=1;
+    busyLine[K(b.x,b.y)]=1; busyPath[K(b.x,b.y)]=1;   /* ★v198 */
+    /* ⚠️ rt.belts 的项**没有 id**（`RwRoute` push 的是 `{x,y,rot,isPipe,logiId}`）——
+       首版按 `b.id` 判介质时恒为 false ⇒ 把**管道桥当成了带** ⇒ 落带桥压管桥 ⇒ `v152 交叉落件` 锁挂。
+       正解：优先读 `isPipe`，兜底读 `logiId`。 */
+    { const kk=K(b.x,b.y); const isP=(b.isPipe!==undefined)?!!b.isPipe:/pipe/i.test(String(b.logiId||''));
+      if(isP) cellMed[kk]=true; else if(cellMed[kk]===undefined) cellMed[kk]=false; }
     const r=(((b.rot||0)%360)+360)%360;
     axis[K(b.x,b.y)]=(r===0||r===180)?'h':'v';
   });
@@ -4876,7 +4898,12 @@ function RplaceFeeders(plan, rt, res, size, occObjs, regionName){
            · **谷地**：预设线在基地外缘 → 口贴**最顶行 y=0**、`rot180`（出料口朝下，外侧格 = (x+1,1)）
            · **武陵**：线是刚铺好的基段（4 宽 × 8 深，竖向）→ 口贴其**左侧长边**、
              `rot270`（出料口朝左，外侧格 = (x-1, y+1)），口本身旋转成 **1 宽 × 3 深** */
-        let placed=null;
+        /* ⭐v198：**找位置与试连合并** —— 先按原优先级收集候选位，再逐个试连，
+           取**第一个能连通的**。原来这里是「取第一个空位就定死，连不上就放弃」⇒ 宁可少一条线；
+           实测（探针 probe_feedbridge）那是「必连不通」与「少一个口」的两难 —— 多试几个位就能两全。
+           ⚠️ 性能：成功的仍只 1 次 RwPath；**只有失败的**才多试（≤RW_FEED_TRY）——
+              不会回到「每个 x 都试连」的老坑（那次 3.8 万次 Dijkstra，见上文性能注释）。 */
+        const cands=[];
         if(preset){
           for(let x=RW_MARGIN; x<=size-RW_MARGIN-fw; x++){
             let free=true;
@@ -4885,12 +4912,11 @@ function RplaceFeeders(plan, rt, res, size, occObjs, regionName){
             const s={x:x+1, y:1};
             if(busyB[K(s.x,s.y)]||busyAll[K(s.x,s.y)]) continue;
             if(x+1 < RW_MARGIN || x+1 >= size) continue;
-            placed={x:x, y:0, w:fw, d:fd, rot:180, s:s};
-            break;
+            cands.push({x:x, y:0, w:fw, d:fd, rot:180, s:s});
           }
         }else{
           const segs=(occObjs||[]).filter(o=>o.planRole==='bus' && o.d>o.w);   /* 竖向基段 */
-          for(let si=0; si<segs.length && !placed; si++){
+          for(let si=0; si<segs.length; si++){
             const seg=segs[si];
             const cx=seg.x-1;                        /* 口占 x=cx 这一列（1 宽 × 3 深） */
             if(cx<RW_MARGIN) continue;
@@ -4901,20 +4927,32 @@ function RplaceFeeders(plan, rt, res, size, occObjs, regionName){
               const s={x:cx-1, y:cy+1};              /* rot270 → 出料口朝左，外侧格再往左一格 */
               if(s.x<RW_MARGIN) continue;
               if(busyB[K(s.x,s.y)]||busyAll[K(s.x,s.y)]) continue;
-              placed={x:cx, y:cy, w:1, d:3, rot:270, s:s};
-              break;
+              cands.push({x:cx, y:cy, w:1, d:3, rot:270, s:s});
             }
           }
         }
-        if(!placed){
+        if(!cands.length){
           unplaced.push({forItem:L.itemId, why:(preset
             ?'画布最顶行没有能放下仓库取货口的连续空位'
             :'存取线基段旁没有能贴下取货口的位置（或基段左侧被占）')});
           return;
         }
-        const path=RwPath(placed.s, t, busyB, size, Rwedge(size), axis);
-        if(!path){
-          unplaced.push({forItem:L.itemId, why:'仓库取货口 → 机器 的走线过不去'});
+        let placed=null, path=null, triedN=0;
+        for(let ci=0; ci<cands.length && ci<RW_FEED_TRY; ci++){
+          const cd=cands[ci];
+          /* ⚠️ 第 3 参**刻意**传 busyB（不含线）—— 与 v197 之前的可达性**逐字节一致**。
+             试过传 busyPath（把线当"已铺线"以触发 RwPath 的桥接器），实测**可达性反而变差**：
+             RwPath 的桥接器有「一格桥只跨一条线」的限制（`!cur.b`），而产线的竖带常**连续并排**
+             ⇒ 横向穿越要连续多座桥 ⇒ 大批进料线**直接无解**（实测 v181/v182 的取货口归零）。
+             试过的补救：i) 放开 `!cur.b` 允许连续桥 —— 结果**不稳定**（@70 从 1 回升到 5，但 @80 反而 6→1）；
+             ii) 兜底退回直穿 —— 会产出「平行穿越」的非法布局。⇒ **两条都不上线**。
+             真正的修法在**落盘侧**（见下）：路径照旧允许穿线，但穿线格**落成物流桥**而不是被丢弃。 */
+          const p=RwPath(cd.s, t, busyB, size, Rwedge(size), axis);
+          triedN++;
+          if(p){ placed=cd; path=p; break; }
+        }
+        if(!placed){
+          unplaced.push({forItem:L.itemId, why:'仓库取货口 → 机器 的走线过不去（试了 '+triedN+' 个口位）'});
           return;
         }
         for(let i=0;i<placed.w;i++) for(let j=0;j<placed.d;j++){
@@ -4925,10 +4963,24 @@ function RplaceFeeders(plan, rt, res, size, occObjs, regionName){
           if(busyB[kk]) continue;
           const rot=(i>0?LrotFrom([path[i-1].x,path[i-1].y],[c.x,c.y]):0);
           if(!busyAll[kk]){
-            busyAll[kk]=1;
+            busyAll[kk]=1; busyPath[kk]=1;   /* 本函数铺的都是带 ⇒ cellMed 保持 undefined 即「带」 */
             axis[kk]=((rot%360)===0||(rot%360)===180)?'h':'v';
             links.push({x:c.x, y:c.y, rot:rot});
-          }else if(!axis[kk]){
+          }else if(axis[kk]){
+            /* ⭐v198：这一格**已有线**（产线带 / 别的进料线）—— 原来这里走 `else if(!axis[kk])` 而**什么都不做**
+               ⇒ 该格不进 links ⇒ 线断成两截（作者报的断线就是这个分支吃掉的）。
+               对齐 RwRoute L5670~5682 的写法：**同介质（带×带）⇒ 叠物流桥**（立体跨线）；
+               **异介质（管×带）⇒ 3D 分层，直接叠加**即可（v152 作者游戏实锤）。 */
+            if(cellMed[kk]){
+              /* 该格有**管**（异介质）：**保持 v197 的老行为 —— 跳过**。
+                 管×带 3D 分层叠加本身合法（v152），但若该格是**管桥**，再叠带会让
+                 `v152 交叉落件` 锁判成「桥下异介质」（既有口径明令禁止）⇒ 保守跳过。
+                 ⚠️ 代价：这类格仍可能断开 —— 实测全库仅个位数处（罕见）。 */
+            }else{
+              links.push({x:c.x, y:c.y, rot:rot, bridge:true});   /* 同介质（带×带）⇒ 叠物流桥 */
+              delete axis[kk];   /* 叠桥那一格对后续寻路关闭（一格最多一带一管） */
+            }
+          }else{
             axis[kk]=((rot%360)===0||(rot%360)===180)?'h':'v';
           }
         }
@@ -6517,9 +6569,11 @@ function LawRun(targetId, perMin, opts){
   if(L.autoFeed!==false){
     feedPlace=RplaceFeeders(plan, rt, res, L.size, L.objs, Lregion());
     (feedPlace.links||[]).forEach(l=>{
-      const pb=byBp('grid_belt_01'); if(!pb) return;
+      /* ⭐v198：桥格落**物流桥**（log_connector）—— 同介质交叉必须立体跨线，压成普通带会互相顶。 */
+      const pb=byBp(l.bridge?'log_connector':'grid_belt_01'); if(!pb) return;
       const obj=Lmk(pb, l.x, l.y, l.rot);
       obj.planRole='feedlink';
+      if(l.bridge) obj.bridge=true;
       L.objs.push(obj);
     });
     (feedPlace.objs||[]).forEach(f=>{
