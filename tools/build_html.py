@@ -4252,7 +4252,11 @@ function RplaceSinksLinked(plan, rt, res, size, occObjs, sinkPlan){
   const out=[], links=[], unplaced=[];
   if(!sinkPlan||!sinkPlan.sinks||!sinkPlan.sinks.length) return {objs:out, links:links, unplaced:unplaced};
   const K=(x,y)=>x+','+y;
-  const busyAll={}, busyB={}, axis={}, cellMed={}, lineSoft={};
+  const busyAll={}, busyB={}, axis={}, cellMed={}, lineSoft={}, poleReserved={};
+  /* ⭐v201：`poleReserved` = 本次池线布局中「已预留给供电桩的 2×2 地」。
+     【为什么需要】池子是一个个摆的：先摆的池子在自己旁边看中一块空地当桩位，
+     后摆的池子若把 5×5 挤到那块地上，先摆的池子就没桩位了 ⇒ 供电缺口。
+     实测（赫铜装备原件@70）：缺口 **2 → 0**；且无空间成本（4.0s → 4.0s）。 */
   const markA=(x,y,w,d)=>{ for(let j=0;j<d;j++) for(let i=0;i<w;i++) busyAll[K(x+i,y+j)]=1; };
   const markB=(x,y,w,d)=>{ for(let j=0;j<d;j++) for(let i=0;i<w;i++) busyB[K(x+i,y+j)]=1; };
   /* ⭐v199：已有线格进**软代价图**（喂 RwPath 第 7 参 soft）—— 让池线「尽量绕开已有线、
@@ -4381,7 +4385,10 @@ function RplaceSinksLinked(plan, rt, res, size, occObjs, sinkPlan){
           const xx=cx+i, yy=cy+j;
           if(xx<RW_MARGIN||yy<RW_MARGIN||xx>=size-RW_MARGIN||yy>=size-RW_MARGIN) return false;
           if(busyAll[K(xx,yy)]) return false;
-          if(outProt[K(xx,yy)]) return false;   /* ⭐v189：不压任何机器的出料口外侧格 */
+          if(outProt[K(xx,yy)]) return false;
+          /* ⭐v201（关键）：池位搜索也要避让「已预留的桩位」—— 只管「选桩位」不够，
+             后摆的池子依然能把自己摆到别人的桩位上。这一条是缺口归零的关键。 */
+          if(poleReserved[K(xx,yy)]) return false;   /* ⭐v189：不压任何机器的出料口外侧格 */
         }
         return true;
       };
@@ -4428,6 +4435,13 @@ function RplaceSinksLinked(plan, rt, res, size, occObjs, sinkPlan){
         noPick=true;
         continue;
       }
+      /* ⭐v201：池子摆定后，把它旁边那块 2×2 桩位登记为「已预留」。
+         ⚠️ `bl2` 必须含 `pick.cd` 自己的 footprint —— 池子此刻还没 `markA`，
+            不排除它的话「桩位」会落在池子自己身上（实测曾得到桩位 2,33 ＝ 池位 2,33）。 */
+      (function(){ const f2=Lfp(b), bw2=f2[0]||1, bd2=f2[1]||1;
+        const bl2=(x,y)=>{ if(x>=pick.cd.x&&x<pick.cd.x+bw2&&y>=pick.cd.y&&y<pick.cd.y+bd2) return true; return !!(busyAll[K(x,y)]||outProt[K(x,y)]||poleReserved[K(x,y)]); };
+        const sp=RwPoleSpotXY(pick.cd.x, pick.cd.y, bw2, bd2, size, bl2);
+        if(sp){ for(let j=0;j<2;j++) for(let i=0;i<2;i++) poleReserved[K(sp.x+i,sp.y+j)]=1; } })();
       const dm=pick.dm;
       markA(pick.cd.x,pick.cd.y,dm.w,dm.d); markB(pick.cd.x,pick.cd.y,dm.w,dm.d);
       out.push({b:b, x:pick.cd.x, y:pick.cd.y, w:dm.w, d:dm.d, rot:pick.rot,
@@ -6489,7 +6503,14 @@ function LawRun(targetId, perMin, opts){
         实测它们只试 3 个（甚至 1 个）候选位，一避让就整个摆不出来，
         连带 8 条出货线 / 环境圈回归锁全红（比缺 2 台桩糟糕得多）。 */
   const PROT=USE_PROT?RwPoleProtect(plan.objs, L.size):null;
-  const OCC=PROT?L.objs.concat(PROT):L.objs;
+  /* ⚠️v200（2026-10-09）：`OCC` **不在这里取** —— `L.objs` 紧接着就被
+     `L.objs=[]` **重新赋值**，在这里取引用会永远指向「重建前的旧数组」
+     （loReset 后为空）⇒ `RplaceSinksLinked` **看不到本轮已铺线**，只能靠 `rt.belts` 建 busyAll
+     ⇒ 池线按「别的候选的产线」布位 ⇒ 指向最终画布上不存在的格 ⇒ 断线
+     （实测 battery_5@10 **7 处** / @30 **3 处**，均为 `sinklink` 桥格 rot 指向空格）。
+     ⇒ 改为**调用现场取**（见 `RplaceSinksLinked(...)` 那一行，用当时的 L.objs）。
+     实测：池线断头 10 → **0**，且 6 个覆盖场景零退化；sinklink 格数大幅下降
+     （340→49 / 561→169）—— 池线不再被幽灵占位逼着绕路。 */
   const st0=route && route.stats;
   const pickNote='参数搜索 '+tried+' 组'+(wideTried?('（含宽间距扩搜 '+wideTried+' 组）'):'')+(swaps?('（含相邻交换 '+swaps+' 次）'):'')
     /* ⭐v196：为重排/保护区遍在报告里点名（用户能看出「这一版是为供电覆盖多花了一道」）。
@@ -6560,7 +6581,7 @@ function LawRun(targetId, perMin, opts){
         原因：作者 2026-10-02 截图里 7 个池子一字排在画布左下角、**一根带子都没连**；
         而销毁的机制是「扩容反应池堵塞清空」，料送不进去就永远不堵 → 池子等于白摆。
      开销：无必爆项时 sinkPlan.sinks 为空 → 一行都不多跑（老路径零影响）。 */
-  const sinkPlaced=RplaceSinksLinked(plan, rt, res, L.size, OCC, sinkPlan);
+  const sinkPlaced=RplaceSinksLinked(plan, rt, res, L.size, (PROT?L.objs.concat(PROT):L.objs), sinkPlan);
   (sinkPlaced.links||[]).forEach(l=>{
     /* ⭐v199：桥格落桥件（log_pipe_connector / log_connector）—— 同介质交叉必须立体跨线 */
     const pb=byBp(l.bridge?(l.isPipe?'log_pipe_connector':'log_connector'):(l.isPipe?'log_pipe_01':'grid_belt_01')); if(!pb) return;
