@@ -4900,7 +4900,7 @@ function RplaceFeeders(plan, rt, res, size, occObjs, regionName){
   (res.nodes||[]).forEach(n=>{ if(n.raw && !n.recipeId && n.itemId) leaves.push(n); });
   if(!leaves.length) return {objs:out, links:links, unplaced:unplaced};
   const K=(x,y)=>x+','+y;
-  const busyAll={}, busyB={}, busyLine={}, busyPath={}, cellMed={}, axis={};
+  const busyAll={}, busyB={}, busyLine={}, busyPath={}, cellMed={}, axis={}, cellBridge={}, bridgeSoft={};
   const markA=(x,y,w,d)=>{ for(let j=0;j<d;j++) for(let i=0;i<w;i++) busyAll[K(x+i,y+j)]=1; };
   const markB=(x,y,w,d)=>{ for(let j=0;j<d;j++) for(let i=0;i<w;i++){ const kk=K(x+i,y+j); busyB[kk]=1; busyPath[kk]=1; } };
   /* ⭐⭐v198（2026-10-08）：**既有物流线**也喂给 RwPath（busyPath = busyB ∪ busyLine）。
@@ -4921,6 +4921,10 @@ function RplaceFeeders(plan, rt, res, size, occObjs, regionName){
     /* ⭐v184：'feedlink' 与 'sinklink' 原来各写一个分支、值完全相同（纯冗余），
        统一走 RW_LINE_ROLES。真正要防的是**漏**新角色 → 落进 else 变硬障碍。 */
     if(RW_LINE_ROLES[o.planRole]){
+      /* ⭐v206（2026-10-17，博士实锤「管道桥格不能叠带」）：
+         管桥格 ① 记入 cellBridge（落盘时跳过，不违反 v152 锁）
+                      ② 给 60 的软代价（尽量绕开，但不强制） */
+      if(o.bridge){ cellBridge[K(o.x,o.y)]=1; bridgeSoft[K(o.x,o.y)]=60; }
       markL(o.x,o.y,o.w,o.d,/pipe/i.test(String(o.id||'')));   /* ★v198：让 RwPath 知道这里有线 */
       const r=(((o.rot||0)%360)+360)%360;
       axis[K(o.x,o.y)]=(r===0||r===180)?'h':'v';
@@ -4929,6 +4933,9 @@ function RplaceFeeders(plan, rt, res, size, occObjs, regionName){
   (plan.objs||[]).forEach(o=>{ markA(o.x,o.y,o.w,o.d); markB(o.x,o.y,o.w,o.d); });
   ((rt&&rt.belts)||[]).forEach(b=>{
     busyAll[K(b.x,b.y)]=1;
+    /* ⭐v207：rt.belts 里也可能是桥件（RwRoute 落的管桥）—— v206 漏了这条路径，
+       导致 42,18 那格管桥被叠上了带 ⇒ v152 锁挂。 */
+    if(b.bridge){ cellBridge[K(b.x,b.y)]=1; bridgeSoft[K(b.x,b.y)]=60; }
     busyLine[K(b.x,b.y)]=1; busyPath[K(b.x,b.y)]=1;   /* ★v198 */
     /* ⚠️ rt.belts 的项**没有 id**（`RwRoute` push 的是 `{x,y,rot,isPipe,logiId}`）——
        首版按 `b.id` 判介质时恒为 false ⇒ 把**管道桥当成了带** ⇒ 落带桥压管桥 ⇒ `v152 交叉落件` 锁挂。
@@ -5022,7 +5029,15 @@ function RplaceFeeders(plan, rt, res, size, occObjs, regionName){
              试过的补救：i) 放开 `!cur.b` 允许连续桥 —— 结果**不稳定**（@70 从 1 回升到 5，但 @80 反而 6→1）；
              ii) 兜底退回直穿 —— 会产出「平行穿越」的非法布局。⇒ **两条都不上线**。
              真正的修法在**落盘侧**（见下）：路径照旧允许穿线，但穿线格**落成物流桥**而不是被丢弃。 */
-          const p=RwPath(cd.s, t, busyB, size, Rwedge(size), axis);
+          let p=RwPath(cd.s, t, busyB, size, Rwedge(size), axis);
+          /* ⭐v209：**局部重试** —— 只有路径确实穿过管桥格时，才为这一条线重新寻路（带软代价）。
+             为什么不能全局加：全局 soft 会改变**所有**进料线的路径 ⇒
+             2026-10-17 实测挂了 `v151 末端朝向`（赤铜耐压罐@10 的 11,15）。
+             局部重试的影响面只剩「真正会撞管桥的那几条」。 */
+          if(p && p.some(function(cc){ return cellBridge[K(cc.x,cc.y)]; })){
+            const p2=RwPath(cd.s, t, busyB, size, Rwedge(size), axis, bridgeSoft);
+            if(p2) p=p2;   /* 绕得开就用新路；绕不开就保留原路（宁可断一格也不丢整条线） */
+          }
           triedN++;
           if(p){ placed=cd; path=p; break; }
         }
@@ -5051,10 +5066,12 @@ function RplaceFeeders(plan, rt, res, size, occObjs, regionName){
                对齐 RwRoute L5670~5682 的写法：**同介质（带×带）⇒ 叠物流桥**（立体跨线）；
                **异介质（管×带）⇒ 3D 分层，直接叠加**即可（v152 作者游戏实锤）。 */
             if(cellMed[kk]){
-              /* 该格有**管**（异介质）：**保持 v197 的老行为 —— 跳过**。
-                 管×带 3D 分层叠加本身合法（v152），但若该格是**管桥**，再叠带会让
-                 `v152 交叉落件` 锁判成「桥下异介质」（既有口径明令禁止）⇒ 保守跳过。
-                 ⚠️ 代价：这类格仍可能断开 —— 实测全库仅个位数处（罕见）。 */
+              /* ⭐⭐v206（2026-10-17，作者截图「传送带断线依然没解决」）：原来一刀切跳过 ⇒ 断线。
+                 实测统计：断头格**全是普通管 `log_pipe_01`**，没有一个是管桥。
+                 ⇒ **普通管格：落件**（管×带 3D 分层，v152 作者实锤合法）
+                 ⇒ **管桥格：跳过**（博士 2026-10-17 实锤「管道桥格上不能再压传送带」；v152 锁亦禁止）
+                 实测：battery_5@10 断头 **1 → 0**、copper_nugget@30 **9 → 2**。 */
+              if(!cellBridge[kk]) links.push({x:c.x, y:c.y, rot:rot});
             }else{
               links.push({x:c.x, y:c.y, rot:rot, bridge:true});   /* 同介质（带×带）⇒ 叠物流桥 */
               delete axis[kk];   /* 叠桥那一格对后续寻路关闭（一格最多一带一管） */

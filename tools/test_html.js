@@ -4908,8 +4908,16 @@ chk('v151 外部接入：赤铜耐压罐@10（含惰气外部输入）3 根进�
 // 不变量：终点格的出向绝不指回自己的上游邻居（= 不许在机器口掉头）。
 chk('v151 末端朝向：赤铜耐压罐@10 全部连线的终点格箭头都指向下游，无一「掉头指回上游」', (() => {
   const DL = { 0: [1, 0], 90: [0, 1], 180: [-1, 0], 270: [0, -1] };
-  const rotAt = {};
-  A.LO.objs.forEach(o => { const b = A.byBp(o.id); if (b && b.isLogi) rotAt[o.x + ',' + o.y] = o.rot; });
+  /* ⭐v211 改锁（如实记录）：原来 `rotAt[格] = rot` 是**后写覆盖** ——
+     v206 让进料线可以合法落在「普通管道格」上（3D 分层），于是同格同时有
+     `log_pipe_01`（产线，rot 指向下游）与 `grid_belt_01`（进料线，rot 指向自己下一格）。
+     产线判据遂取到了**进料线的 rot** ⇒ 误判「终点格掉头」。
+     ⇒ 按**介质**分开记录：产线连线的 `l.isPipe` 决定查管件还是带件表。 */
+  const rotAtP = {}, rotAtB = {};
+  A.LO.objs.forEach(o => { const b = A.byBp(o.id); if (b && b.isLogi) {
+    const k = o.x + ',' + o.y;
+    if (b.lgMedium === '管道') rotAtP[k] = o.rot; else rotAtB[k] = o.rot;
+  } });
   let n = 0, bad = [];
   A.LO.plan.route.links.forEach(l => {
     const ps = Array.isArray(l.path) ? l.path : [];
@@ -4917,18 +4925,19 @@ chk('v151 末端朝向：赤铜耐压罐@10 全部连线的终点格箭头都指
     n++;
     const last = ps[ps.length - 1].split(',').map(Number);
     const prev = ps[ps.length - 2].split(',').map(Number);
-    const r = rotAt[last[0] + ',' + last[1]];
+    const r = (l.isPipe ? rotAtP : rotAtB)[last[0] + ',' + last[1]];
     if (r === undefined) { bad.push(ps[ps.length - 1] + ' 无物流件'); return; }
     const d = DL[r];
     if (last[0] + d[0] === prev[0] && last[1] + d[1] === prev[1]) bad.push(ps[ps.length - 1] + ' rot=' + r);
   });
   return n >= 5 && bad.length === 0;
 })(), () => 'links=' + A.LO.plan.route.links.length + ' bad=' + JSON.stringify(
-  (() => { const DL = { 0: [1, 0], 90: [0, 1], 180: [-1, 0], 270: [0, -1] }; const rotAt = {};
-    A.LO.objs.forEach(o => { const b = A.byBp(o.id); if (b && b.isLogi) rotAt[o.x + ',' + o.y] = o.rot; });
+  (() => { const DL = { 0: [1, 0], 90: [0, 1], 180: [-1, 0], 270: [0, -1] }; const rotAtP = {}, rotAtB = {};
+    A.LO.objs.forEach(o => { const b = A.byBp(o.id); if (b && b.isLogi) { const k = o.x + ',' + o.y;
+      if (b.lgMedium === '管道') rotAtP[k] = o.rot; else rotAtB[k] = o.rot; } });
     const out = []; A.LO.plan.route.links.forEach(l => { const ps = Array.isArray(l.path) ? l.path : [];
       if (ps.length < 2) return; const last = ps[ps.length - 1].split(',').map(Number);
-      const prev = ps[ps.length - 2].split(',').map(Number); const r = rotAt[last[0] + ',' + last[1]];
+      const prev = ps[ps.length - 2].split(',').map(Number); const r = (l.isPipe ? rotAtP : rotAtB)[last[0] + ',' + last[1]];
       if (r === undefined) { out.push(ps[ps.length - 1] + ' 无件'); return; }
       const d = DL[r]; if (last[0] + d[0] === prev[0] && last[1] + d[1] === prev[1]) out.push(ps[ps.length - 1] + ' rot=' + r); });
     return out; })()));
