@@ -4087,17 +4087,288 @@ function LawPlan(res, size, corr, opts){
   }
   return {objs:objs, bands:bands, height:cy, over:over, order:order, rowGap:rgCap};
 }
-/* ⭐⭐ C6-b 阶段 2（2026-09-25）：把销毁支线（池子/热能池）**捡空位摆到画布上**。
-   【为什么单独摆、不并进 LawPlan】
-   LawPlan 排的是「产线机器」，它的分层/对齐/折行逻辑都服务于产线几何；
-   销毁池与产线**没有物料依赖关系**（旁路溢流），硬塞进分层会打乱产线布局。
-   所以：先让 LawPlan 把产线排好，再在**剩余空位**里贴边找地方 —— 产线优先，池子见缝插针。
+/* ⭐⭐v203（博士 2026-10-20 定案）：**贴块布局** —— 把「上游机器贴着下游摆」做进布局层。
+   ── 为什么需要它（不是「更紧凑一点」的调参，是结构性缺失）──
+     `LawPlan` 是「按 depth 分层、每层独立横排」：上游机器与下游机器的 x 位置互不相干，
+     于是 16 台粉碎机喂 8 台研磨机时，只能靠 40~60 格的传送带横着拉过去 —— 实测 1950 格线。
+     而游戏里最省的做法是「上游摆在下游正下方」：端口天然对齐，中间只要 1 格带子。
+   ── 游戏实机判据（博士 2026-10-20 口述，**判据必须照此写**）──
+     「进货口和出货口之间还是要隔一格的，不能紧贴」⇒ 上游与下游之间**留 1 格**，那一格铺带。
+   ── 贴的条件（四条同时满足，缺一不贴）──
+     ① 上游节点**独占**（只供这一个下游）—— 否则一台机器要给多个下游，贴了别人就没得贴；
+     ② `k = 上游台数 / 下游台数` 是**正整数**；
+     ③ `上游宽 × k === 下游宽`（正好填满整宽）；
+     ④ 上游有朝上的出料口、下游有朝下的进料口（纵向贴）。
+   ── 与 `LawPlan` 的关系 ──
+     只作 `LawRun` 的**一个候选**参与 `pickScore` 择优（与「紧凑档/宽间距档」并列）。
+     贴不动就退化回分层布局 —— **老路径一字不动，零回归风险**。
+   ⚠️ 第一阶段只做「整除填满」的纵向贴。部分贴（如 8 台研磨机只能贴 2 台封装机）
+      与横向贴（提纯机右出 → 反应池左进）留到第二阶段，先不引入不确定性。 */
+function LawPlanStick(res, size, corr, opts){
+  opts=opts||{};
+  const mgapX=(opts.gapX===undefined)?2:opts.gapX;
+  /* ⚠️ 2026-10-20 实测记录（别再试这条）：曾给「末级机器（depth 0）」多留 4 格，
+     想让两台封装机之间的空档宽到能放箱子 —— **反而更差**：
+     箱子被推到 (7,1) 贴着画布顶，出货线 21 → **25 格**（`v185+v188` 广谱锁仍红）。
+     出货线长度的真正瓶颈不在机器间距，而在「末级机器上方那几行被产线内线占着」。
+     ⇒ 真正的解法是给 depth 0 上方预留「出货走线通道」（同 y=0 那种预留），不是拉大间距。 */
+  const gapXOf=n=>mgapX;
+  const gapX=mgapX;
+  const gapY=(opts.gapY===undefined)?2:opts.gapY;   /* 块间纵距：留 2 格放 2×2 供电桩 */
+  const MG=RW_MARGIN+(opts.off|0);
+  const objs=[], bands=[];
+  const nodes=(res.machines||[]).filter(n=>n.recipeId&&n.machines>0&&byBp(n.machineId));
+  if(!nodes.length) return {objs:[], bands:[], height:MG, over:[], order:{}, rowGap:gapY};
 
-   【找位策略】从画布**右下角往左上**逐行扫（产线从顶部往下排，底部/右侧通常最空），
-   每个建筑要求整块 footprint 全空（避开机器、已铺线、已摆的池子）。
-   ⚠️ 找不到位 → 记进 `unplaced`，由调用方决定是否软门禁拒绝（不硬塞、不重叠）。
+  /* ---- ① 实例化：每台机器一个实例（贴块必须按实例算，节点只是「同款 N 台」的汇总）---- */
+  const insts={};
+  nodes.forEach(n=>{
+    const b=byBp(n.machineId), fp=Lfp(b);
+    insts[n.itemId]=[];
+    for(let k=0;k<n.machines;k++)
+      insts[n.itemId].push({node:n, b:b, w:fp[0], d:fp[1], idx:k, done:false});
+  });
 
-   返回 {objs:[…], unplaced:[…]}：objs 里每项带 {b, x, y, w, d, sink, kind, forItem}。 */
+  /* ---- ② 判定每条依赖边能不能贴 ---- */
+  const dirsOf=(b,kind)=>{ const fp=Lfp(b);
+    return (b.ports||[]).filter(p=>p.kind===kind)
+      .map(p=>LportDirRot(p,0,fp[0],fp[1])); };
+  /* 每个上游 itemId 有几个消费者（用来判「独占」） */
+  const consOf={};
+  nodes.forEach(dn=>{
+    (dn.children||[]).forEach(c=>{ if(!c.recipeId) return;
+      const a=(consOf[c.itemId]=consOf[c.itemId]||[]);
+      for(let i=0;i<dn.machines;i++) a.push({dn:dn, rate:c.demand});
+    });
+  });
+  /* 每台下游最多认一条可贴边：按「该边的总流量」降序挑，挑到第一条合格的为止 */
+  const stickOf={};
+  nodes.forEach(dn=>{
+    const cands=[];
+    (dn.children||[]).forEach(c=>{
+      if(!c.recipeId||!c.machines||!insts[c.itemId]) return;
+      const upB=byBp(c.machineId||dn.machineId), dnB=byBp(dn.machineId);
+      if(!upB||!dnB) return;
+      const upFp=Lfp(upB), dnFp=Lfp(dnB);
+      const k=c.machines/dn.machines;
+      if(!(k>=1 && Math.abs(k-Math.round(k))<1e-9)) return;          /* ② 整除 */
+      if(upFp[0]*k!==dnFp[0]) return;                                 /* ③ 正好填满整宽 */
+      if(dirsOf(upB,'output').indexOf('u')<0) return;                 /* ④ 上游出朝上 */
+      if(dirsOf(dnB,'input').indexOf('d')<0) return;                  /* ④ 下游进朝下 */
+      const cons=consOf[c.itemId]||[];
+      /* ① 独占：这个上游的消费者全挂在同一个下游节点上 */
+      if(cons.some(x=>x.dn!==dn)) return;
+      cands.push({up:c, k:Math.round(k), upW:upFp[0], upH:upFp[1], flow:(+c.demand)||0});
+    });
+    if(!cands.length) return;
+    cands.sort((a,b)=>b.flow-a.flow);
+    stickOf[dn.itemId]=cands[0];
+  });
+
+  /* ⭐⭐v204（博士 2026-10-20 定案「基段居中 + 两片产线」）：把「摆一片」抽成内部函数。
+     ── 为什么抽出来 ──
+       单片 / 上下两片的**片内排法完全相同**（depth 0 在顶、上游贴下游、中间隔 1 格），
+       差别只在「整体落在画布哪一段」和「机器要不要转 180°」。
+     ── 局部坐标约定（关键）──
+       局部 y 从 0 起、depth 0 在顶、越往上（y 小）越是下游 —— 与老版 `cy=MG` 起算只差一个平移，
+       所以映射回来时 `y0 + y` 即可；下片整体上下翻转（`y0+H-(y+d)`）+ 机器 rot=180。
+     ── 为什么下片可以翻转 ──
+       博士 2026-10-20 确认「产线机器能转、端口跟着翻」⇒ rot=180 后出料朝下 / 进料朝上，
+       「上游在上、下游在下」的物料向下流就成立了。footprint 在 180° 下不变（只有 90/270 才互换宽深），
+       所以宽度/整宽贴合的判据（upFp[0]*k===dnFp[0]）不受影响。
+     ⚠️ 端口 x 位置在 180° 下会镜像（LportXY 处理），但贴块是「整宽对齐」的（2 台 3 宽贴 1 台 6 宽），
+        镜像后仍一一对应，所以不需要额外校正。 */
+  function slab(S, y0, flip, rot, tag){
+    const recs=[];
+    const md={};
+    nodes.forEach(n=>{ (md[n.depth]=md[n.depth]||[]).push(n); });
+    const depths=Object.keys(md).map(Number).sort((a,b)=>a-b);
+    const order={};
+    /* v204：下片整体 flipl 180 度后，机器的**管道/传送带出料口会朝左**（反应池 rot180 = 左 2 管），
+       而机器若从 x=MG=1 起摆，最左边那台的左口外侧格 = x=0 越界 =>
+       RplaceSinksLinked 报「管道出料口四邻全被建筑占住」，污水池接不上
+       （实测 item_bottled_rec_hp_5@10/70 与 food_5@10/70 各缺 1 座）。
+       => 下片的 x 起点右移 1 格，给朝左的口留出外侧格。 */
+    const x0=MG+(flip?1:0);
+    let cy=0;
+    depths.forEach(d=>{
+      const items=[];
+      md[d].forEach(n=>{
+        const st=stickOf[n.itemId];
+        (S[n.itemId]||[]).filter(it=>!it.done).forEach(it=>items.push({it:it, n:n, st:st}));
+      });
+      if(!items.length) return;
+      order[d]=md[d].slice();
+      let i=0;
+      while(i<items.length){
+        /* 先量这一行要占的高度：有贴块的实例，块高 = 下游高 + 1 格带子 + 上游高 */
+        const row=[];
+        let rx=MG, rowH=0;
+        while(i<items.length){
+          const e=items[i];
+          if(row.length && rx+e.it.w>size-RW_MARGIN) break;
+          row.push(e); rx+=e.it.w+gapXOf(e.n);
+          const bh=e.st?(e.it.d+1+e.st.upH):e.it.d;
+          if(bh>rowH) rowH=bh;
+          i++;
+        }
+        let px=x0;
+        row.forEach(e=>{
+          e.it.x=px; e.it.y=cy; e.it.done=true;
+          recs.push({node:e.n, b:byBp(e.n.machineId), x:px, y:cy, w:e.it.w, d:e.it.d, k:e.it.idx, slab:tag});
+          if(e.st){
+            /* 上游实例：第 idx 台下游拿 第 idx*k .. idx*k+k-1 台上游 */
+            const ups=S[e.st.up.itemId]||[];
+            for(let kk=0;kk<e.st.k;kk++){
+              const upI=ups[e.it.idx*e.st.k+kk];
+              if(!upI||upI.done) continue;
+              upI.x=px+kk*e.st.upW; upI.y=cy+e.it.d+1; upI.done=true;   /* ⭐隔 1 格 */
+              recs.push({node:e.st.up, b:byBp(e.st.up.machineId),
+                x:upI.x, y:upI.y, w:upI.w, d:upI.d, k:upI.idx, slab:tag});
+            }
+          }
+          px+=e.it.w+gapXOf(e.n);
+        });
+        cy+=rowH+gapY;
+      }
+    });
+    /* ---- 兜底：没被贴、也没摆过的实例（贴不动 / 独占判定失败 / 片内上游不够）排在本片末尾 ---- */
+    const rest=[];
+    nodes.forEach(n=>{ (S[n.itemId]||[]).forEach(it=>{ if(!it.done) rest.push(it); }); });
+    if(opts.__dbg && rest.length)
+      console.log('DBG['+tag+'] rest='+rest.length+' 明细: '+rest.map(x=>x.node.itemId+'#'+x.idx).join(','));
+    if(rest.length){
+      let rx=x0, rowMaxH=0;
+      rest.forEach(it=>{
+        if(rx+it.w>size-RW_MARGIN){ rx=MG; cy+=rowMaxH+gapY; rowMaxH=0; }
+        it.x=rx; it.y=cy; it.done=true;
+        recs.push({node:it.node, b:it.b, x:rx, y:cy, w:it.w, d:it.d, k:it.idx, slab:tag});
+        rx+=it.w+gapX;
+        if(it.d>rowMaxH) rowMaxH=it.d;
+      });
+      cy+=rowMaxH;
+    }
+    /* 局部高度 = 实际占用的最大 y+d（不含尾部 gapY） */
+    let H=0;
+    recs.forEach(r=>{ if(r.y+r.d>H) H=r.y+r.d; });
+    /* 映射到画布坐标 + 补 rot */
+    recs.forEach(r=>{
+      r.y = flip ? (y0 + H - (r.y + r.d)) : (y0 + r.y);
+      r.rot = rot;
+    });
+    return {objs:recs, height:H, order:order};
+  }
+
+  /* 按台数对半切实例表：上片拿 ceil、下片拿 floor，片内 idx 重新从 0 编号
+     （⚠️ 必须 clone —— 同一条链的两个候选会复用同一份 insts，改 idx 会互相污染）*/
+  function sliceInsts(mode){
+    const out={};
+    Object.keys(insts).forEach(k=>{
+      const a=insts[k], n=a.length, cut=Math.ceil(n/2);
+      const sub=(mode==='up')?a.slice(0,cut):a.slice(cut);
+      out[k]=sub.map((it,i)=>Object.assign({},it,{idx:i, done:false}));
+    });
+    return out;
+  }
+
+  /* ---- ③ 组装 ---- */
+  const wantSplit=!!opts.split;
+  /* 纵向预算（两片，单位：行；全部从画布顶部 MG 起算）
+       4        出货区（箱子 3 + 走线 1）
+       hUp      上片
+       1        上片进料走线格
+       1        上片取货口
+       4        基段带（log_hongs_bus 横放 8×4）
+       1        下片取货口
+       1        下片进料走线格
+       hDn      下片
+       4        出货区
+     ⇒ 合计 hUp + hDn + 16。 */
+  const BUS_H=4;                                  /* 基段横放后的高度（8 宽 × 4 深） */
+  /* v204：**两片只在主基地尺寸上启用**（>=64）。
+     50x50 / 40x40 的副基地装不下「机器 36 行 + 基段带 8 行 + 销毁池 12 行」，
+     强行两片会把销毁池挤到接不上（实测 v189 定向转红：c_hp_5@10/50 3/4、food_5@10/50 3/4）。
+     小画布走单片 + 老路径，与 v203 逐字节一致。 */
+  if(wantSplit && size>=64){
+    const upS=sliceInsts('up'), dnS=sliceInsts('down');
+    const upProbe=slab(upS, 0, false, 0, 'up');
+    const dnProbe=slab(dnS, 0, false, 180, 'dn');
+    const hUp=upProbe.height, hDn=dnProbe.height;
+    const total=hUp+hDn+16;
+    const avail=size-2*MG;
+    if(total<=avail && hUp>0 && hDn>0){
+      /* 基段带位置：把「上下两片的总占」在画布里居中 ⇒ 多出来的空白均分到上下两头。
+         busY = 基段顶行；上片的画布起点 yTop = MG + 余量/2 + 4 */
+      const slack=avail-total;
+      const top=MG+Math.floor(slack/2);
+      const yTop=top+4;                            /* 上片 depth0 机器顶边 */
+      const busY=yTop+hUp+2;                        /* +1 走线 +1 取货口 */
+      const yDn=busY+BUS_H+2;                       /* 下片最上机器的顶边：+1 取货口 +1 走线 */
+      const up=slab(sliceInsts('up'), yTop, false, 0, 'up2');
+      const dn=slab(sliceInsts('down'), yDn, true, 180, 'dn2');
+      /* 上片 rest 兜底区可能比 hUp 高（第二次摆的落点一致 ⇒ 不会，但保险起见用实际值判越界） */
+      const all=up.objs.concat(dn.objs);
+      const overX=all.filter(o=>o.y<RW_MARGIN||o.x<RW_MARGIN||o.x+o.w>size-RW_MARGIN||o.y+o.d>size-RW_MARGIN);
+      if(!overX.length){
+        /* ⭐v204：**基段带硬预留** —— 交给 RwRoute 当 extraBusy，任何走线都不许进这 8 行。
+           带宽 = 走线1 + 取货口1 + 基段4 + 取货口1 + 走线1 = 8 行（busY-2 .. busY+5）。
+           ⚠️ 为什么必须封「取货口行 + 走线行」：RwRoute 不知道那格将来要贴取货口，
+              会先把线铺进去 ⇒ 随后 RplaceFeeders 找不到空位（v203 的 feeder=0 就是这样来的）。 */
+        const rsY=Math.max(RW_MARGIN, busY-2), rsE=Math.min(size-RW_MARGIN, busY+6);
+        /* v204：基段带横向居中、左右留通道（首版封整行 => 画布被拦腰截断 =>
+           跨片的销毁线无路可走，`v189 销毁池全部接上` 转红）。
+           x 范围 = 源桩(4) + 基段(RwBusNeedW)，与 RplaceBus 用同一个口径。 */
+        const busW=Math.min(Math.max(8,(size-2*RW_MARGIN-16)), RwBusNeedW(res, size));
+        const busX=Math.max(RW_MARGIN+4, Math.round((size-busW)/2));
+        const rsX=Math.max(RW_MARGIN, busX-4), rsW=Math.min(size-RW_MARGIN-rsX, busW+4);
+        /* v204：两片各留 4 行「出货区」（箱子 3 行 + 走线 1 行），交给 RwRoute 当硬障碍。
+           不给的话产线内线会把 depth0 机器上方占满 => 箱子只能塞进机器区内部
+           （实测 (3,26) 离出料口 12 格）=> 出货线出边落空（v197 行为锁红）。 */
+        const _yTop=Math.max(RW_MARGIN, yTop-4);
+        const _dnBot=Math.min(size-RW_MARGIN-4, yDn+hDn);
+        const _res=[];
+        if(rsE>rsY) _res.push({x:rsX, y:rsY, w:rsW, d:rsE-rsY});
+        _res.push({x:RW_MARGIN, y:_yTop, w:size-2*RW_MARGIN, d:4});
+        _res.push({x:RW_MARGIN, y:_dnBot, w:size-2*RW_MARGIN, d:4});
+        return {objs:all, bands:[], height:MG, over:[], order:{},
+                rowGap:gapY, stick:stickOf, noStick:!Object.keys(stickOf).length,
+                reserve:_res,
+                slab:{mode:'split', busY:busY, busH:BUS_H, busX:busX, busW:busW,
+                      hUp:hUp, hDn:hDn, yTop:yTop, yDn:yDn}};
+      }
+    }
+    /* 装不下两片 → 落到下面走单片（不在这里报错：单片是合法退路） */
+  }
+
+  /* 单片：老行为（depth 0 从 MG 起、上游向下贴）= v203 原样，
+     唯一区别是额外报出「基段带该放哪」= 机器区下方第 3 行起。 */
+  /* v204: depth0 机器下移 4 行 —— 上方留出「箱子 3 行 + 进料走线 1 行」。
+     不下移的话 depth0 顶边在 y=4、箱子底边得在 y=0（越界）⇒ 箱子只能塞进机器区内部。 */
+  const one=slab(insts, MG+4, false, 0, 'one');
+  const over=one.objs.filter(o=>o.y<RW_MARGIN||o.x<RW_MARGIN||o.x+o.w>size-RW_MARGIN||o.y+o.d>size-RW_MARGIN);
+  let bot=0; one.objs.forEach(o=>{ if(o.y+o.d>bot) bot=o.y+o.d; });
+  /* 单片模式不加 reserve —— 它的 RplaceBus 仍走「沿右侧竖铺」的老路径，
+     加 reserve 只会白封一块地、把销毁池挤走（v203 的回归基线就是这样）。
+     横向基段目前只在两片模式下启用。 */
+  const sgW=Math.min(Math.max(8,(size-2*RW_MARGIN-16)), RwBusNeedW(res, size));
+  const sgX=Math.max(RW_MARGIN+4, Math.round((size-sgW)/2));
+  /* v204：**两处硬预留**（交给 RwRoute 当 extraBusy，也交给 sink/store 当占用）——
+     ① 顶部出货区：从 MG 封到「depth0 机器顶边前一行」。
+        封太浅（4 行）产线线会占掉上面几行 ⇒ 出货线向上撞线（v197 落空 1 格）；
+        封太满又会把箱子挤下去（上一轮 B 变体实测覆盖 1/2），所以按机器实际顶边算。
+     ② 基段带（窄条，只封「源桩 + 基段」那段 x）。 */
+  let _yTop=size; one.objs.forEach(o=>{ if(o.y<_yTop) _yTop=o.y; });
+  const _rsY=Math.max(RW_MARGIN, bot), _rsX=Math.max(RW_MARGIN, sgX-4);
+  const _rsW=Math.min(size-RW_MARGIN-_rsX, sgW+4);
+  const _rsD=Math.min(size-RW_MARGIN-_rsY, 8);
+  const _resOne=[{x:RW_MARGIN, y:RW_MARGIN, w:size-2*RW_MARGIN,
+                  d:Math.max(4, Math.min(_yTop-RW_MARGIN-1, 8))}];   /* -1：机器顶边上一格是出料口外侧格，不能封 */
+  if(_rsD>0&&_rsW>0) _resOne.push({x:_rsX, y:_rsY, w:_rsW, d:_rsD});
+  return {objs:one.objs, bands:bands, height:bot, over:over, order:one.order, rowGap:gapY,
+          stick:stickOf, noStick:!Object.keys(stickOf).length,
+          reserve:_resOne,
+          slab:{mode:'single', busY:bot+2, busH:BUS_H, busX:sgX, busW:sgW, hUp:one.height, hDn:0}};
+}
 function RplaceSinks(sinkPlan, size, busyFn, margin){
   const out=[], unplaced=[];
   if(!sinkPlan || !sinkPlan.sinks || !sinkPlan.sinks.length) return {objs:out, unplaced:unplaced};
@@ -4290,6 +4561,11 @@ function RplaceSinksLinked(plan, rt, res, size, occObjs, sinkPlan){
       if(ox>=0&&oy>=0&&ox<size&&oy<size) outProt[K(ox,oy)]=1;
     });
   });
+  /* ⭐v203：`outProt` 原来只用来「别把池子摆到出料口上」，**走线并不避让** ——
+     实测（布局给末级机器上方留出货区、整体下移 4 行之后）：销毁线一路铺到了
+     封装机出料口外侧那一行，把 6 个口全占死 ⇒ 出货线只接上 1/2 台。
+     ⇒ 出料口外侧格对**走线**也必须是硬障碍（池子摆放那边继续用 outProt，口径不变）。 */
+  /* 2026-10-20 回退：把 outProt 加进 busyB 会让销毁线/进料线绕大圈（线格 429→1408、断头 3→8），已撤。 */
   ((rt&&rt.belts)||[]).forEach(b=>{ busyAll[K(b.x,b.y)]=1;
     const r=(((b.rot||0)%360)+360)%360; axis[K(b.x,b.y)]=(r===0||r===180)?'h':'v';
     /* ⚠️ rt.belts 的项**没有 id**（RwRoute push 的是 {x,y,rot,isPipe,logiId}）—— 介质先读 isPipe、兜底 logiId */
@@ -4595,9 +4871,30 @@ function RplaceStores(plan, rt, res, size, occObjs, deep){
   Object.keys(rootIds).forEach(tid=>{
     const mach=(plan.objs||[]).filter(o=>o.node&&o.node.itemId===tid);
     if(!mach.length) return;
-    /* 储存箱顶边有 3 个输入口 → 每 3 台末级机器并到同一个箱子，够用又不浪费 */
-    for(let g=0; g*3<mach.length; g++){
-      const grp=mach.slice(g*3, g*3+3);
+    /* 储存箱顶边有 3 个输入口 → 每 3 台末级机器并到同一个箱子，够用又不浪费。
+       ⭐v204：**先按「片」分组**（plan.objs 上的 slab 标记，由 LawPlanStick 打）。
+       两片布局下上片末级机器在 y≈15、下片在 y≈61，合用一个箱子必然被拉一条 157 格的长线；
+       分开摆各自 4~5 格就够。单片布局时所有机器 slab 相同 ⇒ 与原来的分组完全一致。 */
+    const _slabs={};
+    mach.forEach(m=>{ const sk=m.slab||'_'; (_slabs[sk]=_slabs[sk]||[]).push(m); });
+    const _groups=[];
+    Object.keys(_slabs).forEach(sk=>{ const arr=_slabs[sk];
+      /* ⭐v204：**每台末级机器各配一个箱子**，只有彼此相距 ≤8 格的才合并（每箱最多 3 台）。
+         实测：两台封装机相距 10 格共用一个箱子时，箱子只能塞在两者之间
+         ⇒ 出货线横穿产线带（v197 行为锁 6 格出边落空）。各配一个就各自垂直向上几格。
+         全拆又会让小链箱子数暴涨（广谱出线翻倍），所以留「近的合并」。 */
+      const gs2=[];
+      arr.forEach(m2=>{
+        let g2=null;
+        for(let gi=0; gi<gs2.length; gi++){
+          const gg=gs2[gi];
+          if(gg.length>=3) continue;
+          if(gg.every(o2=>Math.abs(o2.x-m2.x)+Math.abs(o2.y-m2.y)<=8)){ g2=gg; break; }
+        }
+        if(g2) g2.push(m2); else gs2.push([m2]);
+      });
+      gs2.forEach(g2=>_groups.push(g2)); });
+    _groups.forEach(grp=>{
       /* ⭐⭐ 找位策略：**收集所有空位 → 按到末级机器的距离升序 → 逐个「试连」直到通**。
          实测教训（中容武陵电池 @武陵城 80×80，2026-10-02）：
            · 照抄销毁池「固定扫右下角」→ 离末级机器太远，**穿不过整条产线**（连线 0 格）；
@@ -4648,7 +4945,7 @@ function RplaceStores(plan, rt, res, size, occObjs, deep){
       });
       if(!starts.length || !anyOut){
         unplaced.push({forItem:tid, why:'末级机器出料口被挤在画布边界/被产线围死，末端走线无路可出'});
-        continue;
+        return;   /* v204：从 for 改成 forEach，continue→return */
       }
       const cands=[];
       for(let y=RW_MARGIN; y<=size-RW_MARGIN-sd; y++)
@@ -4666,7 +4963,50 @@ function RplaceStores(plan, rt, res, size, occObjs, deep){
           starts.forEach(s2=>{ const d=Math.abs(x-s2.x)+Math.abs(y-s2.y); dsum+=d; if(d<dmin) dmin=d; });
           cands.push({x:x, y:y, d:dmin, dsum:dsum});
         }
-      cands.sort((a,b)=>(a.dsum-b.dsum)||(a.d-b.d));
+      /* ⭐⭐v203（博士 2026-10-20「末级机器出货口旁放个协议储存箱呗」）：
+         **候选位排序要按「进料口外侧格」，不是「箱子原点」。**
+         ── 病因（实测）──
+           箱子 `storager_1` 3×3，进料口在**箱体底边**（外侧格 = 原点 y+3）。
+           旧口径用原点算距离和 ⇒ 距离最小的位置是 y=3（紧挨起点 y=3 的那一行），
+           可那个位置的进料口外侧格在 **y=6** —— 物料从 y=3 要绕到 y=6 才进得了箱。
+           实测就是这次 21 格出货线 + 6 格串进产线带的来源。
+         ── 修法 ──
+           对每个候选位，枚举 4 个朝向，算「该朝向下 3 个进料口外侧格」到各起点的距离之和，
+           取**最有利的那个朝向**作为该候选位的 `psum`，按它排序。
+           ⇒ 箱子会自然落到「进料口正对出货口」的位置（也就是博士说的「出货口旁边」）。
+         ⚠️ 只是排序依据变了，朝向的最终选择仍在下面 `rots` 那段（按同一口径挑），二者一致。 */
+      const _portOuter=rr=>{ const dd=Ldims(sb,rr), o2=[];
+        (sb.ports||[]).filter(p=>p.kind==='input'&&!p.isPipe).forEach(p=>{
+          const q=LportXY(p,rr,dd.w,dd.d), dr=LportDirRot(p,rr,dd.w,dd.d);
+          o2.push({x:q.x+(dr==='l'?-1:dr==='r'?1:0), y:q.z+(dr==='u'?-1:dr==='d'?1:0)});
+        }); return o2; };
+      cands.forEach(cd=>{
+        let bestSum=Infinity;
+        [0,90,180,270].forEach(rr=>{
+          const dd=Ldims(sb,rr);
+          if(dd.w!==sw||dd.d!==sd) return;
+          const os=_portOuter(rr);
+          let sum=0;
+          starts.forEach(s2=>{
+            let m2=Infinity;
+            os.forEach(o=>{ const d2=Math.abs(cd.x+o.x-s2.x)+Math.abs(cd.y+o.y-s2.y); if(d2<m2) m2=d2; });
+            sum+=m2;
+          });
+          if(sum<bestSum) bestSum=sum;
+        });
+        cd.psum=bestSum;
+      });
+      /* ⭐v204：布局层留了顶部出货区 ⇒ 箱子优先在里面找位。
+         不这么做的话候选按「进料口外侧格到出料口的距离和」排序，
+         箱子塞在机器之间距离 2、放到出货区距离 6 ⇒ 永远选近的 ⇒ 出货线横穿产线带。
+         ⚠️ 判据用「贴顶 + 整行宽」这个**结构性特征**，不要用 d<=4 ——
+            出货区高度会随机器位置变（4~8 行），写死高度会把条件判空、箱子落回机器行。 */
+      const _oz=(plan&&plan.reserve)?plan.reserve.filter(r=>r.y<=RW_MARGIN+2&&r.w>=size-2*RW_MARGIN-1)[0]:null;
+      if(_oz){
+        const ins=cands.filter(cd=>cd.x>=_oz.x&&cd.x+sw<=_oz.x+_oz.w&&cd.y>=_oz.y&&cd.y+sd<=_oz.y+_oz.d);
+        if(ins.length){ cands.length=0; ins.forEach(cd=>cands.push(cd)); }
+      }
+      cands.sort((a,b)=>(a.psum-b.psum)||(a.dsum-b.dsum)||(a.d-b.d));
       /* ⭐v195：前 K 个候选里优先挑「回头放得下供电桩」的位置（与销毁池同一口径，
          见 RwPoleSpot 注释）—— 储存箱也是耗电设备，被挤在角上时桩同样盖不到它。 */
       (function(){
@@ -4790,8 +5130,35 @@ function RplaceStores(plan, rt, res, size, occObjs, deep){
                 ||(!noBlk && x>=cd.x&&x<cd.x+sw&&y>=cd.y&&y<cd.y+sd);
               /* ⚠️v199 回退：不加 soft（第 7 参）—— 软代价会改变出货线寻路结果
                  （实测出线 24 格 vs 老锁 ≤12、粘连、拐弯错，v185/v188/v197 四条锁全挂）。 */
+              /* ⚠️ 2026-10-20 收口记录（乙方案，试过已回退，别再试）：
+                 博士定的是「落盘口跳过别人线 → 整条重试 + 把那格当硬障碍」。
+                 实现后实测：出货线 21 → **32 格**（绕更远），且 @30 最严断头 **12 → 15**（更差）。
+                 原因：把产线线当障碍后，路径被逼到画布边缘绕大圈，而落盘依旧会跳过「本组自己的 busy2」以外的格
+                 ⇒ 绕了远路还是断，只是断在更远的地方。
+                 ⇒ **结论：这 6 格的根子在「箱子落位」，不在寻路。** 见 RplaceStores 候选位排序处。 */
               const pth=RwPath(s, t, busyB, size, block, axis);
-              if(pth){ hit={s:s, t:t, path:pth}; hitPi=pi; }
+              /* ⚠️ 2026-10-20 第二次收口记录（甲方案又试了一轮，仍失败，已回退）：
+                 「落盘可行性」这个判据在**当前布局**下永远不满足 —— 两轮都让箱子一个位置都摆不下
+                 （3 候选 × 4 朝向全判失败）。第一轮是箱子还在 (11,3)；第二轮已经改成按进料口排序了，
+                 结果一样 ⇒ 说明**末级机器周围的每一格都已经被产线线占住**，不是「位置挑得不好」。
+                 ⇒ 真正的出路只有一条：**布局层给末级机器上方预留一整块出货区**（见 docs/汇流改造方案.md）。
+                 别再在 RplaceStores 的判据上打转。 */
+              /* ⚠️ 2026-10-20 收口记录（甲方案，首轮试过已回退）：
+                 博士定的是「把『落盘会不会跳过』提前到试连判据，不满足就换下一个候选位」。
+                 实现后实测：**箱子一个位置都摆不下**（3 个候选位 × 4 朝向全判「落不了盘」），
+                 `unplaced` 报「试遍 3 个能放下的空位都接不上」，出货线 0 格 —— 比原来更糟。
+                 ⭐ 根因：**贴块布局把产线线填满了机器周围，画布上半部已经没有「放箱子且不穿线」的位置**。
+                 这不是判据太严，是**布局层没有给出货路径留空间**。
+                 ⇒ 真要修必须在**布局层**给末级机器上方留「出货区」（一整块，不是一格外侧格），
+                    而不是在 `RplaceStores` 里挑位置 —— 挑不出来就是挑不出来。 */
+              if(pth){ hit={s:s, t:t, path:pth, hitPi:pi,
+                /* ⭐v203：**尾格要指向箱体本体**，不是「沿路径继续」。
+                   端口格（本体那格）= 外侧格 t 减去口朝外的方向。
+                   病灶（实测）：箱子 (11,3) 的进料口在**底边**、外侧格 (11,6)，
+                   线从 (10,6) 横着过来 ⇒ 尾格 rot 被算成「朝右」（继续沿路走），
+                   而它其实要**朝上**进箱子 ⇒ 画面上就是一格带子指着空气，
+                   最严口径实锤 `(11,6) rot0 → (12,6) ★空`（v202 也有，v203 线少了才扎眼）。 */
+                body:{x:cd.x+q2.x, y:cd.y+q2.z}, bodyDir:dr2 }; hitPi=pi; }
             }
             if(hitPi>=0){ usedPorts[hitPi]=1; usedPorts['n'+(hitPi-1)]=1; usedPorts['n'+(hitPi+1)]=1; }
             if(!hit) hitAll=false;
@@ -4827,7 +5194,7 @@ function RplaceStores(plan, rt, res, size, occObjs, deep){
           ?('试遍 '+Math.min(cands.length, RW_STORE_CAND_MAX)+' 个能放下的空位 × '
             +RW_STORE_ROTS.length+' 个朝向都接不上（末级机器出料口外侧被占 / 路径被截断）')
           :'画布上没有 '+sw+'×'+sd+' 的整块空位给协议储存箱'});
-        continue;
+        return;   /* v204：从 for 改成 forEach，continue→return */
       }
       const at={x:pick.x, y:pick.y};
       markA(at.x, at.y, sw, sd); markB(at.x, at.y, sw, sd);
@@ -4862,14 +5229,28 @@ function RplaceStores(plan, rt, res, size, occObjs, deep){
           if(busyB[kk]) continue;                    /* 建筑格：不落线 */
           let rot;
           if(i2<path.length-1) rot=LrotFrom([c.x,c.y],[path[i2+1].x,path[i2+1].y]);
-          else rot=(i2>0?LrotFrom([path[i2-1].x,path[i2-1].y],[c.x,c.y]):0);
+          else {
+            /* ⭐v203 修：尾格指向**箱体本体**（进入方向 ≠ 去箱子的方向，
+               箱子进料口在底边时两者恰好差 90°）。拿不到本体才退回老口径。 */
+            const bd=h.body;
+            rot = (bd && !(bd.x===c.x&&bd.y===c.y)) ? LrotFrom([c.x,c.y],[bd.x,bd.y])
+                  : (i2>0?LrotFrom([path[i2-1].x,path[i2-1].y],[c.x,c.y]):0);
+          }
+          /* v204 叠桥已回退（2026-10-20 实测无效）：出货线 18→29 格、出边落空 6→11 格、
+             广谱出线 473→539。⇒ 桥件本身也是 storelink，压着别人的线时出边仍指不到同一条，链式失效。 */
           if(busyAll[kk] && !own[kk]) continue;      /* 别人的线：不压 */
+          /* ⚠️ 2026-10-20 收口记录（已回退，别再试）：曾改成「压到别人线上就叠桥（bridge:true）不跳过」。
+             实测**断头数量一格没少**（@10 仍是 3 处，全是 sinklink 不是 storelink），
+             反而多出 15 格桥（433 → 448 格）⇒ 说明「跳过别人的线」并不是那 6 格出边落空的原因。
+             那 6 格的问题在**渲染层**（title 的出边由 `outDirTo`/`forceOut` 算，与数据层 rot 不是同一套），
+             不是落盘口径。⇒ 正确的下一步是查 `outDirTo` 的覆盖条件，不是改这里。 */
           links.push({x:c.x, y:c.y, rot:rot});
           busyAll[kk]=1;
           axis[kk]=((rot%360)===0||(rot%360)===180)?'h':'v';
           markL(c.x,c.y,false);
         }
-      });    }
+      });
+    });
   });
   return {objs:out, links:links, unplaced:unplaced};
 }
@@ -5012,11 +5393,46 @@ function RplaceFeeders(plan, rt, res, size, occObjs, regionName){
               cands.push({x:cx, y:cy, w:1, d:3, rot:270, s:s});
             }
           }
+          /* ⭐⭐v204（博士 2026-10-20）：**横向基段**（8 宽 × 4 深）—— 两片布局中间那条带。
+             上沿贴一排「口朝上」供上片、下沿贴一排「口朝下（rot180）」供下片。
+             `unloader_1` = 3×1、output 在格内 (1,0) 朝上（facing 180）：
+               · rot=0   → 口占 3 宽 × 1 深，出料口外侧格 = (x+1, y-1)
+               · rot=180 → 仍 3 宽 × 1 深，出料口外侧格 = (x+1, y+1)（与老代码 preset 分支同源）
+             ⚠️ 候选**必须按「到目标外侧格的距离」排序**：下片机器在基段下方，就该取下沿那批；
+                不排序会先撞上沿（要绕半张画布），把 RW_FEED_TRY 的 4 次机会白花掉。 */
+          const hsegs=(occObjs||[]).filter(o=>o.planRole==='bus' && o.w>o.d);
+          if(hsegs.length){
+            const hc=[];
+            for(let si=0; si<hsegs.length; si++){
+              const seg=hsegs[si];
+              for(let cx=seg.x; cx+3<=seg.x+seg.w; cx++){
+                /* --- 上沿：口 y = seg.y-1，外侧格 y = seg.y-2 --- */
+                const uy=seg.y-1, us={x:cx+1, y:seg.y-2};
+                if(uy>=RW_MARGIN && us.y>=RW_MARGIN){
+                  let free=true;
+                  for(let i=0;i<3;i++) if(busyAll[K(cx+i,uy)]){ free=false; break; }
+                  if(free && !busyB[K(us.x,us.y)] && !busyAll[K(us.x,us.y)])
+                    hc.push({x:cx, y:uy, w:3, d:1, rot:0, s:us});
+                }
+                /* --- 下沿：口 y = seg.y+seg.d，外侧格 y = seg.y+seg.d+1 --- */
+                const dy=seg.y+seg.d, ds={x:cx+1, y:dy+1};
+                if(dy<size-RW_MARGIN && ds.y<size-RW_MARGIN){
+                  let free=true;
+                  for(let i=0;i<3;i++) if(busyAll[K(cx+i,dy)]){ free=false; break; }
+                  if(free && !busyB[K(ds.x,ds.y)] && !busyAll[K(ds.x,ds.y)])
+                    hc.push({x:cx, y:dy, w:3, d:1, rot:180, s:ds});
+                }
+              }
+            }
+            hc.sort((a,b)=>(Math.abs(a.s.x-t.x)+Math.abs(a.s.y-t.y))
+                          -(Math.abs(b.s.x-t.x)+Math.abs(b.s.y-t.y)));
+            for(let i2=0;i2<hc.length;i2++) cands.push(hc[i2]);
+          }
         }
         if(!cands.length){
           unplaced.push({forItem:L.itemId, why:(preset
             ?'画布最顶行没有能放下仓库取货口的连续空位'
-            :'存取线基段旁没有能贴下取货口的位置（或基段左侧被占）')});
+            :'存取线基段旁没有能贴下取货口的位置（上下两侧都被占）')});
           return;
         }
         let placed=null, path=null, triedN=0;
@@ -5097,6 +5513,29 @@ function RplaceFeeders(plan, rt, res, size, occObjs, regionName){
        源桩在最上，基段依次向下接龙；取货口贴基段**左侧长边**（口旋转 90° 成 1×3）。
    ⚠️ 实测空间充足：武陵城 80×80 下右侧 4 列有 **74/80 行**整行空。
    返回 {objs, links, unplaced}。 */
+/* v204（博士 2026-10-20）：基段需要多宽 —— 取货口数 x 3 格宽，上下两侧各贴一半。
+   -- 为什么要按需而不是铺满 --
+     首版铺满整行（9 段 72 宽）=> 基段带变成横贯画布的实心墙，上片到下片的销毁线/暗管
+     只能绕到墙的两端，而左端被源桩堵死 => `v189 销毁池全部接上` 直接转红。
+     实际需求只有 23 个取货口（= 23x3/2 = 35 宽），铺 40 宽就够，两侧留通道。
+   -- 口径 --
+     取货口是「一个消费机器实例一个口」（RplaceFeeders 的 eaters x machs 循环），
+     所以口数 = 吃原料的机器实例总数。向上取整到 8（一段基段 = 8 宽）。
+   两侧至少各留 8 格通道（给跨片的销毁线 / 暗管用）。 */
+function RwBusNeedW(res, size){
+  const leaves=[];
+  (res.nodes||[]).forEach(n=>{ if(n.raw && !n.recipeId && n.itemId) leaves.push(n); });
+  let cnt=0;
+  leaves.forEach(L=>{
+    (res.machines||[]).forEach(m=>{
+      (m.children||[]).forEach(c=>{ if(c.itemId===L.itemId) cnt+=(m.machines||0); });
+    });
+  });
+  const lane=8;                                   /* 两侧各留的通道宽 */
+  const cap=Math.max(8, (size||80)-2*RW_MARGIN-2*lane);
+  const w=Math.ceil(cnt*3/2/8)*8;                 /* 上下两侧均摊 => x3/2 */
+  return Math.max(8, Math.min(cap, w||8));
+}
 function RplaceBus(plan, rt, res, size, occObjs, regionName){
   const out=[], links=[], unplaced=[];
   /* 谷地是预设线，不自己铺 */
@@ -5126,6 +5565,69 @@ function RplaceBus(plan, rt, res, size, occObjs, regionName){
   });
   (rt.bldgs||[]).forEach(b=>{ const bb=byBp(b.id), f=bb?Lfp(bb):[1,1];
     markA(b.x,b.y,f[0],f[1]); markB(b.x,b.y,f[0],f[1]); });
+  const capSeg=((DB.bases||{}).zones||[]).map(z=>(z.busCap||{}).log_hongs_bus)
+    .filter(v=>v!=null)[0] || 12;      /* 保守上限：副基地 12（主基地 25） */
+  /* ⭐⭐v204（博士 2026-10-20 定案）：**基段横放居中** —— 两片布局的支点。
+     ── 旧做法为什么不行 ──
+       沿画布右侧竖铺（4 宽 × 8 深、纵向接龙）。贴块把机器铺满整幅宽后右侧那一列被机器占光
+       ⇒ 基段一段都接不上 ⇒ `feeder=0`（v203 实测：源桩 (75,1)、基段 0 段、取货口 0 个）。
+     ── 新做法 ──
+       基段转 90° 变 **8 宽 × 4 深**，横在 `LawPlanStick` 预留的 `slab.busY` 那一带；
+       源桩 (4×4) 接**左端**，基段从它右边接龙到画布右缘（每段 8 宽，80 画布最多 9 段 = 72 宽）。
+       上片取货口贴上沿（出料朝上）、下片贴下沿（rot180 出料朝下）—— 由 `RplaceFeeders` 负责。
+     ── 容量 ──
+       80 宽可用 78 = 源桩 4 + 基段 8×9（76）；取货口 3 宽一个，72 宽上下各能贴 12 个，
+       实测本场景只要 11 个。 */
+  /* v204：横放基段对**单片 / 两片都适用** —— 单片的机器下方本来就有整片空地
+     （实测 80 画布：机器 y4..34，下方 y35..78 全空），沿右侧竖铺反而是最差的位置。 */
+  if(plan && plan.slab && plan.slab.busY!=null){
+    const hbw=bd, hbd=bw;              /* 横放：宽 = 原深 8，深 = 原宽 4 */
+    const y0=plan.slab.busY|0;
+    const bandOK=y=>{ if(y<RW_MARGIN||y+hbd>size-RW_MARGIN) return false;
+      for(let j=0;j<hbd;j++){ let any=false;
+        for(let x=RW_MARGIN;x+hbw<=size-RW_MARGIN;x++){
+          let free=true;
+          for(let i=0;i<hbw;i++) if(busyAll[K(x+i,y+j)]){ free=false; break; }
+          if(free){ any=true; break; }
+        }
+        if(!any) return false; }
+      return true; };
+    let sy=null;
+    for(let y=Math.max(RW_MARGIN,y0); y+hbd<=size-RW_MARGIN && sy==null; y++) if(bandOK(y)) sy=y;
+    if(sy==null){
+      unplaced.push({why:'画布中部找不到整条空带放「存取线基段」（两片布局预留的 busY='+y0+' 已被占）'});
+      return {objs:out, links:links, unplaced:unplaced};
+    }
+    /* ① 定位：按 LawPlanStick 预留的 busX / busW —— **横向居中、两侧留通道**。
+       ⚠️ 首版从 MG 起铺满到画布右缘 ⇒ 基段带成了横贯画布的实心墙，
+          上片到下片的销毁线/暗管只能绕到墙的两端（左端还被源桩堵死）
+          ⇒ `v189 销毁池全部接上` 转红。现在长度按需（RwBusNeedW）、位置居中。 */
+    const busW2=(plan.slab.busW!=null)?plan.slab.busW:Math.min(size-2*RW_MARGIN-16, hbw*5);
+    const busX2=(plan.slab.busX!=null)?plan.slab.busX:Math.max(RW_MARGIN+4, Math.round((size-busW2)/2));
+    const busEnd=Math.min(size-RW_MARGIN, busX2+busW2);
+    /* ①a 源桩：优先贴基段左端外侧，放不下就换右端外侧 */
+    let sx=busX2-sw, srcAt='left', srcOK=false;
+    if(sx<RW_MARGIN){ sx=busEnd; srcAt='right'; }
+    if(sx>=RW_MARGIN && sx+sw<=size-RW_MARGIN && sy+sd<=size-RW_MARGIN){
+      let ok=true;
+      for(let j=0;j<sd&&ok;j++) for(let i=0;i<sw;i++) if(busyAll[K(sx+i,sy+j)]){ ok=false; break; }
+      if(ok){ markA(sx,sy,sw,sd); markB(sx,sy,sw,sd);
+        out.push({b:bsB, x:sx, y:sy, w:sw, d:sd, rot:0, kind:'source', at:srcAt}); srcOK=true; }
+    }
+    if(!srcOK) unplaced.push({why:'基段两端放不下 4×4 源桩（基段照铺，玩家可手接）'});
+    /* ② 基段：从 busX2 起横向接龙到 busEnd */
+    let bx=busX2, segs2=0;
+    while(bx+hbw<=busEnd && segs2<capSeg){
+      let ok=true;
+      for(let j=0;j<hbd&&ok;j++) for(let i=0;i<hbw;i++) if(busyAll[K(bx+i,sy+j)]){ ok=false; break; }
+      if(!ok) break;
+      markA(bx,sy,hbw,hbd); markB(bx,sy,hbw,hbd);
+      out.push({b:bbB, x:bx, y:sy, w:hbw, d:hbd, rot:90, kind:'bus'});
+      bx+=hbw; segs2++;
+    }
+    if(!segs2) unplaced.push({why:'源桩右侧没有连续的 8×4 空位接基段（存取线只有源桩）'});
+    return {objs:out, links:links, unplaced:unplaced};
+  }
   /* 沿右侧铺：选最靠右的一列 x（保证 x+w ≤ size-RW_MARGIN） */
   const W=Math.max(sw,bw);
   const X=size-RW_MARGIN-W;
@@ -5143,8 +5645,6 @@ function RplaceBus(plan, rt, res, size, occObjs, regionName){
   out.push({b:bsB, x:X, y:sy, w:sw, d:sd, rot:0, kind:'source'});
   /* ② 基段：从源桩下方接龙，尽量往下铺（不去满足某个数量，先铺能铺的） */
   let by=sy+sd, segs=0;
-  const capSeg=((DB.bases||{}).zones||[]).map(z=>(z.busCap||{}).log_hongs_bus)
-    .filter(v=>v!=null)[0] || 12;      /* 保守上限：副基地 12（主基地 25） */
   while(by+bd<=size-RW_MARGIN && segs<capSeg){
     let ok=true;
     for(let j=0;j<bd;j++) if(!rowFree(by+j)){ ok=false; break; }
@@ -5191,7 +5691,10 @@ function RfeedModeTxt(f){
   }
   return '接入点 <b>('+f.edge.x+','+f.edge.y+')</b>';
 }
-function RwRoute(placed, res, size, corr, extraBusy){
+function RwRoute(placed, res, size, corr, extraBusy, ropt){
+  /* ⭐v203：贴块模式开关（默认关 ⇒ 老行为逐字节不变）。
+     `evenPort` = 进料口均匀取样（见 dstPick 处注释）。 */
+  const evenPort=!!(ropt&&ropt.evenPort);
   /* 【分节总览】阶段一（连什么）：挑端口 → 定汇流分组 → 预留端点 → 自动摆分流器；
                  阶段二（怎么连）：统一走线（RwPath 寻路 + 桥格）→ 吞吐体检 → stats 落账。
      下方 `==========` 注释即两阶段分界，函数内已有 27 条分节注释，无需再补。 */
@@ -5206,6 +5709,44 @@ function RwRoute(placed, res, size, corr, extraBusy){
      ⇒ **任何终点都到不了**（试遍 1592 个空位全 null），「产线末端接协议储存箱」永远失败。
      代价：走线少一行可用（y=1..size-1 仍够；实测既有回归锁全绿）。 */
   for(let _x=0; _x<size; _x++) busy[_x+',0']=1;
+  /* ⭐⭐v203：**末级机器（depth 0）的出料口外侧格，产线内线一律不许踩**。
+     为什么（实测，不是预防性加锁）：贴块布局把 8 台研磨机排成一行、2 台封装机只占其中两列
+     ⇒ 「研磨机 → 封装机 致密源石粉末」的横移线绕到了**封装机正上方那一行**（y=3），
+       把第 2 台封装机的 6 个出料口外侧格全占死 ⇒ 出货线只接上 1/2 台，
+       `v185+v188` / `v188` / `v197` 三条锁同时红。
+     ⚠️ 只保护 **depth 0**（链末端）：它们是出货线的唯一出口，而且不向任何下游供料 ——
+        所以这些格永远不会被「自己这条线的起点」用到，加锁不会自锁。
+        其它 depth 的出料口不锁：那些口本来就要被自己的下游线占用，锁了反而全线走不通。
+     ⚠️ 与上面 `y=0` 那条预留**互补**：那条保护整行通道，这条保护具体的出口格。 */
+  placed.forEach(o=>{
+    if(!o.node || (o.node.depth||0)!==0) return;
+    const rec=RbyId(o.node&&o.node.recipeId); if(!rec) return;
+    const kinds={};
+    (rec.outcomes||[]).forEach(oc=>{ if(oc.id) kinds[RwFluid(oc.phase)?1:0]=1; });
+    const fp=Lfp(o.b);
+    (o.b.ports||[]).filter(p=>p.kind==='output'&&kinds[!!p.isPipe?1:0]).forEach(p=>{
+      const q=LportXY(p,o.rot||0,fp[0],fp[1]);
+      const dr=LportDirRot(p,o.rot||0,fp[0],fp[1]);
+      const dx=dr==='l'?-1:dr==='r'?1:0, dy=dr==='u'?-1:dr==='d'?1:0;
+      const ox=o.x+q.x+dx, oy=o.y+q.z+dy;
+      if(ox>=0&&oy>=0&&ox<size&&oy<size){
+        busy[(ox)+','+(oy)]=1;
+        /* ⚠️ 2026-10-20 实测记录（第三轮，已回退，别再试）：
+           又试着把出料口外侧格**左右各一格**也留出来（想让 (10,3) 别被产线线占）。
+           结果：y=3 那条横带被锁成 3..10 / 13..20 两段，箱子在 (11,3) 落不下，
+           被挤到 (8,1) 贴画布顶，出货线 21 → **22 格**，仍不达标。
+           ⇒ 结论：**瓶颈是 `RplaceStores` 的箱子落位策略**（它只看「到起点的距离和」，
+             不看「出料口正前方有没有连通的空区」）。加锁只会把箱子挤到更差的位置。
+             真要修，得改落位判据（候选位 + 连通性预判），不是改 `RwRoute` 的占用表。 */
+      }
+      /* ⚠️ 2026-10-20 实测记录（别再试这一条）：曾把出口**沿出料方向再留 2 格**。
+         结果**更差**（出货线 21 → **30 格**）—— 原因很直接：封装机 6 个出料口排成一排，
+         「外侧格 + 沿出料方向 2 格」等于把整条上沿封成一堵墙，
+         出货线再也横不走，只能往画布最左边绕。
+         ⇒ 出货线长度的真正瓶颈是 **箱子只有底边 3 个进料口 + 两台机器的线要各走一边**，
+            不是「出口上方的格子被占」。正确方向是改 `RplaceStores` 的落位/走线，不是加锁。 */
+    });
+  });
   /* ⭐ ⑤-1「重排其余」用：把**不归排布器管的散件**（手摆的机器 / 手拉的线）也算障碍，
      新线不会从它们身上压过去。不传就是老行为，一行都不多跑。 */
   if(extraBusy) extraBusy.forEach(o=>{ for(let j=0;j<o.d;j++) for(let i=0;i<o.w;i++) busy[(o.x+i)+','+(o.y+j)]=1; });
@@ -5326,7 +5867,22 @@ function RwRoute(placed, res, size, corr, extraBusy){
       const ics=portCands(o,'input').filter(c=>{
         const t=outOf(c); return !busy[K(t.x,t.y)] && !reserved[K(t.x,t.y)];
       });
-      return ics.slice(0, inNeedN).map(c=>{ used[c.key]=1; return {o:o, p:c}; });
+      /* ⭐v203：**贴块模式**下进料口要**均匀取样**，不能只取前 N 个。
+         病灶（实测）：研磨机 6 个进料口排在 x=0..5，`inNeedN=2` 时旧口径只取 **x=0 和 x=1**；
+         而贴块把 2 台粉碎机摆在 x=0 和 x=3（各 3 宽）—— 右边那台的出料口在 x=3..5，
+         离最近的两个口横跨 3 格 ⇒ **8 条线直接走不通**（贴块原型实测 8 条全变「手动连」）。
+         均匀取样（2 个口 / 6 个口 ⇒ 取第 0 和第 5）正好对上左右两台粉碎机。
+         ⚠️ **只对贴块模式生效**（`evenPort`）：分层布局里端口分散会让线变长，不能顺手改老口径。 */
+      if(!evenPort || ics.length<=inNeedN || inNeedN<=1){
+        return ics.slice(0, inNeedN).map(c=>{ used[c.key]=1; return {o:o, p:c}; });
+      }
+      const got=[];
+      for(let k=0;k<inNeedN;k++){
+        const idx=Math.round(k*(ics.length-1)/(inNeedN-1));
+        if(got.indexOf(ics[idx])<0) got.push(ics[idx]);
+      }
+      for(let i=0;got.length<inNeedN&&i<ics.length;i++) if(got.indexOf(ics[i])<0) got.push(ics[i]);
+      return got.map(c=>{ used[c.key]=1; return {o:o, p:c}; });
     });
     if(useMerge){
       /* 把 N 台上游分成 T 组（每组 ≤3，好用一个汇流器并掉），第 g 组喂 dstPick[g%M] */
@@ -5451,15 +6007,43 @@ function RwRoute(placed, res, size, corr, extraBusy){
       if(dropN-dS) warns.push(parent.name+' ← '+child.name+'：**还有 '+(dropN-dS)+' 台下游没连上**'
         +'（分流器摆不下 / 上游出料口不够）—— 请手动连，或把上游机器多做几台');
     }else{
+      /* ⭐⭐v203（博士 2026-10-20 定案「先做配对」）：**源→汇从轮询改成就近贪心**。
+         ── 老口径的病灶（实测，不是推测）──
+           `const src=cs[i%N]` 完全无视几何：16 台粉碎机喂 8 台研磨机时，
+           `cs[0]` 和 `cs[8]` 都去喂**第 0 台**研磨机 —— 而 cs[8] 物理上在画布另一端
+           （贴块/紧凑布局实测：24 条线因此走不通，全变成「手动连」）。
+           贴块布局把机器摆对了，轮询又把线拉直成 40~60 格的长线。
+         ── 新口径 ──
+           `dstPick` 的分配**一字不动**（它决定每台下游接几条线、走哪个进料口，
+           动了会连带吞吐体检与分流器判据）；
+           只改「选哪台源」：每台源**先各用一次**（已用过的加 `SRC_PEN` 罚），
+           同档内取「源中心 → 目标汇口外侧格」曼哈顿最近的那台。
+         ⚠️ `SRC_PEN` 必须 **> 画布最大曼哈顿距离（2*size-2）** ——
+            否则会出现「明明有闲置的源，却为了省几格去重复用远处那台」，
+            结果另一台源整台不出料（产线少一台产能，比线长严重得多）。
+         ⚠️ 与 v 路线图③ 的「就近分组」不是一回事：那在 `useMerge` 分支里管**分组**，
+            这里管**普通直连**的端点配对。两个分支互不影响。 */
+      const dstOf=i=>dstPick[i%M] && dstPick[i%M][Math.floor(i/M)%dstPick[i%M].length];
+      const dNear=(o,t)=>Math.abs(o.x+o.w/2-t.x)+Math.abs(o.y+o.d/2-t.y);
+      const srcUse=new Array(N).fill(0);
+      const SRC_PEN=size*2+1;
       for(let i=0;i<np;i++){
-        const dst=dstPick[i%M] && dstPick[i%M][Math.floor(i/M)%dstPick[i%M].length];
+        const dst=dstOf(i);
         if(!dst){ warns.push(parent.name+' ← '+child.name+'：第 '+(i+1)+' 条的下游进料口占着，请手动连'); continue; }
-        const src=cs[i%N], ocs=portCands(src,'output');
+        const tPt=outOf(dst.p);
+        let bi=-1, bv=Infinity;
+        for(let k=0;k<N;k++){
+          const v=dNear(cs[k], tPt)+srcUse[k]*SRC_PEN;
+          if(v<bv){ bv=v; bi=k; }
+        }
+        if(bi<0) bi=i%N;
+        srcUse[bi]++;
+        const src=cs[bi], ocs=portCands(src,'output');
         const pick=ocs.filter(c=>free(outOf(c)))[0];
         if(!pick){ warns.push(parent.name+' ← '+child.name+'：第 '+(i+1)+' 条的端口/端点被占了，请手动连'); continue; }
         used[pick.key]=1;
-        reserved[K(outOf(pick).x,outOf(pick).y)]=1; reserved[K(outOf(dst.p).x,outOf(dst.p).y)]=1;
-        jobs.push({s:outOf(pick), t:outOf(dst.p), isP:isP, parent:parent, child:child, tInto:{x:dst.p.gx, y:dst.p.gy}});
+        reserved[K(outOf(pick).x,outOf(pick).y)]=1; reserved[K(tPt.x,tPt.y)]=1;
+        jobs.push({s:outOf(pick), t:tPt, isP:isP, parent:parent, child:child, tInto:{x:dst.p.gx, y:dst.p.gy}});
       }
     }
   });
@@ -6233,6 +6817,13 @@ function RplacePoles(plan, rt, res, size, occObjs, region){
    ⚠️ 只在有缺口时才多跑（约 5% 的链、最多 4 组），其余链零额外开销。
    ⚠️ 重试遍里**任何失败都往下试/回退第一遍**，绝不 LawFail 清场（否则宽布局放不下会把用户原来那条产线也抹了）。 */
 const RW_POLE_PLAN=[
+  /* ⭐v203：**先试贴块**。病灶：贴块布局连供电缺口都只剩 1 台时（第一遍 uNow=1），
+     老重试计划全是 `LawPlan` 的宽间距档 ⇒ 一夜回到分层布局、线格从 320 涨回 1756。
+     贴块档放在最前，`RwPoleRetryFinish` 的「取缺口最少、并列早试者优先」不会误伤它：
+     只有缺口真比第一遍少才会被采用。
+     ⚠️ 必须带 `noStick` 守卫（见 LawRun 候选循环）—— 无可贴段的链直接跳过，不拿退化布局凑数。 */
+  {stick:true, gapX:5, corrAdd:0, mode:null, off:0},
+  {stick:true, gapX:4, corrAdd:0, mode:null, off:3},
   {gapX:8, corrAdd:6,  mode:'down', off:0},   /* 纯宽间距（v195 首版救回 4 台的组合） */
   {gapX:6, corrAdd:6,  mode:'down', off:0},
   {gapX:8, corrAdd:10, mode:'down', off:0},
@@ -6390,6 +6981,15 @@ function LawRun(targetId, perMin, opts){
   const retryIdx=(opts&&opts.retryIdx!=null)?opts.retryIdx:-1;   /* ⭐v195：供电缺口重试的第几组（-1 = 正常第一遍） */
   /* ⭐v196：**桩位保护区**开关 —— 只有「参数组全试完仍有缺口」的最后一遍才开（见 RwPoleRetryNext） */
   const USE_PROT=!!(opts&&opts.protect);
+  /* ⭐v204：extraBusy = 桩位保护区 ∪ 基段带预留区。两片布局下基段带必须对走线硬封，
+     否则线先铺进去、基段/取货口随后摆不下（v203 的 feeder=0 就是这么来的）。 */
+  const RwExtra=(pl)=>{ const prot=USE_PROT?RwPoleProtect(pl.objs, L.size):null;
+    if(pl && pl.reserve && pl.reserve.length){
+      const out=prot?prot.slice():[];
+      pl.reserve.forEach(r=>out.push(r));
+      return out.length?out:null;
+    }
+    return prot; };
   if(retryIdx>=0) RW_POLE_INWIDE=true;
   const wideBase=Math.min(14, Math.ceil(depLines/2)+2);
   /* ── [5] 参数网格候选（含 wide 换行档）──────────────── */
@@ -6413,7 +7013,7 @@ function LawRun(targetId, perMin, opts){
     }else{
     /* 重试遍：**只**跑 RW_POLE_PLAN 里指定的那一组（每组都完整落盘 → 数出「没盖到几台」再决定去哪） */
     const rp=RW_POLE_PLAN[Math.min(retryIdx, RW_POLE_PLAN.length-1)];
-    cands.push({gapX:rp.gapX, align:false, corrBase:Math.min(20, wideBase+rp.corrAdd),
+    cands.push({stick:!!rp.stick, gapX:rp.gapX, align:false, corrBase:Math.min(20, wideBase+rp.corrAdd),
                 swap:null, mode:rp.mode, off:rp.off});
     }
   }else{
@@ -6430,16 +7030,40 @@ function LawRun(targetId, perMin, opts){
     [4,2].forEach(gx=>{ cands.push({gapX:gx, align:false, corrBase:cbD, swap:null, mode:'down'}); });
     if(small) cands.push({gapX:3, align:false, corrBase:cbD, swap:null, mode:'down'});
   }
+  /* ⭐⭐v203（博士 2026-10-20 定案）：**贴块候选** —— 上游贴着下游摆、中间隔 1 格。
+     与上面几组并列参与 pickScore 择优：贴得动就用它（线格通常少一个数量级），
+     贴不动（宽度/整除/独占判定不过）就自然退化成「按层摆」，由老候选胜出。
+     ⚠️ 只加在正常第一遍；`retryIdx>=0` 是「供电缺口重试专用」的窄集合，不掺新变量。
+     ⚠️ **gapX 必须 ≥3**：实测 gapX=2 时机器间只剩 2 格缝，`RplacePoles` 找不到 2×2 空位
+        ⇒ 供电缺口 2/35 ⇒ 触发 `RW_POLE_PLAN` 宽间距重试 ⇒ **贴块方案被整个丢掉**
+        （首版就栽在这：分数明明最高，结果画布上还是老布局）。
+        gapX=3 → 缺口 0/35 / 线格 299；gapX=4 → 缺口 0/35 / 线格 320（pickScore 取 gx4）。
+     ⚠️ 单组成本 = 一次 LawPlanStick（毫秒级）+ 一次 RwRoute（与其它候选同价）。 */
+  [3,4].forEach(gx=>{ cands.push({stick:true, gapX:gx, align:false, corrBase:3, off:0}); });
+  /* ⭐⭐v204（博士 2026-10-20 定案「基段居中 + 两片产线」）：**两片档**。
+     上下各一片完整链、基段横在中间 —— 每片的 depth2（离原料最近）只隔 1 格就到基段取货口，
+     下片整体 rot=180 让物料向下流。装不下时 `LawPlanStick` 内部自动退回单片（不报错）。
+     ⚠️ 与单片档同参数并列进 pickScore：线更短者胜（单片省纵向、两片省横向，由实测数据决定）。 */
+  [3,4].forEach(gx=>{ cands.push({stick:true, split:true, gapX:gx, align:false, corrBase:3, off:0}); });
   }
   /* ── [6] 第一轮：全候选摆+铺+打分 → best ────────────── */
   let best=null, tried=0, overAll=true;
   cands.forEach(c=>{
     const corr=Math.max(c.corrBase, Math.min(14, Math.ceil(depLines/2)+2));
-    const pl=LawPlan(res, L.size, corr, {gapX:c.gapX, align:c.align, mode:c.mode, off:c.off});
+    const pl=c.stick
+      ? LawPlanStick(res, L.size, corr, {gapX:c.gapX, off:c.off, split:c.split})
+      : LawPlan(res, L.size, corr, {gapX:c.gapX, align:c.align, mode:c.mode, off:c.off});
+    if(typeof RW_DBG!=='undefined'&&RW_DBG)
+      console.log('CAND '+(c.stick?'stick':'plan')+' gx'+c.gapX+' corr'+corr
+        +' over'+pl.over.length+' h'+pl.height+' n'+pl.objs.length+(pl.noStick?' noStick':''));
     if(pl.over.length) return;
+    if(c.stick && pl.noStick) return;   /* 没有可贴段的链不拿退化布局凑数（见 LawPlanStick 返回值注释） */
     overAll=false;
-    const rt=RwRoute(pl.objs, res, L.size, corr, USE_PROT?RwPoleProtect(pl.objs, L.size):null);
+    const rt=RwRoute(pl.objs, res, L.size, corr, RwExtra(pl),
+      c.stick?{evenPort:true}:null);
     const sc=pickScore(pl, rt);
+    if(typeof RW_DBG!=='undefined'&&RW_DBG)
+      console.log('     -> ok'+sc.ok+' manual'+sc.manual+' jam'+sc.jam+' belts'+sc.belts+' v'+sc.v+(pl.slab?(' slab='+pl.slab.mode):''));
     tried++;
     if(!best || sc.v>best.sc.v) best={c:c, sc:sc, plan:pl, route:rt, corr:corr};
   });
@@ -6473,7 +7097,7 @@ function LawRun(targetId, perMin, opts){
       const corr=Math.max(c.corrBase, corrAuto);
       const pl=LawPlan(res, L.size, corr, {gapX:c.gapX, align:c.align, mode:c.mode});
       if(pl.over.length) return;
-      const rt=RwRoute(pl.objs, res, L.size, corr, USE_PROT?RwPoleProtect(pl.objs, L.size):null);
+      const rt=RwRoute(pl.objs, res, L.size, corr, RwExtra(pl));
       const sc=pickScore(pl, rt);
       tried++; wideTried++;
       if(sc.v>best.sc.v) best={c:c, sc:sc, plan:pl, route:rt, corr:corr};
@@ -6492,7 +7116,7 @@ function LawRun(targetId, perMin, opts){
         const corr2=Math.max(c2.corrBase, Math.min(14, Math.ceil(depLines/2)+2));
         const pl2=LawPlan(res, L.size, corr2, {gapX:c2.gapX, align:c2.align, swap:c2.swap, mode:c2.mode});
         if(pl2.over.length) continue;
-        const rt2=RwRoute(pl2.objs, res, L.size, corr2, USE_PROT?RwPoleProtect(pl2.objs, L.size):null);
+        const rt2=RwRoute(pl2.objs, res, L.size, corr2, RwExtra(pl2));
         const sc2=pickScore(pl2, rt2);
         tried++; swaps++;
         if(sc2.v>best.sc.v) best={c:c2, sc:sc2, plan:pl2, route:rt2, corr:corr2};
@@ -6506,7 +7130,7 @@ function LawRun(targetId, perMin, opts){
     if(corrUp>best.corr){
       const plUp=LawPlan(res, L.size, corrUp, {gapX:best.c.gapX, align:best.c.align, swap:best.c.swap, mode:best.c.mode});
       if(!plUp.over.length){
-        const rtUp=RwRoute(plUp.objs, res, L.size, corrUp, USE_PROT?RwPoleProtect(plUp.objs, L.size):null);
+        const rtUp=RwRoute(plUp.objs, res, L.size, corrUp, RwExtra(plUp));
         const scUp=pickScore(plUp, rtUp);
         tried++;
         if(scUp.v>best.sc.v){ best={c:{gapX:best.c.gapX, align:best.c.align, corrBase:corrUp, swap:best.c.swap}, sc:scUp, plan:plUp, route:rtUp, corr:corrUp}; }
@@ -6568,13 +7192,29 @@ function LawRun(targetId, perMin, opts){
   if(!(opts&&opts.noPush)) Lpush();
   L.objs=[]; L.sel=[]; L.pick=null;
   plan.objs.forEach(o=>{
-    const obj=Lmk(o.b, o.x, o.y, 0);
+    const obj=Lmk(o.b, o.x, o.y, o.rot||0);   /* ⭐v204：下片机器 rot=180（端口跟着翻），不能再硬编码 0 */
     obj.r=o.node.recipeId;                 /* 复用上一轮的「设施选配方」：格子上会标产出物品 */
     obj.prod=o.node.name;                  /* 产物名按**树节点**给 —— 拆解机的 outcomes[0] 是罐子，但它在产惰气 */
     obj.planRole='machine';
     obj.pkey=Rpkey(o.node);                /* ⑤-1：记住来自哪个树节点，「重排其余」按它对回台数 */
     L.objs.push(obj);
   });
+  /* ⭐⭐v204（博士 2026-10-20 的三块地顺序）：**存取线本体紧跟机器落盘** ——
+     ① 进货端占位（基段 + 取货口）② 出货端（箱子）③ 其余（线 / 池子 / 桩）。
+     v203 的致命错就是「先把机器铺满整张画布，再回头找基段放哪」⇒ 基段 0 段、feeder=0。
+     ⚠️ 提前到走线落盘之前：`RwRoute` 已把基段带当 extraBusy（见 LawPlanStick.reserve），
+        所以线不会占那块地；这里先落盘是为了让随后的 sink / store 也能避开它。
+     ⚠️ 谷地（LO_PRESET_BUS_REGIONS）是预设线，函数内部直接返回空 —— 不受影响。 */
+  let busPlace=null;
+  if(L.autoBus!==false){
+    busPlace=RplaceBus(plan, rt, res, L.size, L.objs, Lregion());
+    (busPlace.objs||[]).forEach(o=>{
+      const obj=Lmk(o.b, o.x, o.y, o.rot||0);
+      obj.planRole='bus';
+      obj.prod=(o.kind==='source'?'仓库存取线源桩（存取线起点）':'仓库存取线基段（可贴存货口/取货口）');
+      L.objs.push(obj);
+    });
+  }
   rt.belts.forEach(bl=>{
     /* bl.logiId 有值说明这是排布器自动摆的**汇流器 / 分流器**，不是普通带子 */
     const pb=byBp(bl.logiId || (bl.isPipe?'log_pipe_01':'grid_belt_01'));
@@ -6598,7 +7238,10 @@ function LawRun(targetId, perMin, opts){
         原因：作者 2026-10-02 截图里 7 个池子一字排在画布左下角、**一根带子都没连**；
         而销毁的机制是「扩容反应池堵塞清空」，料送不进去就永远不堵 → 池子等于白摆。
      开销：无必爆项时 sinkPlan.sinks 为空 → 一行都不多跑（老路径零影响）。 */
-  const sinkPlaced=RplaceSinksLinked(plan, rt, res, L.size, (PROT?L.objs.concat(PROT):L.objs), sinkPlan);
+  /* ⭐v204：布局层预留的出货区 / 基段带也进 sink 的占用表 ——
+     否则销毁池会抢顶部出货区（实测箱子被挤到 (14,2)/(1,5)，出货线 31 格）。 */
+  const _resv=(plan&&plan.reserve)?plan.reserve:[];
+  const sinkPlaced=RplaceSinksLinked(plan, rt, res, L.size, (PROT?L.objs.concat(PROT):L.objs).concat(_resv), sinkPlan);
   (sinkPlaced.links||[]).forEach(l=>{
     /* ⭐v199：桥格落桥件（log_pipe_connector / log_connector）—— 同介质交叉必须立体跨线 */
     const pb=byBp(l.bridge?(l.isPipe?'log_pipe_connector':'log_connector'):(l.isPipe?'log_pipe_01':'grid_belt_01')); if(!pb) return;
@@ -6647,7 +7290,11 @@ function LawRun(targetId, perMin, opts){
   if(L.autoStore!==false){
     /* ⚠️ 第 5 参传的是**对象数组**（L.objs），不是回调 —— 函数内部一次栅格化，
        避免「每个格子回调遍历 2000 个对象」把测试拖慢 8 倍（见 RplaceStores 头部的性能注释）。 */
-    storePlace=RplaceStores(plan, rt, res, L.size, L.objs, USE_PROT);
+    /* ⚠️ 只把**基段带**传给 store —— 出货区那块地正是给箱子用的，传进去会被标成「已占用」
+       ⇒ `cands` 里一个出货区候选都没有（实测 cands=3173 / ins=0，箱子又落回机器行 y=7）。
+       池子（RplaceSinksLinked）仍然全传：池子不许占出货区。 */
+    const _resvStore=_resv.filter(r=>!(r.y<=RW_MARGIN+2 && r.w>=L.size-2*RW_MARGIN-1));
+    storePlace=RplaceStores(plan, rt, res, L.size, L.objs.concat(_resvStore), USE_PROT);
     (storePlace.links||[]).forEach(l=>{
       /* ⭐v199：桥格落物流桥（同介质交叉立体跨线；异介质 3D 分层叠的是普通带） */
       const pb=byBp(l.bridge?'log_connector':'grid_belt_01'); if(!pb) return;
@@ -6671,18 +7318,7 @@ function LawRun(targetId, perMin, opts){
   /* ⭐⭐v181 进货端：仓库取货口 —— 把原料从地区仓库送进产线（详见 RplaceFeeders 头部）。
      ⚠️ 放在储存箱**之后**：出货端的起点（末级机器出料口）位置固定，
         而取货口可以沿线滑动 —— 让「位置灵活的」去避让「位置固定的」。 */
-  /* ⭐v182 武陵存取线本体（谷地是预设的、武陵要自己摆）—— 详见 RplaceBus 头部。
-     ⚠️ 必须在**取货口之前**跑：口要贴线。 */
-  let busPlace=null;
-  if(L.autoBus!==false){
-    busPlace=RplaceBus(plan, rt, res, L.size, L.objs, Lregion());
-    (busPlace.objs||[]).forEach(o=>{
-      const obj=Lmk(o.b, o.x, o.y, o.rot||0);
-      obj.planRole='bus';
-      obj.prod=(o.kind==='source'?'仓库存取线源桩（存取线起点）':'仓库存取线基段（可贴存货口/取货口）');
-      L.objs.push(obj);
-    });
-  }
+  /* ⭐v182 武陵存取线本体 —— v204 已前移到「机器落盘之后」，见上文。 */
   let feedPlace=null;
   if(L.autoFeed!==false){
     feedPlace=RplaceFeeders(plan, rt, res, L.size, L.objs, Lregion());
@@ -6792,6 +7428,9 @@ function LawRun(targetId, perMin, opts){
      （并列早试者优先 = 第一遍天然占优）；某一遍缺口归零就直接收工。 */
   {
     const uNow=polePlace?polePlace.uncovered.length:0;
+    if(typeof RW_DBG!=='undefined'&&RW_DBG)
+      console.log('POLE uNow='+uNow+' retryIdx='+retryIdx
+        +' best='+(best?(best.c.stick?'stick':'plan')+' gx'+best.c.gapX+' score'+best.sc.v:'-'));
     if(retryIdx<0){
       if(uNow===0){ RW_POLE_CTX=null; RW_POLE_INWIDE=false; render(); return; }
       RW_POLE_CTX={targetId:targetId, perMin:perMin, idx:-1,
@@ -6909,7 +7548,7 @@ function Lreroll(){
   Lpush();
   const keep=locks.slice();
   best.plan.objs.forEach(o=>{
-    const obj=Lmk(o.b, o.x, o.y, 0);
+    const obj=Lmk(o.b, o.x, o.y, o.rot||0);   /* ⭐v204：下片机器 rot=180（端口跟着翻），不能再硬编码 0 */
     obj.r=o.node.recipeId; obj.prod=o.node.name; obj.planRole='machine'; obj.pkey=Rpkey(o.node);
     keep.push(obj);
   });

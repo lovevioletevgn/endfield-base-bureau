@@ -6037,7 +6037,15 @@ chkScan('v185+v188 广谱：出线总长应低于 v184 基线 2130 格且未接�
      ⚠️ 这削弱了这条锁对「线长退化」的敏感度，但换来的是**两条线不再粘连**这个正确性 ——
         而「退化到 v185 rot0 口径」（约 460）仍会被抓住（460 阈值刚好卡在那条线上）。
      ⭐真正守「不粘连」的是下一条 v188 锁（连通分量数），不是这条。 */
-  const lim = nn2 <= 8 ? 460 : Math.round(2130 * nn2 / 60 * 1.15);
+  /* ⚠️ v204（2026-10-20）如实记录：fast 档阈值 **460 → 560**。
+     原因：出货端改成「每台末级机器各配一个箱子」（博士选「要箭头全对」），
+     出货线不再横穿产线带、每条 4~10 格，但箱子数 ×2~3 ⇒ 总出线 460 → **465**（超 5 格）。
+     代价：460 本来是「刚好卡住 v185 rot0 退化值」的线，560 会放过它。
+     ⭐ 守门责任交接给三条（都还在跑）：
+        ① `v185+v188 出货线 ≤ 12 格`（单场景；v185 退化时 16 格 ⇒ 会红）
+        ② 本条里的 miss（未接上用例数，现 0）
+        ③ `v188 出货线不横穿`（连通分量判据） */
+  const lim = nn2 <= 8 ? 560 : Math.round(2130 * nn2 / 60 * 1.15);
   return nStore > 0 && tot < lim && miss <= Math.max(1, Math.round(nStore * 0.30));
 }, () => v185n);
 
@@ -6766,30 +6774,50 @@ chk('v197 行为：中容武陵电池@10@80 两条出货线**不粘连**（连�
    修法：中间格用 `LrotFrom(本格, 下一格)`；尾格（没有下一格）沿用进入方向。 */
 chk('v197 源码：落盘 rot 用「本格→下一格」（流向），尾格才沿用进入方向', (() => {
   return /if\(i2<path\.length-1\) rot=LrotFrom\(\[c\.x,c\.y\],\[path\[i2\+1\]\.x,path\[i2\+1\]\.y\]\)/.test(rawCode)
-    && /else rot=\(i2>0\?LrotFrom/.test(rawCode)
+    /* ⭐v203：尾格口径升级 —— 原来只有「沿用进入方向」，现在**优先指向箱体本体**。
+       病灶：箱子进料口在底边时，「进入方向」与「去箱子的方向」差 90°，
+       尾格会指着一格空气（最严口径实锤 (11,6) rot0 → (12,6) ★空）。
+       锁的语义不变（尾格必须有确定朝向），只跟着实现改写法。 */
+    && /body:\{x:cd\.x\+q2\.x, y:cd\.y\+q2\.z\}/.test(rawCode)
+    && /rot = \(bd && /.test(rawCode)
     && /const _outD=outDirTo\(o\.x, o\.y/.test(rawCode)
     && /_outD\?LGNAME\[_outD\]/.test(rawCode);
 })(), () => {
   return '流向rot=' + /if\(i2<path\.length-1\) rot=LrotFrom\(\[c\.x,c\.y\],\[path\[i2\+1\]\.x,path\[i2\+1\]\.y\]\)/.test(rawCode)
-    + ' 尾格兜底=' + /else rot=\(i2>0\?LrotFrom/.test(rawCode)
+    + ' 尾格本体=' + /rot = \(bd && /.test(rawCode)
     + ' tooltip出边=' + /const _outD=outDirTo\(o\.x, o\.y/.test(rawCode);
 });
 
-/* 行为锁：拐弯格的「出边」必须指向**实际存在下一格**的方向（不是指向空处） */
-chk('v197 行为：出货线的拐弯格出边指向真实下一格（(7,0) 出下，指向 (7,1)）', (() => {
+/* 行为锁：拐弯格的「出边」必须指向**实际存在下一格**的方向（不是指向空处）
+   ⭐v203：原来硬编码坐标 (7,0)/(7,1) —— 布局一变（贴块把机器集成一坨）那格就不存在，
+   锁直接报「不在 DOM」，**测不到它本来要守的性质**。改成**通用检查**：
+   遍历全部 storelink 格，读它的 title 出边方向，确认那个方向上**真有下一格**（线 or 箱体），
+   比原来只查一格更严。 */
+chk('v197 行为：出货线每一格的出边都指向真实存在的下一格', (() => {
   loReset(80); A.tab = 'layout'; A.LawRun('item_proc_battery_5', 10); A.render();
   const P = A.LO.plan;
   if (!P || !P.storePlace) return false;
   const sl = A.LO.objs.filter(x => x.planRole === 'storelink');
-  const at = (x, y) => sl.some(q => q.x === x && q.y === y);
-  /* 找出所有「出边方向 ≠ 该方向有下一格」的格 —— 排除尾格（进本体那侧算合法终止） */
+  if (!sl.length) { v196n = '没有 storelink'; return false; }
   const h = outEl.innerHTML || '';
-  const i = h.indexOf('data-uid="' + ((sl.find(q => q.x === 7 && q.y === 0) || {}).uid) + '"');
-  if (i < 0) { v196n = '(7,0) 不在 DOM'; return false; }
-  const ttl = (h.slice(i, i + 900).match(/title="([^"]*)"/) || [])[1] || '';
-  v196n = '(7,0) 的 title = ' + ttl.slice(0, 80);
-  /* (7,0) 的实际下一格是 (7,1)（下方）⇒ 出边必须是「下」 */
-  return ttl.indexOf('出 下') >= 0 && at(7, 1);
+  const box = P.storePlace.objs || [];
+  const DIRS = { '上': [0, -1], '下': [0, 1], '左': [-1, 0], '右': [1, 0] };
+  let checked = 0, bad = 0, firstBad = '';
+  sl.forEach(q => {
+    const j = h.indexOf('data-uid="' + q.uid + '"');
+    if (j < 0) return;
+    const ttl = (h.slice(j, j + 900).match(/title="([^"]*)"/) || [])[1] || '';
+    const m = ttl.match(/出\s*([上下左右])/);
+    if (!m) return;
+    const d = DIRS[m[1]]; if (!d) return;
+    checked++;
+    const nx = q.x + d[0], ny = q.y + d[1];
+    const isNext = sl.some(z => z.x === nx && z.y === ny);
+    const isBody = box.some(o => nx >= o.x && nx < o.x + o.w && ny >= o.y && ny < o.y + o.d);
+    if (!isNext && !isBody) { bad++; if (!firstBad) firstBad = '(' + q.x + ',' + q.y + ')出' + m[1]; }
+  });
+  v196n = '检查 ' + checked + ' 格，出边落空 ' + bad + ' 格' + (firstBad ? '，首例 ' + firstBad : '');
+  return checked > 0 && bad === 0;
 })(), () => v196n || '(空)');
 
 loReset(50); A.render();
